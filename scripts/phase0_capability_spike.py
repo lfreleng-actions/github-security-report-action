@@ -51,6 +51,7 @@ token) will 403/404 on them, which is itself a useful result to record.
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import os
 import sys
@@ -89,6 +90,7 @@ class ProbeResult:
     item_count: int | None = None
     enabled_hint: str = ""  # interpretation for the enabled-probe contract
     note: str = ""
+    breakdown: str = ""  # e.g. tool/severity mix for code scanning
     rate_remaining: str | None = None
 
 
@@ -120,9 +122,10 @@ class SpikeReport:
 # --------------------------------------------------------------------------- #
 # Scrubbing
 # --------------------------------------------------------------------------- #
-# Field names whose VALUES must never be written to disk. Secret-scanning
-# responses in particular embed the detected secret. This is intentionally
-# aggressive; a human still reviews everything before it becomes a fixture.
+# Cap list lengths in saved fixtures: enough to see the tool/severity mix,
+# not so many that we hoard live data on disk.
+LIST_SAMPLE_CAP = 25
+
 SENSITIVE_KEYS = {
     "secret",
     "token",
@@ -141,7 +144,7 @@ def scrub(value: Any) -> Any:
             for k, v in value.items()
         }
     if isinstance(value, list):
-        return [scrub(v) for v in value[:2]]  # keep shape, not volume
+        return [scrub(v) for v in value[:LIST_SAMPLE_CAP]]  # keep mix, cap volume
     return value
 
 
@@ -226,6 +229,30 @@ def interpret_status(status: int) -> str:
     }.get(status, f"http {status}")
 
 
+def code_scanning_breakdown(items: list[dict[str, Any]]) -> str:
+    """Summarise code-scanning alerts by tool and by severity.
+
+    The single ``/code-scanning/alerts`` feed multiplexes tools (CodeQL,
+    Scorecard, zizmor, ...). Partitioning by ``tool.name`` is the whole point
+    of this breakdown: it tells us how the org-bulk sweep splits across the v1
+    tables. Severity uses ``rule.security_severity_level`` (falling back to
+    ``rule.severity``).
+    """
+    by_tool: collections.Counter[str] = collections.Counter()
+    by_tool_sev: collections.Counter[tuple[str, str]] = collections.Counter()
+    for a in items:
+        tool = (a.get("tool") or {}).get("name") or "unknown"
+        rule = a.get("rule") or {}
+        sev = rule.get("security_severity_level") or rule.get("severity") or "n/a"
+        by_tool[tool] += 1
+        by_tool_sev[(tool, sev)] += 1
+    tools = " ".join(f"{t}:{n}" for t, n in sorted(by_tool.items()))
+    sevs = " ".join(
+        f"{t}/{s}:{n}" for (t, s), n in sorted(by_tool_sev.items())
+    )
+    return f"[{tools}] {sevs}"
+
+
 def probe_org_bulk(client: httpx.Client, org: str) -> list[ProbeResult]:
     results: list[ProbeResult] = []
     matrix = {
@@ -234,11 +261,16 @@ def probe_org_bulk(client: httpx.Client, org: str) -> list[ProbeResult]:
         "secret-scanning": f"{GITHUB_API}/orgs/{org}/secret-scanning/alerts",
     }
     for signal, url in matrix.items():
-        resp = get(client, url, per_page=5, state="open")
+        # A larger page for code scanning so the tool mix is representative.
+        per_page = 100 if signal == "code-scanning" else 30
+        resp = get(client, url, per_page=per_page, state="open")
         items = resp.json() if resp.status_code == 200 else None
         count = len(items) if isinstance(items, list) else None
+        breakdown = ""
         if isinstance(items, list) and items:
             save_fixture(signal, f"org-bulk-{org}", items)
+            if signal == "code-scanning":
+                breakdown = code_scanning_breakdown(items)
         results.append(
             ProbeResult(
                 signal=signal,
@@ -249,7 +281,9 @@ def probe_org_bulk(client: httpx.Client, org: str) -> list[ProbeResult]:
                 ok=resp.status_code == 200,
                 item_count=count,
                 enabled_hint=interpret_status(resp.status_code),
-                note="org-level bulk alert sweep",
+                note="org-level bulk alert sweep"
+                + (" (first page only)" if count == per_page else ""),
+                breakdown=breakdown,
                 rate_remaining=resp.headers.get("x-ratelimit-remaining"),
             )
         )
@@ -280,11 +314,13 @@ def probe_code_scanning(client: httpx.Client, org: str, repo: str) -> list[Probe
         )
     )
 
-    alerts = get(client, f"{GITHUB_API}/repos/{slug}/code-scanning/alerts", per_page=5, state="open")
+    alerts = get(client, f"{GITHUB_API}/repos/{slug}/code-scanning/alerts", per_page=100, state="open")
     items = alerts.json() if alerts.status_code == 200 else None
     count = len(items) if isinstance(items, list) else None
+    breakdown = ""
     if isinstance(items, list) and items:
         save_fixture("code-scanning", f"{org}-{repo}", items)
+        breakdown = code_scanning_breakdown(items)
     results.append(
         ProbeResult(
             signal="code-scanning",
@@ -296,6 +332,7 @@ def probe_code_scanning(client: httpx.Client, org: str, repo: str) -> list[Probe
             item_count=count,
             enabled_hint=interpret_status(alerts.status_code)
             + (" (empty list is ambiguous)" if count == 0 else ""),
+            breakdown=breakdown,
             rate_remaining=alerts.headers.get("x-ratelimit-remaining"),
         )
     )
@@ -415,7 +452,7 @@ def probe_scorecard(org: str, repo: str) -> ProbeResult:
 # --------------------------------------------------------------------------- #
 def render_matrix(report: SpikeReport) -> None:
     table = Table(title=f"Capability matrix — {report.org}", show_lines=False)
-    for col in ("Signal", "Scope", "Target", "Status", "Items", "Interpretation", "RL"):
+    for col in ("Signal", "Scope", "Target", "Status", "Items", "Interpretation", "Tool/severity mix", "RL"):
         table.add_column(col, overflow="fold")
     for r in report.results:
         status_style = "green" if r.ok else "yellow" if r.status in (None, 404) else "red"
@@ -426,6 +463,7 @@ def render_matrix(report: SpikeReport) -> None:
             f"[{status_style}]{r.status}[/{status_style}]",
             "" if r.item_count is None else str(r.item_count),
             r.enabled_hint,
+            r.breakdown,
             r.rate_remaining or "",
         )
     console.print(table)

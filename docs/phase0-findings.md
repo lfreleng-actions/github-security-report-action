@@ -12,7 +12,11 @@ can be confirmed or corrected. Raw output lives in the git-ignored
 `phase0-output/` (not committed).
 
 First run: `--org lfreleng-actions --sample 5` (97 repos total, 96 in default
-scope), classic PAT with `security_events`, `repo`, `read:org`.
+scope), classic PAT with `security_events`, `repo`, `read:org`. A second run
+targeted five more demanding repos (`dependamerge`, `lftools-uv`,
+`github2gerrit-action`, `gha-workflow-linter`, `python-nss-ng`) with the spike
+refined to report the code-scanning **tool/severity mix** from the full first
+page.
 
 ## Confirmed
 
@@ -38,50 +42,54 @@ scope), classic PAT with `security_events`, `repo`, `read:org`.
 
 ## Corrections to the design
 
-### 1. Scorecard source pivots from the external API to code scanning
+### 1. Scorecard has two complementary sources (external API + code scanning)
 
-The external `api.securityscorecards.dev` endpoint returned **`404` for every
-sampled repo** — the public Scorecard dataset does not cover our estate, so it
-is **not** a viable source for us.
+The external `api.securityscorecards.dev` endpoint is viable for **prominent**
+repos but not small ones: it returned the aggregate **0–10 score** for four of
+the five demanding repos (`dependamerge` 8.2, `lftools-uv` 8.2,
+`gha-workflow-linter` 8.4, `python-nss-ng` 7.7) and `404` for
+`github2gerrit-action` — and `404` for *every* small action repo in the first
+sample. Coverage tracks repo prominence/inclusion in the public dataset.
 
-However, OpenSSF Scorecard results **are** present — uploaded as SARIF into
-**code scanning**, surfacing as alerts with `tool.name == "Scorecard"`
-(rule ids like `FuzzingID`, `security_severity_level` populated). Our repos run
-the `openssf-scorecard` workflow, which publishes to code scanning rather than
-the public API.
+Scorecard results are **also** present in **code scanning** as alerts with
+`tool.name == "Scorecard"` (per-check findings with `security_severity_level`),
+for any repo running the `openssf-scorecard` workflow — broader coverage than
+the external API, but per-check, not an aggregate score.
 
-**Decision impact:** the Scorecard table is sourced from the code-scanning
-sweep, partitioned by `tool.name`, **not** from `securityscorecards.dev`. Keep
-the external API only as an optional enrichment if/when a repo is in the public
-dataset.
+**Decision impact:** the Scorecard table prefers the **external API aggregate
+score** (inverted, lower = worse) where available (`200`), falls back to
+**code-scanning Scorecard findings** (count/severity) where the external API
+404s but the workflow runs, and is a **nag** where neither exists
+(e.g. `github2gerrit-action`: external 404 + 0 Scorecard code-scanning alerts).
+This also resolves the earlier "where does the 0–10 score come from" question.
 
-### 2. The code-scanning endpoint multiplexes tools — partition by `tool.name`
+### 2. Code scanning multiplexes THREE tools — and zizmor dominates
 
-`/code-scanning/alerts` returns findings from **all** uploaded analysis tools,
-not just CodeQL. On `lfreleng-actions` the open code-scanning alerts are
-predominantly `Scorecard`, with CodeQL (and potentially `zizmor`, `actionlint`,
-etc.) mixed in.
+The org-bulk code-scanning sweep (first page of 100 open alerts) split as:
 
-**Decision impact:** the v1 signals must **partition the single code-scanning
-sweep by `tool.name`**:
+- **zizmor: 47** (`severity` error:15, warning:32 — no `security_severity_level`)
+- **Scorecard: 33** (high:12, medium:17, low:4)
+- **CodeQL: 20** (all medium)
 
-- `tool.name == "CodeQL"` → the CodeQL / code-scanning table.
-- `tool.name == "Scorecard"` → the Scorecard table.
-- other tools → out of v1 scope (candidate for a future "other scanners"
-  section); must not leak into the CodeQL table.
+So `/code-scanning/alerts` multiplexes **CodeQL, Scorecard and zizmor** (the
+GitHub Actions security linter), with **zizmor the single largest contributor**.
+Partitioning by `tool.name` is mandatory; treating the feed as "CodeQL" would be
+badly wrong. Note the per-repo view for the five demanding repos showed *only*
+Scorecard alerts — their CodeQL/zizmor findings are clean, so the org-bulk
+CodeQL/zizmor volume comes from other repos in the estate.
 
-Treating "all code-scanning alerts" as "CodeQL" would be wrong and would inflate
-the CodeQL table with Scorecard/quality findings.
+**Open decision (needs your call):** zizmor is out of the current v1 scope but
+is the dominant signal. Options: (a) keep v1 as the four agreed tables and bin
+zizmor under a future "other scanners" section; (b) **promote zizmor to a fifth
+v1 table** given its volume and that it is a real GHA-workflow security signal.
 
-### 3. Scorecard aggregate score (0–10) is not in code-scanning alerts
+### 3. Severity ranking keys confirmed (including the fallback)
 
-Code scanning exposes Scorecard's **per-check findings** (with
-`security_severity_level`), but **not** the aggregate 0–10 score. The score
-lives in the Scorecard SARIF run properties / the external API (which 404s).
-
-**Open question:** the Scorecard table metric likely shifts from "score
-ascending" to **failing-check count / severity** (worst-first), unless we parse
-the score from the SARIF run artifact. To be decided after a follow-up probe.
+- CodeQL & Scorecard populate `rule.security_severity_level`
+  (critical/high/medium/low) — the primary ranking key.
+- zizmor populates only `rule.severity` (error/warning) — exercising the
+  **fallback** path exactly as designed.
+- Dependabot: `security_advisory.severity` + `security_advisory.cvss.score`.
 
 ## Gaps — not yet observed (need targeted follow-up probes)
 
@@ -98,15 +106,14 @@ sides of the enabled-probe contract are unconfirmed:
 Follow-up: pick repos known to lack each feature (or a throwaway/private repo)
 and re-run with explicit `--repo` to capture each negative status code.
 
-## Spike refinements to make next
+## Spike refinements made / still to make
 
-- Partition and **report code-scanning counts by `tool.name`** in the matrix
-  (so CodeQL vs Scorecard volumes are visible directly).
-- Probe a **deliberately under-configured repo** to capture the disabled/404
-  cases above.
-- Investigate the **Scorecard aggregate score** source (SARIF run properties vs
-  external API) and decide the Scorecard metric.
-- Capture **full first-page** alert samples (the current `scrub()` truncates
-  lists to two entries — good for shape, insufficient for volume/fixtures).
-- Inspect a **Dependabot org-bulk** page for the canonical `severity`/`cvss`
-  location to finalise the ranking key.
+- ✅ Partition and report code-scanning counts by `tool.name` + severity in the
+  matrix (done; surfaced zizmor).
+- ✅ Capture a fuller first page (list cap raised to 25; code-scanning page
+  size raised to 100) for representative tool mix.
+- ⏳ Probe a **deliberately under-configured repo** to capture the disabled/404
+  enabled-probe cases above.
+- ✅ Scorecard aggregate score source resolved: external API where covered,
+  code-scanning Scorecard findings otherwise.
+- ⏳ Decide zizmor scope (fifth v1 table vs deferred).
