@@ -314,6 +314,35 @@ def probe_code_scanning(client: httpx.Client, org: str, repo: str) -> list[Probe
         )
     )
 
+    # CodeQL can run via *advanced* setup (a workflow) even when default-setup
+    # reports not-configured, and code scanning can carry other tools' SARIF
+    # regardless. The authoritative "is CodeQL enabled" probe is therefore the
+    # presence of CodeQL analyses, not the default-setup state.
+    analyses = get(
+        client,
+        f"{GITHUB_API}/repos/{slug}/code-scanning/analyses",
+        tool_name="CodeQL",
+        per_page=1,
+    )
+    has_codeql = analyses.status_code == 200 and bool(analyses.json())
+    results.append(
+        ProbeResult(
+            signal="code-scanning",
+            scope="per-repo",
+            target=slug,
+            endpoint=f"/repos/{slug}/code-scanning/analyses?tool_name=CodeQL",
+            status=analyses.status_code,
+            ok=analyses.status_code == 200,
+            enabled_hint=(
+                f"CodeQL analyses present={has_codeql}"
+                if analyses.status_code == 200
+                else interpret_status(analyses.status_code)
+            ),
+            note="authoritative CodeQL enabled-probe",
+            rate_remaining=analyses.headers.get("x-ratelimit-remaining"),
+        )
+    )
+
     alerts = get(client, f"{GITHUB_API}/repos/{slug}/code-scanning/alerts", per_page=100, state="open")
     items = alerts.json() if alerts.status_code == 200 else None
     count = len(items) if isinstance(items, list) else None

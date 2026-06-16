@@ -91,20 +91,44 @@ v1 table** given its volume and that it is a real GHA-workflow security signal.
   **fallback** path exactly as designed.
 - Dependabot: `security_advisory.severity` + `security_advisory.cvss.score`.
 
-## Gaps — not yet observed (need targeted follow-up probes)
+### 4. The CodeQL enabled-probe is `analyses` presence, not `default-setup`
 
-The sampled repos all had tooling enabled and were clean, so the **negative**
-sides of the enabled-probe contract are unconfirmed:
+Probing simple shell action repos exposed that **`default-setup=not-configured`
+does not mean "no code scanning"**. `github-security-report-action`,
+`maven-stage-prep-action` and `openstack-cron-action` all report
+`default-setup=not-configured` (CodeQL default setup off) yet still carry
+code-scanning alerts — entirely from Scorecard and zizmor SARIF uploads.
+`openstack-cron-action` has 24 code-scanning alerts (11 Scorecard, 13 zizmor)
+and **zero** CodeQL.
 
-- secret scanning `404` (feature disabled) — predicted but not seen.
-- Dependabot `hasVulnerabilityAlertsEnabled == false` — not seen.
-- code scanning `default-setup` `not-configured` / a repo with no CodeQL — not
-  seen.
-- a repo where code scanning is entirely absent (to confirm the
-  empty-list-vs-disabled disambiguation end to end).
+A dedicated probe — `/code-scanning/analyses?tool_name=CodeQL` — disambiguates
+cleanly: the not-configured repos return `present=False` (CodeQL genuinely off
+→ nag), while `default-setup=configured` repos return `present=True` (enabled).
+CodeQL can also run via *advanced* setup with default-setup still
+not-configured, so analyses presence is the **authoritative** signal.
 
-Follow-up: pick repos known to lack each feature (or a throwaway/private repo)
-and re-run with explicit `--repo` to capture each negative status code.
+**Decision impact:**
+
+- CodeQL enabled-probe = **presence of CodeQL analyses**, not `default-setup`.
+- The CodeQL table counts only alerts with `tool.name == "CodeQL"`. Example:
+  `dependamerge` has 4 code-scanning alerts but **0 CodeQL** (all Scorecard),
+  so it is CodeQL-clean — using the raw code-scanning count would wrongly brand
+  it a CodeQL offender. The same per-tool filtering applies to the Scorecard
+  and zizmor tables.
+
+## Gaps — not yet observed (need a different org)
+
+Every repo sampled across the estate has **secret scanning and Dependabot
+alerts enabled** (org-level default): secret scanning always returned
+`200 []` and Dependabot always `hasVulnerabilityAlertsEnabled == true`. So the
+**negative** sides of those probes — secret scanning `404` (disabled) and
+Dependabot `false` — are not observable within `lfreleng-actions`. They must
+still be implemented defensively for external consumers, but we cannot capture
+a live local fixture for them; a different org or a deliberately disabled
+throwaway repo would be needed.
+
+Resolved by the shell-action probe: CodeQL `default-setup=not-configured` with
+no CodeQL analyses (the disabled CodeQL case) is now captured.
 
 ## Spike refinements made / still to make
 
@@ -112,8 +136,11 @@ and re-run with explicit `--repo` to capture each negative status code.
   matrix (done; surfaced zizmor).
 - ✅ Capture a fuller first page (list cap raised to 25; code-scanning page
   size raised to 100) for representative tool mix.
-- ⏳ Probe a **deliberately under-configured repo** to capture the disabled/404
-  enabled-probe cases above.
+- ⏳ Capture secret scanning `404` / Dependabot `false` — not possible in
+  `lfreleng-actions` (enabled org-wide); needs a different org. CodeQL
+  not-configured case is captured.
 - ✅ Scorecard aggregate score source resolved: external API where covered,
   code-scanning Scorecard findings otherwise.
-- ⏳ Decide zizmor scope (fifth v1 table vs deferred).
+- ✅ zizmor promoted to a fifth v1 table (decided).
+- ✅ CodeQL enabled-probe resolved: CodeQL analyses presence, with per-tool
+  alert filtering.

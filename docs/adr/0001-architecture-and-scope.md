@@ -49,14 +49,17 @@ load-bearing architecture:
    scanning and code scanning are REST. Prefer **org-bulk endpoints first**,
    per-repo fallback, with bounded async concurrency and backoff honouring
    `Retry-After`/secondary limits.
-3. **v1 scope = four ranked tables** (CodeQL/code scanning, Dependabot, secret
-   scanning, OpenSSF Scorecard) plus a boolean posture/coverage section. Every
+3. **v1 scope = five ranked tables** (CodeQL, OpenSSF Scorecard, zizmor,
+   Dependabot, secret scanning) plus a boolean posture/coverage section. The
+   single code-scanning sweep multiplexes CodeQL, Scorecard and zizmor, so it is
+   **partitioned by `tool.name`** and counts are filtered per tool. Every
    section is **best-effort and independently degradable** and never fails the
    whole run. **GitHub Code Quality is deferred** until a mature public API
    exists.
 4. **Four-state model per report type per repo:** offenders (table row) /
    clean (counted) / not-enabled (nag list) / unknown-permission (footnote).
-   Each signal declares an explicit enabled-probe.
+   Each signal declares an explicit enabled-probe — e.g. CodeQL enablement is
+   determined by the presence of CodeQL **analyses**, not `default-setup`.
 5. **Metrics are per-report-type**, severity-weighted where available (else flat
    count), with separate severity columns and worst-first hierarchical sorting
    (critical → high → medium → low; Scorecard sorts by score ascending).
@@ -106,5 +109,9 @@ load-bearing architecture:
 **Follow-up**
 
 - Execute Phase 0 and record results (capability matrix + golden fixtures).
+  *(First runs complete — see [`../phase0-findings.md`](../phase0-findings.md).
+  Confirmed org-bulk-first, the three-tool code-scanning split with zizmor as a
+  fifth table, the Scorecard dual source, and the CodeQL analyses enabled-probe.
+  Secret-scanning/Dependabot negative cases need a different org.)*
 - Revisit Code Quality when/if a public API ships (would be a new ADR).
 - Pin the Simple-DataTables CDN asset + add SRI rather than `@latest`.

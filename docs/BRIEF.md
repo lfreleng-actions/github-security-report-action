@@ -59,24 +59,25 @@ secret scanning and code scanning are REST).
 
 ## 4. Report scope (v1)
 
-Four **ranked tables**, each using the four-state model (§6), plus a boolean
+**Five ranked tables**, each using the four-state model (§6), plus a boolean
 **posture/coverage** section feeding nag lists:
 
 | Signal | Transport | Metric |
 |---|---|---|
-| Code scanning alerts (CodeQL) | REST (org-bulk preferred) | severity counts |
+| Code scanning alerts (CodeQL) | REST (org-bulk preferred), filtered `tool.name == "CodeQL"` | severity counts |
+| OpenSSF Scorecard | external API score (where covered) + code-scanning `tool.name == "Scorecard"` | score (inverted) / finding severity |
+| zizmor (GHA workflow linter) | code-scanning `tool.name == "zizmor"` | severity counts (`severity` error/warning) |
 | Dependabot alerts | GraphQL + REST org-bulk | severity counts |
 | Secret scanning alerts | REST (org-bulk preferred) | open count |
-| OpenSSF Scorecard | external API score (where covered) + code-scanning SARIF | score (inverted), see Phase 0 |
 
-> **Phase 0 correction:** the code-scanning sweep multiplexes **three** tools
-> (`CodeQL`, `Scorecard`, `zizmor`) and must be **partitioned by `tool.name`** —
-> CodeQL findings feed the CodeQL table, `Scorecard` findings the Scorecard
-> table. zizmor is currently the largest contributor and is an **open scope
-> decision** (possible fifth v1 table). Scorecard prefers the external
-> `securityscorecards.dev` aggregate score where the repo is covered and falls
-> back to code-scanning Scorecard findings otherwise. See
-> [`docs/phase0-findings.md`](phase0-findings.md).
+> **Phase 0 findings:** the single code-scanning sweep multiplexes **three**
+> tools (`CodeQL`, `Scorecard`, `zizmor`) and must be **partitioned by
+> `tool.name`** — each feeds its own table, and per-tool filtering of counts is
+> mandatory (e.g. a repo with code-scanning alerts that are all Scorecard is
+> CodeQL-clean). zizmor was the largest contributor in our estate and is now a
+> first-class v1 table. Scorecard prefers the external `securityscorecards.dev`
+> aggregate score where the repo is covered and falls back to code-scanning
+> Scorecard findings otherwise. See [`docs/phase0-findings.md`](phase0-findings.md).
 
 Posture booleans (no ranking, feed coverage/nag): Security policy, Private
 vulnerability reporting, Security advisories, etc.
@@ -122,11 +123,18 @@ global):
 **Enabled-probe contract** (each signal declares its own probe; Phase 0 locks
 exact rules):
 
-- Code scanning → `code-scanning/default-setup` (`configured`) or presence of
-  `code-scanning/analyses` (alerts `[]` alone is ambiguous).
+- CodeQL → **presence of `code-scanning/analyses?tool_name=CodeQL`** (the
+  authoritative probe). `default-setup` is **insufficient**: Phase 0 found
+  `not-configured` repos that still carry code-scanning alerts from other
+  tools, and CodeQL can run via advanced setup with `default-setup` off.
+- Scorecard / zizmor → presence of their respective `tool.name` analyses /
+  workflow. Counts for every code-scanning-derived table are **filtered by
+  `tool.name`** — a repo whose code-scanning alerts are all Scorecard is
+  CodeQL-clean.
 - Secret scanning → **404 on alerts = disabled** vs `[]` = enabled-clean.
-- Dependabot → `hasVulnerabilityAlertsEnabled` / 403 = disabled.
-- Scorecard → presence of scorecard workflow/published result.
+  (Enabled org-wide across `lfreleng-actions`; negative case needs another org.)
+- Dependabot → `hasVulnerabilityAlertsEnabled` / 403 = disabled. (Also enabled
+  org-wide in our estate.)
 
 ## 7. Repository scope and exclusions
 
@@ -302,14 +310,14 @@ First spike run recorded in [`docs/phase0-findings.md`](phase0-findings.md).
   aggregate score where the repo is covered (4/5 demanding repos), falling back
   to code-scanning Scorecard findings; nag where neither exists.
 - ✅ Code scanning multiplexes `CodeQL` + `Scorecard` + `zizmor`; partition by
-  `tool.name` confirmed mandatory.
+  `tool.name` confirmed mandatory; **zizmor promoted to a fifth v1 table**.
 - ✅ Severity ranking keys confirmed (`security_severity_level` primary,
   `severity` fallback exercised by zizmor).
-- ⏳ **zizmor scope decision** — promote to a fifth v1 table (it dominates the
-  feed) or defer to a future "other scanners" section.
-- ⏳ Enabled-probe **negative** cases (secret scanning 404, Dependabot
-  `false`, code scanning `not-configured`) not yet observed — need a
-  deliberately under-configured repo.
+- ✅ CodeQL enabled-probe resolved: **CodeQL analyses presence** (not
+  `default-setup`), with per-tool alert filtering.
+- ⏳ Secret scanning `404` / Dependabot `false` negative cases not observable
+  in `lfreleng-actions` (enabled org-wide) — implement defensively; needs a
+  different org for a live fixture.
 - ⏳ Confirm Code Quality remains API-less (keep deferred).
 
 ## 18. Decision log (this session)
@@ -330,7 +338,8 @@ First spike run recorded in [`docs/phase0-findings.md`](phase0-findings.md).
     Simple-DataTables.
 13. Action runtime: auto `local` on PR, else pinned PyPI via `uvx`.
 14. Adopt `dependamerge` CI/release verbatim.
-15. v1 = 4 ranked tables + boolean posture; best-effort degradation.
+15. v1 = 5 ranked tables (CodeQL, Scorecard, zizmor, Dependabot, secret
+    scanning) + boolean posture; best-effort degradation.
 16. Daily 09:00 UTC cron; Pages daily; Slack on `report_day`; `force_notify`.
 17. Enabled-probe contract per signal; fourth unknown/insufficient bucket.
 18. Org-bulk-first + per-repo fallback; bounded async + backoff; classic PAT.
