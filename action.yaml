@@ -71,7 +71,7 @@ runs:
   steps:
     - name: "Set up uv"
       # yamllint disable-line rule:line-length
-      uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v7.2.1
+      uses: astral-sh/setup-uv@803947b9bd8e9f986429fa0c5a41c367cd732b41  # v7.2.1
 
     - name: "Run github-security-report"
       id: run

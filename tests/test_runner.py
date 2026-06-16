@@ -24,24 +24,36 @@ def _sig(state: RepoState, **counts: int) -> RepoSignal:
 
 class TestResolveMode:
     def test_explicit_org(self) -> None:
-        assert runner.resolve_mode("org", has_org_config=True, detected_repo=None) is Mode.ORG
+        assert (
+            runner.resolve_mode("org", has_org_config=True, detected_repo=None)
+            is Mode.ORG
+        )
 
     def test_explicit_org_without_config_errors(self) -> None:
         with pytest.raises(ModeError):
             runner.resolve_mode("org", has_org_config=False, detected_repo=None)
 
     def test_explicit_repo(self) -> None:
-        assert runner.resolve_mode("repo", has_org_config=False, detected_repo=("o", "r")) is Mode.REPO
+        assert (
+            runner.resolve_mode("repo", has_org_config=False, detected_repo=("o", "r"))
+            is Mode.REPO
+        )
 
     def test_explicit_repo_without_detection_errors(self) -> None:
         with pytest.raises(ModeError):
             runner.resolve_mode("repo", has_org_config=False, detected_repo=None)
 
     def test_auto_prefers_org(self) -> None:
-        assert runner.resolve_mode("auto", has_org_config=True, detected_repo=("o", "r")) is Mode.ORG
+        assert (
+            runner.resolve_mode("auto", has_org_config=True, detected_repo=("o", "r"))
+            is Mode.ORG
+        )
 
     def test_auto_falls_back_to_repo(self) -> None:
-        assert runner.resolve_mode("auto", has_org_config=False, detected_repo=("o", "r")) is Mode.REPO
+        assert (
+            runner.resolve_mode("auto", has_org_config=False, detected_repo=("o", "r"))
+            is Mode.REPO
+        )
 
     def test_auto_errors_when_nothing(self) -> None:
         with pytest.raises(ModeError):
@@ -63,7 +75,9 @@ class TestShouldFail:
         assert not runner.should_fail(signals, "critical")  # high < critical
 
     def test_clean_never_fails(self) -> None:
-        assert not runner.should_fail([_sig(RepoState.CLEAN), _sig(RepoState.NAG)], "low")
+        assert not runner.should_fail(
+            [_sig(RepoState.CLEAN), _sig(RepoState.NAG)], "low"
+        )
 
 
 class TestActionsIO:

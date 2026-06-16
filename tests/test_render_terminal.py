@@ -26,7 +26,9 @@ def _repo(name: str) -> Repo:
 
 
 def _org(signals: list[RepoSignal], count: int = 1) -> report.OrgReport:
-    return report.build_org_report("lfreleng-actions", signals, repo_count=count, generated_at=WHEN)
+    return report.build_org_report(
+        "lfreleng-actions", signals, repo_count=count, generated_at=WHEN
+    )
 
 
 def _render(org: report.OrgReport, width: int = 120) -> str:
@@ -36,7 +38,12 @@ def _render(org: report.OrgReport, width: int = 120) -> str:
 
 
 def test_offender_table_rendered() -> None:
-    sig = RepoSignal(_repo("bad"), SignalType.CODEQL, RepoState.OFFENDER, SeverityCounts(critical=1, high=2))
+    sig = RepoSignal(
+        _repo("bad"),
+        SignalType.CODEQL,
+        RepoState.OFFENDER,
+        SeverityCounts(critical=1, high=2),
+    )
     out = _render(_org([sig]))
     assert "Security report: lfreleng-actions" in out
     assert "CodeQL" in out
@@ -57,7 +64,13 @@ def test_clean_nag_unknown_notes() -> None:
 
 
 def test_scorecard_score_shown() -> None:
-    sig = RepoSignal(_repo("r"), SignalType.SCORECARD, RepoState.OFFENDER, SeverityCounts(high=1), score=6.5)
+    sig = RepoSignal(
+        _repo("r"),
+        SignalType.SCORECARD,
+        RepoState.OFFENDER,
+        SeverityCounts(high=1),
+        score=6.5,
+    )
     out = _render(_org([sig]))
     assert "6.5" in out
 
@@ -65,4 +78,4 @@ def test_scorecard_score_shown() -> None:
 def test_all_sections_present() -> None:
     out = _render(_org([]))
     for signal in report.SIGNAL_ORDER:
-        assert signal.title in out
+        assert signal.heading in out

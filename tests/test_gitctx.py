@@ -9,7 +9,9 @@ from github_security_report import gitctx
 
 class TestParseRemoteUrl:
     def test_ssh(self) -> None:
-        assert gitctx.parse_remote_url("git@github.com:lfreleng-actions/dependamerge.git") == (
+        assert gitctx.parse_remote_url(
+            "git@github.com:lfreleng-actions/dependamerge.git"
+        ) == (
             "lfreleng-actions",
             "dependamerge",
         )

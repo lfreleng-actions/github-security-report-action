@@ -67,7 +67,7 @@ load-bearing architecture:
    classic PAT (the ephemeral `GITHUB_TOKEN` cannot read org-wide security
    data) and produces Pages + Slack. Repo mode is a degraded, self-contained PR
    gate using `GITHUB_TOKEN` for the current repo only — job summary + outputs
-   + a fail-threshold, no Pages/Slack.
+   - a fail-threshold, no Pages/Slack.
 7. **Four presentation surfaces** from one canonical dataset: GitHub Pages
    (full results, Simple-DataTables, Jinja2 card index — canonical), Slack
    (code-fenced top-N + Pages link, gated to `report_day`), job summary (repo

@@ -24,7 +24,9 @@ def _repo(name: str) -> Repo:
 
 
 def _org(signals: list[RepoSignal], count: int = 1) -> report.OrgReport:
-    return report.build_org_report("lfreleng-actions", signals, repo_count=count, generated_at=WHEN)
+    return report.build_org_report(
+        "lfreleng-actions", signals, repo_count=count, generated_at=WHEN
+    )
 
 
 def test_payload_shape() -> None:
@@ -35,7 +37,9 @@ def test_payload_shape() -> None:
 
 
 def test_offenders_are_code_fenced() -> None:
-    sig = RepoSignal(_repo("bad"), SignalType.CODEQL, RepoState.OFFENDER, SeverityCounts(critical=1))
+    sig = RepoSignal(
+        _repo("bad"), SignalType.CODEQL, RepoState.OFFENDER, SeverityCounts(critical=1)
+    )
     blocks = slack.render_org_blocks(_org([sig]), top_n=10, pages_url=None)
     codeql = next(b for b in blocks if "CodeQL" in b.get("text", {}).get("text", ""))
     assert "```" in codeql["text"]["text"]
@@ -44,7 +48,12 @@ def test_offenders_are_code_fenced() -> None:
 
 def test_top_n_limits_code_fence_rows() -> None:
     signals = [
-        RepoSignal(_repo(f"r{i}"), SignalType.CODEQL, RepoState.OFFENDER, SeverityCounts(high=i))
+        RepoSignal(
+            _repo(f"r{i}"),
+            SignalType.CODEQL,
+            RepoState.OFFENDER,
+            SeverityCounts(high=i),
+        )
         for i in range(1, 6)
     ]
     blocks = slack.render_org_blocks(_org(signals, count=5), top_n=2, pages_url=None)
@@ -55,7 +64,9 @@ def test_top_n_limits_code_fence_rows() -> None:
 
 
 def test_pages_link_context() -> None:
-    blocks = slack.render_org_blocks(_org([]), top_n=10, pages_url="https://x.github.io/r/")
+    blocks = slack.render_org_blocks(
+        _org([]), top_n=10, pages_url="https://x.github.io/r/"
+    )
     context = blocks[-1]
     assert context["type"] == "context"
     assert "https://x.github.io/r/" in context["elements"][0]["text"]

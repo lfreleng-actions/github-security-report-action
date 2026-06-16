@@ -134,6 +134,40 @@ disallow_untyped_defs = false
 ignore_missing_imports = true
 exclude = ["src/github_security_report/_version.py"]
 
+[tool.basedpyright]
+pythonVersion = "3.10"
+pythonPlatform = "All"
+typeCheckingMode = "standard"
+exclude = ["src/github_security_report/_version.py"]
+# Third-party imports cannot be resolved in the pre-commit.ci sandbox.
+reportMissingImports = false
+reportMissingModuleSource = false
+reportMissingTypeStubs = false
+# Typer uses Option() calls in parameter defaults by design.
+reportCallInDefaultInitializer = false
+reportUnusedParameter = false
+reportUnusedCallResult = false
+reportPrivateUsage = false
+reportAny = false
+reportExplicitAny = false
+reportUnknownParameterType = false
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportUnknownLambdaType = false
+reportUnknownArgumentType = false
+reportMissingParameterType = false
+reportUnannotatedClassAttribute = false
+reportImplicitStringConcatenation = false
+reportImplicitOverride = false
+reportUnnecessaryIsInstance = false
+reportUnnecessaryComparison = false
+reportUnreachable = false
+reportConstantRedefinition = false
+reportAttributeAccessIssue = false
+reportOperatorIssue = false
+reportIndexIssue = false
+reportArgumentType = false
+
 [tool.ruff]
 target-version = "py310"
 line-length = 88

@@ -10,10 +10,14 @@ from github_security_report.models import Repo, RepoState, SignalType
 
 
 def _repo(name: str = "r") -> Repo:
-    return Repo(name, f"lfreleng-actions/{name}", f"https://github.com/lfreleng-actions/{name}")
+    return Repo(
+        name, f"lfreleng-actions/{name}", f"https://github.com/lfreleng-actions/{name}"
+    )
 
 
-def _cs_alert(tool: str, security_severity: str | None = None, sarif: str | None = None) -> dict:
+def _cs_alert(
+    tool: str, security_severity: str | None = None, sarif: str | None = None
+) -> dict:
     return {
         "tool": {"name": tool},
         "rule": {"security_severity_level": security_severity, "severity": sarif},
@@ -100,11 +104,15 @@ class TestSecretScanning:
         assert _by_signal(facts)[SignalType.SECRET_SCANNING].state is RepoState.NAG
 
     def test_enabled_clean(self) -> None:
-        facts = RepoFacts(repo=_repo(), secret_scanning_status=200, secret_scanning_open=0)
+        facts = RepoFacts(
+            repo=_repo(), secret_scanning_status=200, secret_scanning_open=0
+        )
         assert _by_signal(facts)[SignalType.SECRET_SCANNING].state is RepoState.CLEAN
 
     def test_offender(self) -> None:
-        facts = RepoFacts(repo=_repo(), secret_scanning_status=200, secret_scanning_open=3)
+        facts = RepoFacts(
+            repo=_repo(), secret_scanning_status=200, secret_scanning_open=3
+        )
         sig = _by_signal(facts)[SignalType.SECRET_SCANNING]
         assert sig.state is RepoState.OFFENDER
         assert sig.counts.total == 3

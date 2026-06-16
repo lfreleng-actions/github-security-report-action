@@ -11,3 +11,7 @@ rules:
     # prettier forces 1 space comment separator
     min-spaces-from-content: 1
     level: error
+  # Long lines are unavoidable in action/workflow descriptions, pinned action
+  # SHAs, and embedded shell; treat as a warning so they do not fail linting.
+  line-length:
+    level: warning

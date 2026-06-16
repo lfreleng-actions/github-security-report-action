@@ -32,21 +32,41 @@ def test_version() -> None:
 @respx.mock
 def test_org_mode_writes_pages(tmp_path: object) -> None:
     respx.get(url__startswith=f"{API}/orgs/o/repos").mock(
-        return_value=httpx.Response(200, json=[{"name": "r", "full_name": "o/r", "html_url": "https://github.com/o/r", "size": 10}])
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "name": "r",
+                    "full_name": "o/r",
+                    "html_url": "https://github.com/o/r",
+                    "size": 10,
+                }
+            ],
+        )
     )
     for kind in ("code-scanning", "dependabot", "secret-scanning"):
-        respx.get(url__startswith=f"{API}/orgs/o/{kind}/alerts").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(url__startswith=f"{API}/orgs/o/{kind}/alerts").mock(
+            return_value=httpx.Response(200, json=[])
+        )
     respx.get(url__startswith=f"{API}/repos/o/r/code-scanning/analyses").mock(
         return_value=httpx.Response(200, json=[{"tool": {"name": "CodeQL"}}])
     )
-    respx.get(url__startswith=f"{API}/repos/o/r/secret-scanning/alerts").mock(return_value=httpx.Response(200, json=[]))
-    respx.post(f"{API}/graphql").mock(
-        return_value=httpx.Response(200, json={"data": {"repository": {"hasVulnerabilityAlertsEnabled": True}}})
+    respx.get(url__startswith=f"{API}/repos/o/r/secret-scanning/alerts").mock(
+        return_value=httpx.Response(200, json=[])
     )
-    respx.get(url__startswith=f"{SCORECARD}/projects/github.com/o/r").mock(return_value=httpx.Response(404))
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(
+            200, json={"data": {"repository": {"hasVulnerabilityAlertsEnabled": True}}}
+        )
+    )
+    respx.get(url__startswith=f"{SCORECARD}/projects/github.com/o/r").mock(
+        return_value=httpx.Response(404)
+    )
 
     out = tmp_path / "site"
-    result = cli.invoke(app, ["report", "--org", "o", "--output-dir", str(out), "--no-color"])
+    result = cli.invoke(
+        app, ["report", "--org", "o", "--output-dir", str(out), "--no-color"]
+    )
     assert result.exit_code == 0, result.stdout
     assert (out / "index.html").exists()
     assert (out / "o" / "report.html").exists()
@@ -57,27 +77,74 @@ def test_org_mode_writes_pages(tmp_path: object) -> None:
 @respx.mock
 def test_repo_mode_fail_threshold(tmp_path: object) -> None:
     respx.get(f"{API}/repos/o/r").mock(
-        return_value=httpx.Response(200, json={"name": "r", "full_name": "o/r", "html_url": "https://github.com/o/r"})
+        return_value=httpx.Response(
+            200,
+            json={
+                "name": "r",
+                "full_name": "o/r",
+                "html_url": "https://github.com/o/r",
+            },
+        )
     )
     respx.get(url__startswith=f"{API}/repos/o/r/code-scanning/analyses").mock(
         return_value=httpx.Response(200, json=[{"tool": {"name": "CodeQL"}}])
     )
     respx.get(url__startswith=f"{API}/repos/o/r/code-scanning/alerts").mock(
-        return_value=httpx.Response(200, json=[{"tool": {"name": "CodeQL"}, "rule": {"security_severity_level": "critical"}}])
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "tool": {"name": "CodeQL"},
+                    "rule": {"security_severity_level": "critical"},
+                }
+            ],
+        )
     )
-    respx.get(url__startswith=f"{API}/repos/o/r/secret-scanning/alerts").mock(return_value=httpx.Response(404))
+    respx.get(url__startswith=f"{API}/repos/o/r/secret-scanning/alerts").mock(
+        return_value=httpx.Response(404)
+    )
     respx.post(f"{API}/graphql").mock(
-        return_value=httpx.Response(200, json={"data": {"repository": {"hasVulnerabilityAlertsEnabled": False}}})
+        return_value=httpx.Response(
+            200, json={"data": {"repository": {"hasVulnerabilityAlertsEnabled": False}}}
+        )
     )
-    respx.get(url__startswith=f"{API}/repos/o/r/dependabot/alerts").mock(return_value=httpx.Response(200, json=[]))
-    respx.get(url__startswith=f"{SCORECARD}/projects/github.com/o/r").mock(return_value=httpx.Response(404))
+    respx.get(url__startswith=f"{API}/repos/o/r/dependabot/alerts").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    respx.get(url__startswith=f"{SCORECARD}/projects/github.com/o/r").mock(
+        return_value=httpx.Response(404)
+    )
 
     # A critical CodeQL alert with --fail-threshold high must fail the run.
-    result = cli.invoke(app, ["report", "--repo", "o/r", "--scope", "repo", "--fail-threshold", "high", "--no-color"])
+    result = cli.invoke(
+        app,
+        [
+            "report",
+            "--repo",
+            "o/r",
+            "--scope",
+            "repo",
+            "--fail-threshold",
+            "high",
+            "--no-color",
+        ],
+    )
     assert result.exit_code == 1, result.stdout
 
     # The same findings with threshold none must pass.
-    ok = cli.invoke(app, ["report", "--repo", "o/r", "--scope", "repo", "--fail-threshold", "none", "--no-color"])
+    ok = cli.invoke(
+        app,
+        [
+            "report",
+            "--repo",
+            "o/r",
+            "--scope",
+            "repo",
+            "--fail-threshold",
+            "none",
+            "--no-color",
+        ],
+    )
     assert ok.exit_code == 0, ok.stdout
 
 

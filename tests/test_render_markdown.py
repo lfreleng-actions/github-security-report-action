@@ -24,12 +24,19 @@ def _repo(name: str) -> Repo:
 
 
 def _org(signals: list[RepoSignal], count: int = 1) -> report.OrgReport:
-    return report.build_org_report("lfreleng-actions", signals, repo_count=count, generated_at=WHEN)
+    return report.build_org_report(
+        "lfreleng-actions", signals, repo_count=count, generated_at=WHEN
+    )
 
 
 class TestSection:
     def test_offender_table_codeql(self) -> None:
-        sig = RepoSignal(_repo("bad"), SignalType.CODEQL, RepoState.OFFENDER, SeverityCounts(critical=1, high=2))
+        sig = RepoSignal(
+            _repo("bad"),
+            SignalType.CODEQL,
+            RepoState.OFFENDER,
+            SeverityCounts(critical=1, high=2),
+        )
         out = markdown.render_section(_org([sig]).sections[0])
         assert "## CodeQL" in out
         assert "| Repository | Critical | High | Medium | Low | Total |" in out
@@ -37,15 +44,30 @@ class TestSection:
         assert "| 1 | 2 | 0 | 0 | 3 |" in out
 
     def test_secret_scanning_single_count_column(self) -> None:
-        sig = RepoSignal(_repo("leaky"), SignalType.SECRET_SCANNING, RepoState.OFFENDER, SeverityCounts(critical=4))
-        section = next(s for s in _org([sig]).sections if s.signal is SignalType.SECRET_SCANNING)
+        sig = RepoSignal(
+            _repo("leaky"),
+            SignalType.SECRET_SCANNING,
+            RepoState.OFFENDER,
+            SeverityCounts(critical=4),
+        )
+        section = next(
+            s for s in _org([sig]).sections if s.signal is SignalType.SECRET_SCANNING
+        )
         out = markdown.render_section(section)
         assert "| Repository | Open |" in out
         assert "| [leaky](https://github.com/o/leaky) | 4 |" in out
 
     def test_scorecard_has_score_column(self) -> None:
-        sig = RepoSignal(_repo("repo"), SignalType.SCORECARD, RepoState.OFFENDER, SeverityCounts(high=1), score=6.5)
-        section = next(s for s in _org([sig]).sections if s.signal is SignalType.SCORECARD)
+        sig = RepoSignal(
+            _repo("repo"),
+            SignalType.SCORECARD,
+            RepoState.OFFENDER,
+            SeverityCounts(high=1),
+            score=6.5,
+        )
+        section = next(
+            s for s in _org([sig]).sections if s.signal is SignalType.SCORECARD
+        )
         out = markdown.render_section(section)
         assert "| Repository | Score | Critical | High | Medium | Low |" in out
         assert "| 6.5 | 0 | 1 | 0 | 0 |" in out
@@ -75,6 +97,8 @@ class TestOrgAndReport:
         assert "2026-06-16 09:00 UTC" in out
 
     def test_full_report_multi_org(self) -> None:
-        r = report.Report(orgs=[_org([], count=1), _org([], count=2)], generated_at=WHEN)
+        r = report.Report(
+            orgs=[_org([], count=1), _org([], count=2)], generated_at=WHEN
+        )
         out = markdown.render_report(r)
         assert out.count("# Security report: lfreleng-actions") == 2

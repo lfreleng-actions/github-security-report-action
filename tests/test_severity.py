@@ -49,9 +49,7 @@ class TestFromCodeScanning:
         # zizmor-style: only severity present
         assert severity.from_code_scanning(None, "error") is Severity.HIGH
         # CodeQL/Scorecard-style: security_severity_level wins over severity
-        assert (
-            severity.from_code_scanning("critical", "warning") is Severity.CRITICAL
-        )
+        assert severity.from_code_scanning("critical", "warning") is Severity.CRITICAL
 
     def test_defaults_to_low_when_unrecognised(self) -> None:
         assert severity.from_code_scanning(None, None) is Severity.LOW

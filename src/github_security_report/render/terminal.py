@@ -45,13 +45,13 @@ def _row(sig: RepoSignal) -> list[str]:
 
 def render_section(section: SignalSection, console: Console) -> None:
     if section.offenders:
-        table = Table(title=section.signal.title, title_justify="left", title_style="bold")
+        table = Table(title=section.signal.heading, title_justify="left", title_style="bold")
         _add_columns(table, section.signal)
         for sig in section.offenders:
             table.add_row(*_row(sig))
         console.print(table)
     else:
-        console.print(f"[bold]{section.signal.title}[/bold]")
+        console.print(f"[bold]{section.signal.heading}[/bold]")
     notes = []
     if section.clean_count:
         notes.append(f"[green]✓ {section.clean_count} clean[/green]")

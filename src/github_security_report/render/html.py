@@ -35,7 +35,7 @@ def _row_cells(sig: RepoSignal) -> list[str]:
 
 def _section_context(section: SignalSection) -> dict:
     return {
-        "title": section.signal.title,
+        "title": section.signal.heading,
         "columns": markdown._columns(section.signal),
         "rows": [
             {"name": s.repo.name, "url": s.repo.html_url, "cells": _row_cells(s)}
@@ -49,12 +49,14 @@ def _section_context(section: SignalSection) -> dict:
 
 def render_org_html(org: OrgReport) -> str:
     template = _env.get_template("report.html.j2")
-    return template.render(
-        org=org.org,
-        repo_count=org.repo_count,
-        generated_at=org.generated_at.strftime("%Y-%m-%d %H:%M UTC"),
-        sections=[_section_context(s) for s in org.sections],
-        datatables_version=DATATABLES_VERSION,
+    return str(
+        template.render(
+            org=org.org,
+            repo_count=org.repo_count,
+            generated_at=org.generated_at.strftime("%Y-%m-%d %H:%M UTC"),
+            sections=[_section_context(s) for s in org.sections],
+            datatables_version=DATATABLES_VERSION,
+        )
     )
 
 
@@ -63,10 +65,12 @@ def render_index_html(orgs: list[OrgReport]) -> str:
     generated_at = (
         max(o.generated_at for o in orgs).strftime("%Y-%m-%d %H:%M UTC") if orgs else ""
     )
-    return template.render(
-        orgs=[
-            {"name": o.org, "slug": slugify(o.org), "repo_count": o.repo_count}
-            for o in orgs
-        ],
-        generated_at=generated_at,
+    return str(
+        template.render(
+            orgs=[
+                {"name": o.org, "slug": slugify(o.org), "repo_count": o.repo_count}
+                for o in orgs
+            ],
+            generated_at=generated_at,
+        )
     )

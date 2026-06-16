@@ -24,7 +24,13 @@ def _repo(name: str) -> Repo:
 
 
 def _offender(name: str, signal: SignalType, **kwargs: object) -> RepoSignal:
-    counts = SeverityCounts(**{k: v for k, v in kwargs.items() if k in {"critical", "high", "medium", "low"}})
+    counts = SeverityCounts(
+        **{
+            k: v
+            for k, v in kwargs.items()
+            if k in {"critical", "high", "medium", "low"}
+        }
+    )
     return RepoSignal(
         repo=_repo(name),
         signal=signal,

@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 import httpx
 import pytest
 import respx
@@ -15,7 +17,7 @@ SCORECARD = "https://api.securityscorecards.dev"
 
 
 @pytest.fixture
-async def client() -> GitHubClient:
+async def client() -> AsyncIterator[GitHubClient]:
     c = GitHubClient("test-token", concurrency=4)
     yield c
     await c.aclose()
@@ -29,7 +31,13 @@ async def test_list_org_repos_skips_disabled_and_empty(client: GitHubClient) -> 
             json=[
                 {"name": "live", "full_name": "o/live", "html_url": "u", "size": 10},
                 {"name": "empty", "full_name": "o/empty", "html_url": "u", "size": 0},
-                {"name": "dead", "full_name": "o/dead", "html_url": "u", "size": 5, "disabled": True},
+                {
+                    "name": "dead",
+                    "full_name": "o/dead",
+                    "html_url": "u",
+                    "size": 5,
+                    "disabled": True,
+                },
             ],
         )
     )
@@ -87,11 +95,17 @@ async def test_secret_scanning_status(client: GitHubClient) -> None:
 
 
 @respx.mock
-async def test_dependabot_enabled_true_false_and_indeterminate(client: GitHubClient) -> None:
+async def test_dependabot_enabled_true_false_and_indeterminate(
+    client: GitHubClient,
+) -> None:
     route = respx.post(f"{API}/graphql")
     route.side_effect = [
-        httpx.Response(200, json={"data": {"repository": {"hasVulnerabilityAlertsEnabled": True}}}),
-        httpx.Response(200, json={"data": {"repository": {"hasVulnerabilityAlertsEnabled": False}}}),
+        httpx.Response(
+            200, json={"data": {"repository": {"hasVulnerabilityAlertsEnabled": True}}}
+        ),
+        httpx.Response(
+            200, json={"data": {"repository": {"hasVulnerabilityAlertsEnabled": False}}}
+        ),
         httpx.Response(200, json={"data": {"repository": None}}),
     ]
     assert await client.dependabot_enabled("o", "r") is True

@@ -35,7 +35,11 @@ class FakeClient:
     """In-memory stand-in satisfying ClientProtocol."""
 
     def __init__(self) -> None:
-        self.repos = [_repo("dependamerge"), _repo("a-fork", fork=True), _repo("git-configure-action")]
+        self.repos = [
+            _repo("dependamerge"),
+            _repo("a-fork", fork=True),
+            _repo("git-configure-action"),
+        ]
         self.bulk = {
             "code-scanning": [
                 _cs_alert("dependamerge", "Scorecard", "high"),
@@ -44,7 +48,10 @@ class FakeClient:
             "dependabot": [],
             "secret-scanning": [],
         }
-        self.tools = {"dependamerge": {"CodeQL", "Scorecard"}, "git-configure-action": {"CodeQL"}}
+        self.tools = {
+            "dependamerge": {"CodeQL", "Scorecard"},
+            "git-configure-action": {"CodeQL"},
+        }
         self.scores = {"dependamerge": 8.2}
 
     async def list_org_repos(self, org: str) -> list[Repo]:
@@ -118,7 +125,9 @@ class FakeRepoClient:
     async def code_scanning_tools(self, org: str, repo: str) -> tuple[int, set[str]]:
         return 200, {"CodeQL", "Scorecard"}
 
-    async def repo_code_scanning_alerts(self, org: str, repo: str) -> tuple[int, list[dict]]:
+    async def repo_code_scanning_alerts(
+        self, org: str, repo: str
+    ) -> tuple[int, list[dict]]:
         return 200, [_cs_alert(repo, "CodeQL", "high")]
 
     async def repo_secret_scanning(self, org: str, repo: str) -> tuple[int, int]:
@@ -127,7 +136,9 @@ class FakeRepoClient:
     async def dependabot_enabled(self, org: str, repo: str) -> bool | None:
         return False  # disabled on the fork
 
-    async def repo_dependabot_alerts(self, org: str, repo: str) -> tuple[int, list[dict]]:
+    async def repo_dependabot_alerts(
+        self, org: str, repo: str
+    ) -> tuple[int, list[dict]]:
         return 200, []
 
     async def scorecard_score(self, org: str, repo: str) -> tuple[int, float | None]:
@@ -138,7 +149,9 @@ async def test_collect_repo_mixed_state() -> None:
     repo, signals = await collect.collect_repo(FakeRepoClient(), "o", "dependamerge")
     assert repo is not None
     by_signal = {s.signal: s for s in signals}
-    assert by_signal[SignalType.CODEQL].state is RepoState.OFFENDER  # a high CodeQL alert
+    assert (
+        by_signal[SignalType.CODEQL].state is RepoState.OFFENDER
+    )  # a high CodeQL alert
     assert by_signal[SignalType.SECRET_SCANNING].state is RepoState.NAG  # 404 disabled
     assert by_signal[SignalType.DEPENDABOT].state is RepoState.NAG  # disabled
     assert by_signal[SignalType.SCORECARD].score == 6.1

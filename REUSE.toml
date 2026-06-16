@@ -1,0 +1,19 @@
+version = 1
+
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Licensing for files that cannot carry an inline SPDX header (generated
+# lockfiles, PEP 561 marker, Jinja templates) so REUSE lint passes.
+
+[[annotations]]
+path = [
+    "uv.lock",
+    "*.lock",
+    ".markdownlint.json",
+    "src/github_security_report/py.typed",
+    "src/github_security_report/templates/**",
+    "**/__pycache__/**",
+]
+SPDX-License-Identifier = "Apache-2.0"
+SPDX-FileCopyrightText = "2026 The Linux Foundation"

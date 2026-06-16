@@ -221,7 +221,7 @@ class GitHubClient:
             f"{self._api_url}/repos/{org}/{repo}/secret-scanning/alerts",
             params={"per_page": 1, "state": "open"},
         )
-        return resp.status_code
+        return int(resp.status_code)
 
     async def dependabot_enabled(self, org: str, repo: str) -> bool | None:
         """Whether Dependabot alerts are enabled (None when indeterminate)."""

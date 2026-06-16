@@ -98,7 +98,9 @@ class TestBuildConfig:
 
     def test_rejects_zero_top_n(self) -> None:
         with pytest.raises(ConfigError):
-            config.build_config({"organizations": [{"name": "o"}], "report": {"top_n": 0}})
+            config.build_config(
+                {"organizations": [{"name": "o"}], "report": {"top_n": 0}}
+            )
 
 
 class TestLoads:

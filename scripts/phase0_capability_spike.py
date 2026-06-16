@@ -63,7 +63,6 @@ import httpx
 from rich.console import Console
 from rich.table import Table
 
-
 GITHUB_API = "https://api.github.com"
 GRAPHQL_API = "https://api.github.com/graphql"
 SCORECARD_API = "https://api.securityscorecards.dev"
@@ -107,9 +106,7 @@ class RepoMeta:
 
     @property
     def in_default_scope(self) -> bool:
-        return not (
-            self.archived or self.fork or self.is_template or self.disabled
-        )
+        return not (self.archived or self.fork or self.is_template or self.disabled)
 
 
 @dataclass
@@ -247,9 +244,7 @@ def code_scanning_breakdown(items: list[dict[str, Any]]) -> str:
         by_tool[tool] += 1
         by_tool_sev[(tool, sev)] += 1
     tools = " ".join(f"{t}:{n}" for t, n in sorted(by_tool.items()))
-    sevs = " ".join(
-        f"{t}/{s}:{n}" for (t, s), n in sorted(by_tool_sev.items())
-    )
+    sevs = " ".join(f"{t}/{s}:{n}" for (t, s), n in sorted(by_tool_sev.items()))
     return f"[{tools}] {sevs}"
 
 
@@ -303,11 +298,13 @@ def probe_code_scanning(client: httpx.Client, org: str, repo: str) -> list[Probe
             signal="code-scanning",
             scope="per-repo",
             target=slug,
-            endpoint="/repos/{}/code-scanning/default-setup".format(slug),
+            endpoint=f"/repos/{slug}/code-scanning/default-setup",
             status=setup.status_code,
             ok=setup.status_code == 200,
             enabled_hint=(
-                f"default-setup={state}" if state else interpret_status(setup.status_code)
+                f"default-setup={state}"
+                if state
+                else interpret_status(setup.status_code)
             ),
             note="enabled-probe candidate",
             rate_remaining=setup.headers.get("x-ratelimit-remaining"),
@@ -343,7 +340,12 @@ def probe_code_scanning(client: httpx.Client, org: str, repo: str) -> list[Probe
         )
     )
 
-    alerts = get(client, f"{GITHUB_API}/repos/{slug}/code-scanning/alerts", per_page=100, state="open")
+    alerts = get(
+        client,
+        f"{GITHUB_API}/repos/{slug}/code-scanning/alerts",
+        per_page=100,
+        state="open",
+    )
     items = alerts.json() if alerts.status_code == 200 else None
     count = len(items) if isinstance(items, list) else None
     breakdown = ""
@@ -370,7 +372,12 @@ def probe_code_scanning(client: httpx.Client, org: str, repo: str) -> list[Probe
 
 def probe_secret_scanning(client: httpx.Client, org: str, repo: str) -> ProbeResult:
     slug = f"{org}/{repo}"
-    resp = get(client, f"{GITHUB_API}/repos/{slug}/secret-scanning/alerts", per_page=5, state="open")
+    resp = get(
+        client,
+        f"{GITHUB_API}/repos/{slug}/secret-scanning/alerts",
+        per_page=5,
+        state="open",
+    )
     items = resp.json() if resp.status_code == 200 else None
     count = len(items) if isinstance(items, list) else None
     if isinstance(items, list) and items:
@@ -468,7 +475,8 @@ def probe_scorecard(org: str, repo: str) -> ProbeResult:
         status=resp.status_code,
         ok=resp.status_code == 200,
         enabled_hint=(
-            f"score={score}" if score is not None
+            f"score={score}"
+            if score is not None
             else "no published scorecard (=> nag, not clean)"
             if resp.status_code == 404
             else interpret_status(resp.status_code)
@@ -481,10 +489,21 @@ def probe_scorecard(org: str, repo: str) -> ProbeResult:
 # --------------------------------------------------------------------------- #
 def render_matrix(report: SpikeReport) -> None:
     table = Table(title=f"Capability matrix — {report.org}", show_lines=False)
-    for col in ("Signal", "Scope", "Target", "Status", "Items", "Interpretation", "Tool/severity mix", "RL"):
+    for col in (
+        "Signal",
+        "Scope",
+        "Target",
+        "Status",
+        "Items",
+        "Interpretation",
+        "Tool/severity mix",
+        "RL",
+    ):
         table.add_column(col, overflow="fold")
     for r in report.results:
-        status_style = "green" if r.ok else "yellow" if r.status in (None, 404) else "red"
+        status_style = (
+            "green" if r.ok else "yellow" if r.status in (None, 404) else "red"
+        )
         table.add_row(
             r.signal,
             r.scope,

@@ -46,7 +46,7 @@ def _table(section: SignalSection) -> list[str]:
 
 
 def render_section(section: SignalSection) -> str:
-    lines = [f"## {section.signal.title}", ""]
+    lines = [f"## {section.signal.heading}", ""]
     if section.offenders:
         lines.extend(_table(section))
         lines.append("")

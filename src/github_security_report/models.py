@@ -27,7 +27,7 @@ class SignalType(str, Enum):
     SECRET_SCANNING = "secret_scanning"
 
     @property
-    def title(self) -> str:
+    def heading(self) -> str:
         return {
             SignalType.CODEQL: "CodeQL",
             SignalType.SCORECARD: "OpenSSF Scorecard",

@@ -39,7 +39,12 @@ class TestBuildOrgReport:
 
     def test_buckets_offenders_clean_nag_unknown(self) -> None:
         signals = [
-            RepoSignal(_repo("a"), SignalType.CODEQL, RepoState.OFFENDER, SeverityCounts(high=2)),
+            RepoSignal(
+                _repo("a"),
+                SignalType.CODEQL,
+                RepoState.OFFENDER,
+                SeverityCounts(high=2),
+            ),
             RepoSignal(_repo("b"), SignalType.CODEQL, RepoState.CLEAN),
             RepoSignal(_repo("c"), SignalType.CODEQL, RepoState.NAG),
             RepoSignal(_repo("d"), SignalType.CODEQL, RepoState.UNKNOWN),
@@ -53,20 +58,38 @@ class TestBuildOrgReport:
 
     def test_offenders_ranked_worst_first(self) -> None:
         signals = [
-            RepoSignal(_repo("low"), SignalType.CODEQL, RepoState.OFFENDER, SeverityCounts(low=9)),
-            RepoSignal(_repo("crit"), SignalType.CODEQL, RepoState.OFFENDER, SeverityCounts(critical=1)),
+            RepoSignal(
+                _repo("low"),
+                SignalType.CODEQL,
+                RepoState.OFFENDER,
+                SeverityCounts(low=9),
+            ),
+            RepoSignal(
+                _repo("crit"),
+                SignalType.CODEQL,
+                RepoState.OFFENDER,
+                SeverityCounts(critical=1),
+            ),
         ]
         org = report.build_org_report("o", signals, repo_count=2, generated_at=WHEN)
-        assert [s.repo.name for s in _sections(org)[SignalType.CODEQL].offenders] == ["crit", "low"]
+        assert [s.repo.name for s in _sections(org)[SignalType.CODEQL].offenders] == [
+            "crit",
+            "low",
+        ]
 
     def test_top_n_limits_offenders(self) -> None:
         signals = [
-            RepoSignal(_repo(f"r{i}"), SignalType.CODEQL, RepoState.OFFENDER, SeverityCounts(high=i))
+            RepoSignal(
+                _repo(f"r{i}"),
+                SignalType.CODEQL,
+                RepoState.OFFENDER,
+                SeverityCounts(high=i),
+            )
             for i in range(1, 6)
         ]
-        section = _sections(report.build_org_report("o", signals, repo_count=5, generated_at=WHEN))[
-            SignalType.CODEQL
-        ]
+        section = _sections(
+            report.build_org_report("o", signals, repo_count=5, generated_at=WHEN)
+        )[SignalType.CODEQL]
         assert len(section.offenders) == 5  # full list retained
         assert len(section.top(2)) == 2  # only Slack truncates
 
@@ -84,7 +107,12 @@ class TestBuildOrgReport:
             repo=_repo("dependamerge"),
             code_scanning_status=200,
             code_scanning_tools={"CodeQL", "Scorecard"},
-            code_scanning_alerts=[{"tool": {"name": "Scorecard"}, "rule": {"security_severity_level": "high"}}],
+            code_scanning_alerts=[
+                {
+                    "tool": {"name": "Scorecard"},
+                    "rule": {"security_severity_level": "high"},
+                }
+            ],
             secret_scanning_status=200,
             dependabot_enabled=True,
             scorecard_status=200,

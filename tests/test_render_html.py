@@ -30,7 +30,12 @@ def _org(name: str, signals: list[RepoSignal], count: int = 1) -> report.OrgRepo
 class TestOrgHtml:
     def test_contains_sections_and_data(self) -> None:
         signals = [
-            RepoSignal(_repo("bad"), SignalType.CODEQL, RepoState.OFFENDER, SeverityCounts(critical=1)),
+            RepoSignal(
+                _repo("bad"),
+                SignalType.CODEQL,
+                RepoState.OFFENDER,
+                SeverityCounts(critical=1),
+            ),
             RepoSignal(_repo("nagme"), SignalType.CODEQL, RepoState.NAG),
         ]
         out = html.render_org_html(_org("lfreleng-actions", signals, count=2))
@@ -57,7 +62,9 @@ class TestOrgHtml:
             )
         ]
         out = html.render_org_html(_org("o", signals))
-        assert "<x>" not in out.replace("&lt;x&gt;", "")  # only the escaped form appears
+        assert "<x>" not in out.replace(
+            "&lt;x&gt;", ""
+        )  # only the escaped form appears
 
 
 class TestIndexHtml:

@@ -72,7 +72,7 @@ def render_org_blocks(org: OrgReport, *, top_n: int, pages_url: str | None) -> l
     ]
     for section in org.sections:
         summary = _summary(section)
-        text = f"*{section.signal.title}* — {summary}"
+        text = f"*{section.signal.heading}* — {summary}"
         if section.offenders:
             table = _fixed_table(section, top_n)
             text += f"\n```\n{table}\n```"
