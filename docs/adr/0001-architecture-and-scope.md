@@ -109,9 +109,10 @@ load-bearing architecture:
 **Follow-up**
 
 - Execute Phase 0 and record results (capability matrix + golden fixtures).
-  *(First runs complete — see [`../phase0-findings.md`](../phase0-findings.md).
-  Confirmed org-bulk-first, the three-tool code-scanning split with zizmor as a
-  fifth table, the Scorecard dual source, and the CodeQL analyses enabled-probe.
-  Secret-scanning/Dependabot negative cases need a different org.)*
+  *(Complete — see [`../phase0-findings.md`](../phase0-findings.md). Confirmed
+  org-bulk-first, the three-tool code-scanning split with zizmor as a fifth
+  table, the Scorecard dual source, the CodeQL analyses enabled-probe, and —
+  via the `modeseven-lfreleng-actions` fork org — all four-state status
+  semantics (404 = disabled, 403 = unknown).)*
 - Revisit Code Quality when/if a public API ships (would be a new ADR).
 - Pin the Simple-DataTables CDN asset + add SRI rather than `@latest`.

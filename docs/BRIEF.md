@@ -126,15 +126,21 @@ exact rules):
 - CodeQL → **presence of `code-scanning/analyses?tool_name=CodeQL`** (the
   authoritative probe). `default-setup` is **insufficient**: Phase 0 found
   `not-configured` repos that still carry code-scanning alerts from other
-  tools, and CodeQL can run via advanced setup with `default-setup` off.
+  tools, and the `dependamerge` fork runs CodeQL via advanced setup with
+  `default-setup` off. Code scanning **entirely disabled** → `404` on both
+  `/alerts` and `/analyses` (vs `200 []` = enabled-clean).
 - Scorecard / zizmor → presence of their respective `tool.name` analyses /
   workflow. Counts for every code-scanning-derived table are **filtered by
   `tool.name`** — a repo whose code-scanning alerts are all Scorecard is
   CodeQL-clean.
-- Secret scanning → **404 on alerts = disabled** vs `[]` = enabled-clean.
-  (Enabled org-wide across `lfreleng-actions`; negative case needs another org.)
-- Dependabot → `hasVulnerabilityAlertsEnabled` / 403 = disabled. (Also enabled
-  org-wide in our estate.)
+- Secret scanning → **404 on alerts = disabled** (confirmed on the fork org)
+  vs `[]` = enabled-clean.
+- Dependabot → `hasVulnerabilityAlertsEnabled` (`false` = disabled, confirmed
+  on the fork org) / 403 = insufficient permission.
+
+**Status-code mapping** (owning PAT): `404` = disabled → nag; `403` =
+insufficient permission / GHAS unlicensed → unknown bucket; `200`+data =
+offender; `200`+empty = clean.
 
 ## 7. Repository scope and exclusions
 
@@ -314,10 +320,12 @@ First spike run recorded in [`docs/phase0-findings.md`](phase0-findings.md).
 - ✅ Severity ranking keys confirmed (`security_severity_level` primary,
   `severity` fallback exercised by zizmor).
 - ✅ CodeQL enabled-probe resolved: **CodeQL analyses presence** (not
-  `default-setup`), with per-tool alert filtering.
-- ⏳ Secret scanning `404` / Dependabot `false` negative cases not observable
-  in `lfreleng-actions` (enabled org-wide) — implement defensively; needs a
-  different org for a live fixture.
+  `default-setup`), with per-tool alert filtering. Fork org confirmed CodeQL
+  via advanced setup (`default-setup=not-configured` + analyses present).
+- ✅ All four-state status semantics confirmed via the
+  `modeseven-lfreleng-actions` fork org: secret scanning `404` = disabled,
+  Dependabot `false` = disabled, code scanning disabled → `404` on alerts +
+  analyses. `403` reserved for the unknown/insufficient-permission bucket.
 - ⏳ Confirm Code Quality remains API-less (keep deferred).
 
 ## 18. Decision log (this session)

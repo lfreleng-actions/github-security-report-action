@@ -116,19 +116,37 @@ not-configured, so analyses presence is the **authoritative** signal.
   it a CodeQL offender. The same per-tool filtering applies to the Scorecard
   and zizmor tables.
 
-## Gaps — not yet observed (need a different org)
+## Negative cases — captured via the fork org
 
-Every repo sampled across the estate has **secret scanning and Dependabot
-alerts enabled** (org-level default): secret scanning always returned
-`200 []` and Dependabot always `hasVulnerabilityAlertsEnabled == true`. So the
-**negative** sides of those probes — secret scanning `404` (disabled) and
-Dependabot `false` — are not observable within `lfreleng-actions`. They must
-still be implemented defensively for external consumers, but we cannot capture
-a live local fixture for them; a different org or a deliberately disabled
-throwaway repo would be needed.
+The fork org `modeseven-lfreleng-actions` (forks default to security features
+**off**) supplied every negative case that `lfreleng-actions` could not, and
+added a new signal:
 
-Resolved by the shell-action probe: CodeQL `default-setup=not-configured` with
-no CodeQL analyses (the disabled CodeQL case) is now captured.
+- **Secret scanning disabled** → `/secret-scanning/alerts` returns **`404`**
+  (vs `200 []` when enabled-clean). Confirmed across all sampled forks.
+- **Dependabot disabled** → GraphQL `hasVulnerabilityAlertsEnabled == false`.
+  Confirmed across all sampled forks.
+- **Code scanning entirely disabled** → **both** `/code-scanning/alerts` *and*
+  `/code-scanning/analyses` return **`404`** (not `200 []`). So a `404` here is
+  the authoritative "code scanning off" signal; `200 []` means enabled-clean.
+- **CodeQL via advanced setup** → the `dependamerge` fork reports
+  `default-setup=not-configured` **yet** `analyses present=True` (CodeQL runs
+  from a workflow). This is the decisive proof that `default-setup` is the
+  wrong probe and **analyses presence** is authoritative.
+
+The `dependamerge` fork is ideal **mixed-state** fixture material: CodeQL and
+Scorecard enabled (score 6.1, advanced setup) while secret scanning (`404`) and
+Dependabot (`false`) are disabled — every per-signal state in one repo,
+confirming the four-state model is genuinely per-report-type, not global.
+
+**Status-code semantics for the four-state model** (with an owning PAT):
+`404` = feature disabled → **nag**; `403` = insufficient permission / GHAS
+unlicensed → **unknown** bucket; `200` with data → offender; `200` empty →
+clean.
+
+Note: org-bulk endpoints still returned data on the fork org (code-scanning 84,
+Dependabot 23) — other repos there have features enabled — so org-bulk is not a
+proxy for per-repo enablement; the per-signal enabled-probe is still required.
 
 ## Spike refinements made / still to make
 
@@ -136,9 +154,9 @@ no CodeQL analyses (the disabled CodeQL case) is now captured.
   matrix (done; surfaced zizmor).
 - ✅ Capture a fuller first page (list cap raised to 25; code-scanning page
   size raised to 100) for representative tool mix.
-- ⏳ Capture secret scanning `404` / Dependabot `false` — not possible in
-  `lfreleng-actions` (enabled org-wide); needs a different org. CodeQL
-  not-configured case is captured.
+- ✅ Secret scanning `404` / Dependabot `false` negative cases captured via the
+  `modeseven-lfreleng-actions` fork org; code scanning disabled → `404` on
+  both alerts and analyses. All four-state status semantics now confirmed.
 - ✅ Scorecard aggregate score source resolved: external API where covered,
   code-scanning Scorecard findings otherwise.
 - ✅ zizmor promoted to a fifth v1 table (decided).
