@@ -136,7 +136,11 @@ def rank_offenders(signals: list[RepoSignal]) -> list[RepoSignal]:
 
     Alert-based signals sort by the hierarchical severity key descending, with
     total as a tiebreaker. Scorecard sorts by aggregate score ascending (lower
-    == worse). Repo name breaks remaining ties for stable output.
+    == worse). Repo name breaks remaining ties, ascending.
+
+    Numeric components are negated so the whole sort runs ascending (no
+    ``reverse=True``); that keeps the name tiebreaker correctly ascending even
+    when one name is a prefix of another.
     """
     offenders = [s for s in signals if s.is_offender]
     if not offenders:
@@ -152,11 +156,12 @@ def rank_offenders(signals: list[RepoSignal]) -> list[RepoSignal]:
         )
     return sorted(
         offenders,
-        key=lambda s: (s.counts.sort_key, s.counts.total, _neg_name(s.repo.name)),
-        reverse=True,
+        key=lambda s: (
+            -s.counts.critical,
+            -s.counts.high,
+            -s.counts.medium,
+            -s.counts.low,
+            -s.counts.total,
+            s.repo.name,
+        ),
     )
-
-
-def _neg_name(name: str) -> tuple[int, ...]:
-    """Invert a name for use under ``reverse=True`` so names stay ascending."""
-    return tuple(-ord(c) for c in name)

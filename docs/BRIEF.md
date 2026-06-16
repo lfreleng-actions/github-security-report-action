@@ -149,7 +149,8 @@ public and private (visibility follows the token; external consumers
 considered even though our own org has few/no private repos). Empty/disabled
 repos auto-skipped.
 
-- **Per-org `exclude` list** — mandatory (mirrors `.github/excluded-repos.json`).
+- **Per-org `exclude` list** — optional (mirrors `.github/excluded-repos.json`);
+  omitted in the minimal config and defaults to empty.
 - **Archived** — fully excluded by default; opt back in via config option +
   CLI flag.
 - **Test repos** — excluded by default; opt back in via `--include-test`.

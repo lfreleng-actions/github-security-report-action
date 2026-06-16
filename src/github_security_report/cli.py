@@ -128,16 +128,17 @@ def _load_config(config_file: str | None, config_data: str | None, org: str | No
 async def _run_org(cfg: Config, *, console: Console, output_dir: Path | None,
                    pages_url: str | None, top_n: int, force_notify: bool) -> int:
     now = dt.datetime.now(dt.timezone.utc)
-    org_reports: list[OrgReport] = []
+    pairs: list[tuple[OrgConfig, OrgReport]] = []
     for org_cfg in cfg.organizations:
         token = config.resolve_token(org_cfg)
         if not token:
             console.print(f"[red]No token in ${org_cfg.token_env} for {org_cfg.name}[/red]")
             return 2
         async with GitHubClient(token) as client:
-            org_reports.append(
-                await collect.collect_org(client, org_cfg, org_cfg.report, generated_at=now)
+            pairs.append(
+                (org_cfg, await collect.collect_org(client, org_cfg, org_cfg.report, generated_at=now))
             )
+    org_reports = [report for _, report in pairs]
 
     report = Report(orgs=org_reports, generated_at=now)
     term_render.render_orgs(org_reports, console)
@@ -151,17 +152,30 @@ async def _run_org(cfg: Config, *, console: Console, output_dir: Path | None,
         (output_dir / ".nojekyll").write_text("", encoding="utf-8")
         console.print(f"[green]Wrote reports to {output_dir}[/green]")
 
-    should_notify = cfg.slack.report_day.should_notify(now=now.date(), force=force_notify)
-    outputs = {"should_notify": "true" if should_notify else "false"}
-    if should_notify and cfg.slack.channel:
-        payload = slack_render.render_payload(
-            org_reports, channel=cfg.slack.channel, top_n=top_n, pages_url=pages_url
-        )
+    # Slack gating and channel are per organisation: an org notifies on its own
+    # report_day, to its own channel. Notifying orgs are grouped by channel so
+    # each distinct channel receives one digest covering its orgs.
+    by_channel: dict[str, list[OrgReport]] = {}
+    for org_cfg, org_report in pairs:
+        if not org_cfg.slack.report_day.should_notify(now=now.date(), force=force_notify):
+            continue
+        if not org_cfg.slack.channel:
+            continue
+        by_channel.setdefault(org_cfg.slack.channel, []).append(org_report)
+
+    outputs = {"should_notify": "true" if by_channel else "false", "failed": "false"}
+    payloads = [
+        slack_render.render_payload(orgs, channel=channel, top_n=top_n, pages_url=pages_url)
+        for channel, orgs in by_channel.items()
+    ]
+    if payloads:
+        # The single action output carries the first channel's payload (the
+        # common single-channel case); every payload is also written to disk.
+        outputs["slack_payload"] = json.dumps(payloads[0])
         if output_dir:
-            (output_dir / "slack-payload.json").write_text(
-                json.dumps(payload, indent=2) + "\n", encoding="utf-8"
-            )
-        outputs["slack_payload"] = json.dumps(payload)
+            for payload in payloads:
+                dest = output_dir / f"slack-payload-{payload['channel']}.json"
+                dest.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     runner.write_github_output(outputs)
     runner.append_step_summary(md_render.render_report(report))
     return 0
@@ -183,7 +197,11 @@ async def _run_repo(owner: str, repo_name: str, *, token_env: str, console: Cons
     term_render.render_org(org, console)
 
     runner.append_step_summary(md_render.render_org(org))
-    runner.write_github_output(_repo_outputs(signals, fail_threshold))
+    outputs = _repo_outputs(signals, fail_threshold)
+    # Keep the action's declared outputs stable across modes.
+    outputs["should_notify"] = "false"
+    outputs["slack_payload"] = ""
+    runner.write_github_output(outputs)
 
     if runner.should_fail(signals, fail_threshold):
         console.print(f"[red]Failing: findings at or above '{fail_threshold}'[/red]")

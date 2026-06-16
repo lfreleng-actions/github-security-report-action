@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 from enum import Enum
 
 from github_security_report.models import RepoSignal
@@ -107,14 +108,21 @@ def should_fail(signals: list[RepoSignal], threshold: str) -> bool:
 
 
 def write_github_output(values: dict[str, str], path: str | None = None) -> None:
-    """Append ``key=value`` pairs to ``$GITHUB_OUTPUT`` (multiline-safe)."""
+    """Append ``key=value`` pairs to ``$GITHUB_OUTPUT`` (multiline-safe).
+
+    Multiline values use a unique random delimiter per value, regenerated if it
+    ever collides with the value, to prevent output-file injection.
+    """
     target = path or os.environ.get("GITHUB_OUTPUT")
     if not target:
         return
     with open(target, "a", encoding="utf-8") as handle:
         for key, value in values.items():
             if "\n" in value:
-                handle.write(f"{key}<<__GSR_EOF__\n{value}\n__GSR_EOF__\n")
+                delimiter = f"ghadelim_{secrets.token_hex(16)}"
+                while delimiter in value:
+                    delimiter = f"ghadelim_{secrets.token_hex(16)}"
+                handle.write(f"{key}<<{delimiter}\n{value}\n{delimiter}\n")
             else:
                 handle.write(f"{key}={value}\n")
 

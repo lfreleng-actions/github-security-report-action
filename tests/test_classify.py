@@ -175,3 +175,14 @@ class TestScorecardSources:
         sig = _by_signal(facts)[SignalType.SCORECARD]
         assert sig.state is RepoState.OFFENDER
         assert sig.score is None
+
+    def test_transient_external_failure_is_unknown(self) -> None:
+        # scorecard_score returns status 0 on an httpx error; with no
+        # code-scanning Scorecard data this is indeterminate, not a nag.
+        facts = RepoFacts(
+            repo=_repo(),
+            code_scanning_status=200,
+            code_scanning_tools={"CodeQL"},
+            scorecard_status=0,
+        )
+        assert _by_signal(facts)[SignalType.SCORECARD].state is RepoState.UNKNOWN

@@ -49,7 +49,7 @@ def decide(
     exclude: frozenset[str] | set[str] | tuple[str, ...] = (),
 ) -> ScopeDecision:
     """Decide whether a single repository is in scope, with a reason."""
-    if repo.name in set(exclude):
+    if repo.name in exclude:
         return ScopeDecision(repo, False, "explicitly excluded")
     if repo.fork:
         return ScopeDecision(repo, False, "fork")

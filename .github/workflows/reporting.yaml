@@ -78,11 +78,17 @@ jobs:
             exit 0
           fi
           work="$(mktemp -d)"
-          git worktree add --orphan -b gh-pages-tmp "$work" 2>/dev/null || {
-            git fetch origin gh-pages || true
-            git worktree add "$work" gh-pages 2>/dev/null \
-              || git worktree add --detach "$work"
-          }
+          # Use an existing gh-pages branch if present; otherwise create a
+          # fresh orphan branch (no main history) inside a detached worktree.
+          # checkout --orphan is portable, unlike 'git worktree add --orphan'.
+          git fetch origin gh-pages 2>/dev/null || true
+          if git show-ref --verify --quiet refs/remotes/origin/gh-pages; then
+            git worktree add "$work" gh-pages
+          else
+            git worktree add --detach "$work"
+            git -C "$work" checkout --orphan gh-pages
+            git -C "$work" rm -rf . >/dev/null 2>&1 || true
+          fi
           # Replace contents wholesale with the freshly generated site.
           find "$work" -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
           cp -a site/. "$work"/

@@ -69,6 +69,11 @@ class GitHubClient:
                 "User-Agent": "github-security-report",
             },
         )
+        # Separate, UNAUTHENTICATED client for third-party endpoints (the
+        # external Scorecard API): the GitHub token must never be sent there.
+        self._ext_client = httpx.AsyncClient(
+            timeout=timeout, headers={"User-Agent": "github-security-report"}
+        )
 
     async def __aenter__(self) -> GitHubClient:
         return self
@@ -78,16 +83,30 @@ class GitHubClient:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+        await self._ext_client.aclose()
 
     # ------------------------------------------------------------------ #
     # Low-level request with backoff
     # ------------------------------------------------------------------ #
-    async def _request(self, method: str, url: str, **kwargs: object) -> httpx.Response:
-        """Issue a request, retrying on rate-limit responses with backoff."""
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        client: httpx.AsyncClient | None = None,
+        **kwargs: object,
+    ) -> httpx.Response:
+        """Issue a request, retrying on rate-limit responses with backoff.
+
+        ``client`` selects the transport (default: the authenticated GitHub
+        client). External calls pass the unauthenticated client so the GitHub
+        token is never leaked to third parties.
+        """
+        http = client or self._client
         attempt = 0
         while True:
             async with self._sem:
-                resp = await self._client.request(method, url, **kwargs)  # type: ignore[arg-type]
+                resp = await http.request(method, url, **kwargs)  # type: ignore[arg-type]
             if resp.status_code not in (403, 429):
                 return resp
             # Distinguish secondary/primary rate limiting from a genuine 403.
@@ -98,6 +117,9 @@ class GitHubClient:
                 return resp
             delay = float(retry_after) if retry_after else min(2**attempt, 60)
             log.warning("rate limited on %s; backing off %.0fs", url, delay)
+            # The discarded response must be closed; we are retrying and will
+            # not read its body, so leaving it open would leak a pool connection.
+            await resp.aclose()
             await asyncio.sleep(delay)
             attempt += 1
 
@@ -222,7 +244,7 @@ class GitHubClient:
         """External OpenSSF Scorecard aggregate score (status, score|None)."""
         url = f"{self._scorecard_url}/projects/github.com/{org}/{repo}"
         try:
-            resp = await self._request("GET", url)
+            resp = await self._request("GET", url, client=self._ext_client)
         except httpx.HTTPError as exc:  # external service; tolerate failure
             log.debug("scorecard request failed for %s/%s: %s", org, repo, exc)
             return 0, None

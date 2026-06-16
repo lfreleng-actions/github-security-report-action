@@ -20,10 +20,15 @@ from typing import Protocol
 from github_security_report import scope
 from github_security_report.classify import RepoFacts, classify_repo
 from github_security_report.config import OrgConfig, ReportConfig
-from github_security_report.models import Repo
+from github_security_report.models import Repo, RepoSignal
 from github_security_report.report import OrgReport, build_org_report
 
 log = logging.getLogger(__name__)
+
+# Per-repo probe tasks are created in batches of this size so very large orgs
+# do not allocate every task at once (HTTP concurrency is bounded separately by
+# the client semaphore).
+_REPO_BATCH = 50
 
 
 class ClientProtocol(Protocol):
@@ -113,13 +118,20 @@ async def collect_org(
     dependabot = _group_by_repo(dep_alerts)
     secret = _group_by_repo(secret_alerts)
 
-    # Bounded per-repo probes (the client caps real HTTP concurrency).
-    facts = await asyncio.gather(
-        *(
-            _facts_for_repo(client, org, repo, code_scanning, dependabot, secret)
-            for repo in in_scope
+    # Bounded per-repo probes. The client semaphore caps real HTTP concurrency;
+    # chunking the gather also bounds task creation so very large orgs
+    # (hundreds/thousands of repos) do not allocate every task at once.
+    facts: list[RepoFacts] = []
+    for start in range(0, len(in_scope), _REPO_BATCH):
+        batch = in_scope[start : start + _REPO_BATCH]
+        facts.extend(
+            await asyncio.gather(
+                *(
+                    _facts_for_repo(client, org, repo, code_scanning, dependabot, secret)
+                    for repo in batch
+                )
+            )
         )
-    )
 
     signals = [sig for repo_facts in facts for sig in classify_repo(repo_facts)]
     return build_org_report(
@@ -129,7 +141,7 @@ async def collect_org(
 
 async def collect_repo(
     client: RepoClientProtocol, owner: str, repo_name: str
-) -> tuple[Repo | None, list]:
+) -> tuple[Repo | None, list[RepoSignal]]:
     """Collect and classify a single repository (repo mode, ``GITHUB_TOKEN``).
 
     Uses only per-repo endpoints -- no org-bulk sweep and no org-level scope.
@@ -141,10 +153,16 @@ async def collect_repo(
         log.error("cannot read %s/%s (check token and permissions)", owner, repo_name)
         return None, []
     cs_status, cs_tools = await client.code_scanning_tools(owner, repo_name)
-    _, cs_alerts = await client.repo_code_scanning_alerts(owner, repo_name)
+    # Skip the alerts call when code scanning is disabled/indeterminate.
+    cs_alerts: list[dict] = []
+    if cs_status == 200:
+        _, cs_alerts = await client.repo_code_scanning_alerts(owner, repo_name)
     secret_status, secret_open = await client.repo_secret_scanning(owner, repo_name)
     dependabot_on = await client.dependabot_enabled(owner, repo_name)
-    _, dependabot_alerts = await client.repo_dependabot_alerts(owner, repo_name)
+    # Only fetch Dependabot alerts when the feature is enabled.
+    dependabot_alerts: list[dict] = []
+    if dependabot_on:
+        _, dependabot_alerts = await client.repo_dependabot_alerts(owner, repo_name)
     scorecard_status, score = await client.scorecard_score(owner, repo_name)
     facts = RepoFacts(
         repo=repo,

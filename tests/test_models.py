@@ -77,6 +77,13 @@ class TestRankOffenders:
         ranked = rank_offenders([a, b])
         assert [s.repo.name for s in ranked] == ["alpha", "zebra"]
 
+    def test_prefix_name_ties_sort_ascending(self) -> None:
+        # Regression: a name that is a prefix of another must still sort first.
+        a = _offender("aa", SignalType.CODEQL, high=1)
+        b = _offender("a", SignalType.CODEQL, high=1)
+        ranked = rank_offenders([a, b])
+        assert [s.repo.name for s in ranked] == ["a", "aa"]
+
     def test_scorecard_sorts_by_score_ascending(self) -> None:
         good = _offender("good", SignalType.SCORECARD, score=8.5)
         bad = _offender("bad", SignalType.SCORECARD, score=4.1)

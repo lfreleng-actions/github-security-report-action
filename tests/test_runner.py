@@ -78,7 +78,7 @@ class TestActionsIO:
         out = tmp_path / "out.txt"
         runner.write_github_output({"body": "line1\nline2"}, str(out))
         content = out.read_text()
-        assert "body<<__GSR_EOF__" in content
+        assert "body<<ghadelim_" in content  # unique per-value delimiter
         assert "line1\nline2" in content
 
     def test_append_step_summary(self, tmp_path: object) -> None:

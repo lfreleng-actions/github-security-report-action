@@ -119,8 +119,11 @@ def classify_scorecard(facts: RepoFacts) -> RepoSignal:
     if has_cs:
         state = RepoState.OFFENDER if counts.total else RepoState.CLEAN
         return RepoSignal(repo, SignalType.SCORECARD, state, counts=counts)
-    if facts.code_scanning_status == 403:
-        return RepoSignal(repo, SignalType.SCORECARD, RepoState.UNKNOWN, detail="insufficient permission")
+    # An indeterminate external request (transient error -> status 0, a 5xx, or
+    # a forbidden code-scanning probe) is unknown, not a definitive nag. Only a
+    # clean 404 with no code-scanning Scorecard data means "no results".
+    if facts.code_scanning_status == 403 or facts.scorecard_status == 0 or facts.scorecard_status >= 500:
+        return RepoSignal(repo, SignalType.SCORECARD, RepoState.UNKNOWN, detail="indeterminate")
     return RepoSignal(repo, SignalType.SCORECARD, RepoState.NAG, detail="no Scorecard results")
 
 
@@ -130,9 +133,12 @@ def classify_secret_scanning(facts: RepoFacts) -> RepoSignal:
         return RepoSignal(repo, SignalType.SECRET_SCANNING, RepoState.UNKNOWN, detail="insufficient permission")
     if facts.secret_scanning_status == 404:
         return RepoSignal(repo, SignalType.SECRET_SCANNING, RepoState.NAG, detail="secret scanning disabled")
-    # Flat open count; stored in counts so ranking (more == worse) works, but
-    # rendered as a single total (SignalType.uses_severity_columns is False).
-    counts = SeverityCounts(critical=facts.secret_scanning_open)
+    # Flat open count; stored as HIGH so ranking (more == worse) works and the
+    # repo-mode gate treats leaked secrets as serious, without conflating them
+    # with CRITICAL code findings (which would make --fail-threshold critical
+    # trip on any secret alert). Rendered as a single total because
+    # SignalType.uses_severity_columns is False for secret scanning.
+    counts = SeverityCounts(high=facts.secret_scanning_open)
     state = RepoState.OFFENDER if facts.secret_scanning_open else RepoState.CLEAN
     return RepoSignal(repo, SignalType.SECRET_SCANNING, state, counts=counts)
 

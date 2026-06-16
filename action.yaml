@@ -25,7 +25,7 @@ inputs:
   token:
     description: "GitHub token (classic PAT for org mode; GITHUB_TOKEN for repo mode)"
     required: false
-    default: ${{ github.token }}
+    default: ""
   token_env:
     description: "Environment variable name the tool reads the token from"
     required: false
@@ -80,7 +80,9 @@ runs:
         # Expose the token under the configured environment-variable name so
         # the tool resolves it by name (per-org token_env, default GITHUB_TOKEN).
         TOKEN_ENV: ${{ inputs.token_env }}
-        TOKEN_VALUE: ${{ inputs.token }}
+        # Input defaults are literal strings, so the github.token fallback is
+        # applied here in env: where the expression is evaluated.
+        TOKEN_VALUE: ${{ inputs.token || github.token }}
         INPUT_SCOPE: ${{ inputs.scope }}
         INPUT_CONFIG: ${{ inputs.config }}
         INPUT_ORG: ${{ inputs.org }}
@@ -95,6 +97,12 @@ runs:
         ACTION_PATH: ${{ github.action_path }}
       run: |
         # Run github-security-report
+        # Validate token_env is a strict shell identifier before exporting,
+        # so a malformed or crafted name cannot affect shell behaviour.
+        if ! printf '%s' "$TOKEN_ENV" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]*$'; then
+          echo "Error: token_env '$TOKEN_ENV' is not a valid environment-variable name" >&2
+          exit 1
+        fi
         export "${TOKEN_ENV}=${TOKEN_VALUE}"
 
         # Hybrid runtime: pull requests exercise the checked-out source so
