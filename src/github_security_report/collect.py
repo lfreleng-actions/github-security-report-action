@@ -17,9 +17,13 @@ import logging
 from collections import defaultdict
 from typing import Protocol
 
-from github_security_report import scope
+from github_security_report import rulesets, scope
 from github_security_report.classify import RepoFacts, classify_repo
-from github_security_report.config import OrgConfig, ReportConfig
+from github_security_report.config import (
+    DEFAULT_RULESET_WORKFLOWS,
+    OrgConfig,
+    ReportConfig,
+)
 from github_security_report.models import Repo, RepoSignal
 from github_security_report.report import OrgReport, build_org_report
 
@@ -36,6 +40,7 @@ class ClientProtocol(Protocol):
 
     async def list_org_repos(self, org: str) -> list[Repo]: ...
     async def org_bulk_alerts(self, org: str, kind: str) -> list[dict]: ...
+    async def org_workflow_rulesets(self, org: str) -> tuple[int, list[dict]]: ...
     async def code_scanning_tools(self, org: str, repo: str) -> tuple[int, set[str]]: ...
     async def secret_scanning_status(self, org: str, repo: str) -> int: ...
     async def dependabot_enabled(self, org: str, repo: str) -> bool | None: ...
@@ -51,6 +56,7 @@ class RepoClientProtocol(Protocol):
     async def repo_secret_scanning(self, org: str, repo: str) -> tuple[int, int]: ...
     async def dependabot_enabled(self, org: str, repo: str) -> bool | None: ...
     async def repo_dependabot_alerts(self, org: str, repo: str) -> tuple[int, list[dict]]: ...
+    async def repo_branch_rules(self, org: str, repo: str, branch: str) -> tuple[int, list[dict]]: ...
     async def scorecard_score(self, org: str, repo: str) -> tuple[int, float | None]: ...
 
 
@@ -71,6 +77,7 @@ async def _facts_for_repo(
     code_scanning: dict[str, list[dict]],
     dependabot: dict[str, list[dict]],
     secret: dict[str, list[dict]],
+    ruleset_signals: set[str],
 ) -> RepoFacts:
     cs_status, cs_tools = await client.code_scanning_tools(org, repo.name)
     secret_status = await client.secret_scanning_status(org, repo.name)
@@ -87,6 +94,7 @@ async def _facts_for_repo(
         dependabot_alerts=dependabot.get(repo.name, []),
         scorecard_status=scorecard_status,
         scorecard_score=score,
+        ruleset_signals=ruleset_signals,
     )
 
 
@@ -108,15 +116,35 @@ async def collect_org(
         exclude=org_cfg.exclude,
     )
 
-    # One org-bulk sweep per signal (concurrent).
-    cs_alerts, dep_alerts, secret_alerts = await asyncio.gather(
-        client.org_bulk_alerts(org, "code-scanning"),
-        client.org_bulk_alerts(org, "dependabot"),
-        client.org_bulk_alerts(org, "secret-scanning"),
+    # One org-bulk sweep per signal, plus the workflow-driven ruleset coverage
+    # (concurrent). Ruleset coverage degrades gracefully if the token cannot
+    # read org rulesets (e.g. 403): repos then fall back to per-repo evidence.
+    (cs_alerts, dep_alerts, secret_alerts), (rs_status, rs_details) = await asyncio.gather(
+        asyncio.gather(
+            client.org_bulk_alerts(org, "code-scanning"),
+            client.org_bulk_alerts(org, "dependabot"),
+            client.org_bulk_alerts(org, "secret-scanning"),
+        ),
+        client.org_workflow_rulesets(org),
     )
     code_scanning = _group_by_repo(cs_alerts)
     dependabot = _group_by_repo(dep_alerts)
     secret = _group_by_repo(secret_alerts)
+
+    workflow_rulesets = rulesets.parse_workflow_rulesets(rs_details)
+    if rs_status != 200:
+        log.warning(
+            "org rulesets unavailable for %s (status %s); ruleset-based tool "
+            "coverage disabled",
+            org,
+            rs_status,
+        )
+    coverage = {
+        repo.name: rulesets.signals_covered(
+            repo.name, workflow_rulesets, report_cfg.ruleset_workflows
+        )
+        for repo in in_scope
+    }
 
     # Bounded per-repo probes. The client semaphore caps real HTTP concurrency;
     # chunking the gather also bounds task creation so very large orgs
@@ -127,7 +155,10 @@ async def collect_org(
         facts.extend(
             await asyncio.gather(
                 *(
-                    _facts_for_repo(client, org, repo, code_scanning, dependabot, secret)
+                    _facts_for_repo(
+                        client, org, repo, code_scanning, dependabot, secret,
+                        coverage.get(repo.name, set()),
+                    )
                     for repo in batch
                 )
             )
@@ -164,6 +195,16 @@ async def collect_repo(
     if dependabot_on:
         _, dependabot_alerts = await client.repo_dependabot_alerts(owner, repo_name)
     scorecard_status, score = await client.scorecard_score(owner, repo_name)
+    # Ruleset coverage from the repo's effective branch rules (includes
+    # inherited org rulesets); repo-scoped tokens can read this endpoint.
+    rs_status, branch_rules = await client.repo_branch_rules(
+        owner, repo_name, repo.default_branch
+    )
+    ruleset_signals = (
+        rulesets.signals_from_branch_rules(branch_rules, DEFAULT_RULESET_WORKFLOWS)
+        if rs_status == 200
+        else set()
+    )
     facts = RepoFacts(
         repo=repo,
         code_scanning_status=cs_status,
@@ -175,5 +216,6 @@ async def collect_repo(
         dependabot_alerts=dependabot_alerts,
         scorecard_status=scorecard_status,
         scorecard_score=score,
+        ruleset_signals=ruleset_signals,
     )
     return repo, classify_repo(facts)

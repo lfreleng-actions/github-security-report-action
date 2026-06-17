@@ -153,3 +153,60 @@ async def test_genuine_403_not_retried(client: GitHubClient) -> None:
     )
     status, tools = await client.code_scanning_tools("o", "r")
     assert status == 403
+
+
+@respx.mock
+async def test_org_workflow_rulesets(client: GitHubClient) -> None:
+    respx.get(url__regex=r"orgs/o/rulesets($|\?)").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 1,
+                    "name": "Zizmor scans",
+                    "target": "branch",
+                    "enforcement": "active",
+                },
+                {
+                    "id": 2,
+                    "name": "Evaluate only",
+                    "target": "branch",
+                    "enforcement": "evaluate",
+                },
+            ],
+        )
+    )
+    respx.get(f"{API}/orgs/o/rulesets/1").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "name": "Zizmor scans",
+                "enforcement": "active",
+                "rules": [{"type": "workflows", "parameters": {"workflows": []}}],
+            },
+        )
+    )
+    status, details = await client.org_workflow_rulesets("o")
+    assert status == 200
+    # Only the active ruleset's detail is fetched; the evaluate-only one is skipped.
+    assert [d["name"] for d in details] == ["Zizmor scans"]
+
+
+@respx.mock
+async def test_org_workflow_rulesets_forbidden(client: GitHubClient) -> None:
+    respx.get(url__regex=r"orgs/o/rulesets($|\?)").mock(
+        return_value=httpx.Response(403, headers={"x-ratelimit-remaining": "4999"})
+    )
+    status, details = await client.org_workflow_rulesets("o")
+    assert status == 403
+    assert details == []
+
+
+@respx.mock
+async def test_repo_branch_rules(client: GitHubClient) -> None:
+    respx.get(f"{API}/repos/o/r/rules/branches/main").mock(
+        return_value=httpx.Response(200, json=[{"type": "workflows", "parameters": {}}])
+    )
+    status, rules = await client.repo_branch_rules("o", "r", "main")
+    assert status == 200
+    assert rules[0]["type"] == "workflows"

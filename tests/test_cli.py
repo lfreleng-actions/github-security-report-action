@@ -48,6 +48,9 @@ def test_org_mode_writes_pages(tmp_path: object) -> None:
         respx.get(url__startswith=f"{API}/orgs/o/{kind}/alerts").mock(
             return_value=httpx.Response(200, json=[])
         )
+    respx.get(url__startswith=f"{API}/orgs/o/rulesets").mock(
+        return_value=httpx.Response(200, json=[])
+    )
     respx.get(url__startswith=f"{API}/repos/o/r/code-scanning/analyses").mock(
         return_value=httpx.Response(200, json=[{"tool": {"name": "CodeQL"}}])
     )
@@ -123,6 +126,9 @@ def test_repo_mode_fail_threshold(tmp_path: object) -> None:
         )
     )
     respx.get(url__startswith=f"{API}/repos/o/r/dependabot/alerts").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    respx.get(url__startswith=f"{API}/repos/o/r/rules/branches").mock(
         return_value=httpx.Response(200, json=[])
     )
     respx.get(url__startswith=f"{SCORECARD}/projects/github.com/o/r").mock(

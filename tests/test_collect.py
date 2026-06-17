@@ -60,6 +60,30 @@ class FakeClient:
     async def org_bulk_alerts(self, org: str, kind: str) -> list[dict]:
         return self.bulk[kind]
 
+    async def org_workflow_rulesets(self, org: str) -> tuple[int, list[dict]]:
+        # A zizmor ruleset enforcing the central workflow on every repo.
+        return 200, [
+            {
+                "name": "Zizmor scans",
+                "enforcement": "active",
+                "target": "branch",
+                "conditions": {"repository_name": {"include": ["*"], "exclude": []}},
+                "rules": [
+                    {
+                        "type": "workflows",
+                        "parameters": {
+                            "workflows": [
+                                {
+                                    "path": ".github/workflows/zizmor.yaml",
+                                    "ref": "refs/heads/main",
+                                }
+                            ]
+                        },
+                    }
+                ],
+            }
+        ]
+
     async def code_scanning_tools(self, org: str, repo: str) -> tuple[int, set[str]]:
         return 200, self.tools.get(repo, set())
 
@@ -102,6 +126,12 @@ async def test_collect_org_end_to_end() -> None:
     assert scorecard.offenders[0].score == 8.2
     assert "git-configure-action" in [r.name for r in scorecard.nag_repos]
 
+    # The zizmor ruleset covers both repos, so neither is nagged for zizmor
+    # even though zizmor is not in their per-repo analyses tools.
+    zizmor = sections[SignalType.ZIZMOR]
+    assert zizmor.nag_repos == []
+    assert zizmor.clean_count == 2
+
 
 async def test_collect_org_groups_alerts_by_repo() -> None:
     report = await collect.collect_org(
@@ -141,6 +171,19 @@ class FakeRepoClient:
     ) -> tuple[int, list[dict]]:
         return 200, []
 
+    async def repo_branch_rules(
+        self, org: str, repo: str, branch: str
+    ) -> tuple[int, list[dict]]:
+        # zizmor is enforced for this repo via an inherited org ruleset.
+        return 200, [
+            {
+                "type": "workflows",
+                "parameters": {
+                    "workflows": [{"path": ".github/workflows/zizmor.yaml"}]
+                },
+            }
+        ]
+
     async def scorecard_score(self, org: str, repo: str) -> tuple[int, float | None]:
         return 200, 6.1
 
@@ -155,6 +198,9 @@ async def test_collect_repo_mixed_state() -> None:
     assert by_signal[SignalType.SECRET_SCANNING].state is RepoState.NAG  # 404 disabled
     assert by_signal[SignalType.DEPENDABOT].state is RepoState.NAG  # disabled
     assert by_signal[SignalType.SCORECARD].score == 6.1
+    # zizmor is enforced via the branch ruleset, so it is clean (enabled, no
+    # zizmor findings) rather than nagged.
+    assert by_signal[SignalType.ZIZMOR].state is RepoState.CLEAN
 
 
 async def test_collect_repo_unreadable_returns_none() -> None:

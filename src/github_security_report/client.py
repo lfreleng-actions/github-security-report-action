@@ -253,6 +253,44 @@ class GitHubClient:
         return 200, resp.json().get("score")
 
     # ------------------------------------------------------------------ #
+    # Repository rulesets (workflow-driven tool enablement)
+    # ------------------------------------------------------------------ #
+    async def org_workflow_rulesets(self, org: str) -> tuple[int, list[dict]]:
+        """Active, branch-targeted org rulesets, each with full rule details.
+
+        Returns ``(status, details)``; status is the org-rulesets list status
+        (e.g. 403 when the token lacks org access) so coverage can degrade
+        gracefully. The list endpoint returns summaries, so each active branch
+        ruleset is fetched in detail to expose its rules and conditions.
+        """
+        status, summaries = await self._get_list(f"{self._api_url}/orgs/{org}/rulesets")
+        if status != 200:
+            return status, []
+        details: list[dict] = []
+        for summary in summaries:
+            if summary.get("enforcement") != "active":
+                continue
+            if summary.get("target") not in (None, "branch"):
+                continue
+            resp = await self._request(
+                "GET", f"{self._api_url}/orgs/{org}/rulesets/{summary['id']}"
+            )
+            if resp.status_code == 200:
+                details.append(resp.json())
+        return 200, details
+
+    async def repo_branch_rules(
+        self, org: str, repo: str, branch: str
+    ) -> tuple[int, list[dict]]:
+        """Effective branch rules for a repo (includes inherited org rulesets)."""
+        resp = await self._request(
+            "GET", f"{self._api_url}/repos/{org}/{repo}/rules/branches/{branch}"
+        )
+        if resp.status_code != 200:
+            return resp.status_code, []
+        return 200, list(resp.json())
+
+    # ------------------------------------------------------------------ #
     # Per-repo data (repo mode)
     # ------------------------------------------------------------------ #
     async def get_repo(self, org: str, repo: str) -> Repo | None:
@@ -269,6 +307,7 @@ class GitHubClient:
             fork=raw.get("fork", False),
             is_template=raw.get("is_template", False),
             private=raw.get("private", False),
+            default_branch=raw.get("default_branch", "main"),
         )
 
     async def repo_code_scanning_alerts(self, org: str, repo: str) -> tuple[int, list[dict]]:

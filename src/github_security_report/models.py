@@ -71,6 +71,7 @@ class Repo:
     fork: bool = False
     is_template: bool = False
     private: bool = False
+    default_branch: str = "main"
 
 
 @dataclass

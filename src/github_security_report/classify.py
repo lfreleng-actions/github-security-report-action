@@ -48,6 +48,9 @@ class RepoFacts:
     # Scorecard (external API).
     scorecard_status: int = 404  # 200 has score, 404 none, 403 forbidden
     scorecard_score: float | None = None
+    # Signals (by value) enforced for this repo via an org/branch ruleset
+    # (e.g. zizmor required by a central workflow), even with no per-repo file.
+    ruleset_signals: set[str] = field(default_factory=set)
 
 
 # --------------------------------------------------------------------------- #
@@ -84,14 +87,23 @@ def count_dependabot(alerts: list[dict]) -> SeverityCounts:
 def _code_scanning_tool_signal(
     facts: RepoFacts, signal: SignalType, tool_name: str
 ) -> RepoSignal:
-    """Shared four-state logic for the code-scanning-derived signals."""
+    """Shared four-state logic for the code-scanning-derived signals.
+
+    A tool is enabled when its analyses are present, OR when an org/branch
+    ruleset enforces it for this repo (a central required workflow) -- the
+    latter prevents falsely nagging repos whose tool runs from a ruleset.
+    """
     repo = facts.repo
-    if facts.code_scanning_status == 403:
+    covered = signal.value in facts.ruleset_signals
+    # 403 with no positive evidence is indeterminate, not a nag.
+    if facts.code_scanning_status == 403 and not covered:
         return RepoSignal(repo, signal, RepoState.UNKNOWN, detail="insufficient permission")
-    if facts.code_scanning_status == 404:
-        return RepoSignal(repo, signal, RepoState.NAG, detail="code scanning disabled")
-    if tool_name not in facts.code_scanning_tools:
-        return RepoSignal(repo, signal, RepoState.NAG, detail=f"{tool_name} not enabled")
+    enabled = covered or (
+        facts.code_scanning_status == 200 and tool_name in facts.code_scanning_tools
+    )
+    if not enabled:
+        detail = "code scanning disabled" if facts.code_scanning_status == 404 else f"{tool_name} not enabled"
+        return RepoSignal(repo, signal, RepoState.NAG, detail=detail)
     counts = count_code_scanning(facts.code_scanning_alerts, tool_name)
     state = RepoState.OFFENDER if counts.total else RepoState.CLEAN
     return RepoSignal(repo, signal, state, counts=counts)

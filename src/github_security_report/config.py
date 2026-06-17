@@ -66,6 +66,10 @@ CONFIG_SCHEMA: dict = {
                 "top_n": {"type": "integer", "minimum": 1},
                 "include_archived": {"type": "boolean"},
                 "include_test": {"type": "boolean"},
+                "ruleset_workflows": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                },
             },
         },
         "organizations": {
@@ -114,11 +118,20 @@ class SlackConfig:
     report_day: ReportDay = field(default_factory=lambda: ReportDay(days=frozenset({"tuesday"})))
 
 
+# Default mapping of signal value -> required-workflow path keyword. A repo
+# covered by an active org ruleset whose required workflow path contains the
+# keyword is treated as having that tool enabled (see :mod:`rulesets`).
+DEFAULT_RULESET_WORKFLOWS = {"zizmor": "zizmor"}
+
+
 @dataclass(frozen=True)
 class ReportConfig:
     top_n: int = 10
     include_archived: bool = False
     include_test: bool = False
+    ruleset_workflows: dict[str, str] = field(
+        default_factory=lambda: dict(DEFAULT_RULESET_WORKFLOWS)
+    )
 
 
 @dataclass(frozen=True)
@@ -175,10 +188,15 @@ def _slack_from(data: dict, base: SlackConfig) -> SlackConfig:
 
 
 def _report_from(data: dict, base: ReportConfig) -> ReportConfig:
-    return replace(
+    result = replace(
         base,
         **{k: v for k, v in data.items() if k in {"top_n", "include_archived", "include_test"}},
     )
+    if "ruleset_workflows" in data:
+        # Merge so the built-in defaults (e.g. zizmor) survive unless overridden.
+        merged = {**base.ruleset_workflows, **data["ruleset_workflows"]}
+        result = replace(result, ruleset_workflows=merged)
+    return result
 
 
 def build_config(data: dict) -> Config:

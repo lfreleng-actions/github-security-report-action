@@ -194,3 +194,46 @@ class TestScorecardSources:
             scorecard_status=0,
         )
         assert _by_signal(facts)[SignalType.SCORECARD].state is RepoState.UNKNOWN
+
+
+class TestRulesetCoverage:
+    def test_covered_with_no_findings_is_clean_not_nag(self) -> None:
+        # zizmor isn't in the analyses tools, but a ruleset enforces it -> the
+        # repo is enabled (clean), not nagged.
+        facts = RepoFacts(
+            repo=_repo(),
+            code_scanning_status=200,
+            code_scanning_tools={"CodeQL"},
+            ruleset_signals={"zizmor"},
+        )
+        assert _by_signal(facts)[SignalType.ZIZMOR].state is RepoState.CLEAN
+
+    def test_covered_with_findings_is_offender(self) -> None:
+        facts = RepoFacts(
+            repo=_repo(),
+            code_scanning_status=200,
+            code_scanning_tools={"CodeQL"},
+            code_scanning_alerts=[_cs_alert("zizmor", None, "error")],
+            ruleset_signals={"zizmor"},
+        )
+        sig = _by_signal(facts)[SignalType.ZIZMOR]
+        assert sig.state is RepoState.OFFENDER
+        assert sig.counts.high == 1
+
+    def test_not_covered_and_absent_is_nag(self) -> None:
+        facts = RepoFacts(
+            repo=_repo(),
+            code_scanning_status=200,
+            code_scanning_tools={"CodeQL"},
+            ruleset_signals=set(),
+        )
+        assert _by_signal(facts)[SignalType.ZIZMOR].state is RepoState.NAG
+
+    def test_covered_overrides_code_scanning_disabled(self) -> None:
+        # Code scanning entirely off, but the ruleset still enforces zizmor.
+        facts = RepoFacts(
+            repo=_repo(), code_scanning_status=404, ruleset_signals={"zizmor"}
+        )
+        assert _by_signal(facts)[SignalType.ZIZMOR].state is RepoState.CLEAN
+        # CodeQL (not ruleset-covered) is still nagged when code scanning is off.
+        assert _by_signal(facts)[SignalType.CODEQL].state is RepoState.NAG

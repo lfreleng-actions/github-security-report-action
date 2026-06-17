@@ -133,6 +133,16 @@ exact rules):
   workflow. Counts for every code-scanning-derived table are **filtered by
   `tool.name`** — a repo whose code-scanning alerts are all Scorecard is
   CodeQL-clean.
+- **Workflow-driven tools enforced by an org ruleset** (e.g. zizmor) are also
+  enabled via that ruleset, not only a per-repo file. A repo is enabled when an
+  **active** org ruleset has a `workflows` rule whose required-workflow path
+  matches the tool (keyword, configurable via `report.ruleset_workflows`,
+  default `{"zizmor": "zizmor"}`) **and** the repo matches the ruleset's
+  `repository_name` targeting. Org mode reads `GET /orgs/{org}/rulesets`; repo
+  mode reads the repo's effective `GET .../rules/branches/{branch}`. If the
+  token cannot read rulesets (403), coverage degrades to per-repo evidence.
+  This prevents falsely nagging the many repos whose zizmor scan runs from the
+  central `.github/workflows/zizmor.yaml` ruleset.
 - Secret scanning → **404 on alerts = disabled** (confirmed on the fork org)
   vs `[]` = enabled-clean.
 - Dependabot → `hasVulnerabilityAlertsEnabled` (`false` = disabled, confirmed
