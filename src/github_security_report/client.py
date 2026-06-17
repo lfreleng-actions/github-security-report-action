@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
 
 import httpx
 
@@ -39,6 +38,12 @@ query($owner: String!, $name: String!) {
   }
 }
 """
+
+# The code-scanning-derived signal tools whose enablement we probe per repo.
+# Each is checked via the analyses ``tool_name`` filter (a definitive presence
+# test) rather than scanning the analysis history, which a busy repo could push
+# a low-frequency tool out of.
+_CODE_SCANNING_SIGNAL_TOOLS = ("CodeQL", "Scorecard", "zizmor")
 
 
 class GitHubClient:
@@ -105,8 +110,16 @@ class GitHubClient:
         http = client or self._client
         attempt = 0
         while True:
-            async with self._sem:
-                resp = await http.request(method, url, **kwargs)  # type: ignore[arg-type]
+            try:
+                async with self._sem:
+                    resp = await http.request(method, url, **kwargs)  # type: ignore[arg-type]
+            except httpx.HTTPError as exc:
+                # Transport failure (DNS/TLS/connect or read timeout). Signals
+                # degrade independently, so convert this into an indeterminate
+                # 503 response rather than aborting the whole run; callers treat
+                # any non-200 as not-clean/unknown.
+                log.warning("request to %s failed: %s", url, exc)
+                return httpx.Response(503, request=httpx.Request(method, url))
             if resp.status_code not in (403, 429):
                 return resp
             # Distinguish secondary/primary rate limiting from a genuine 403.
@@ -123,48 +136,55 @@ class GitHubClient:
             await asyncio.sleep(delay)
             attempt += 1
 
-    async def _paginate(self, url: str, **params: object) -> AsyncIterator[dict]:
-        """Yield items across all pages, following the Link ``next`` relation."""
-        next_url: str | None = url
-        merged: dict[str, object] | None = {**params, "per_page": 100}
-        while next_url:
-            resp = await self._request("GET", next_url, params=merged)
-            if resp.status_code != 200:
-                log.debug("pagination stopped: %s -> %s", next_url, resp.status_code)
-                return
-            for item in resp.json():
-                yield item
-            next_url = resp.links.get("next", {}).get("url")
-            merged = None  # the next link already encodes the query
-
     async def _get_list(self, url: str, **params: object) -> tuple[int, list[dict]]:
-        """GET a paginated list, returning (first-page status, all items).
+        """GET a paginated list, returning (status, items collected).
 
-        The status is preserved because, for per-repo endpoints, it is itself a
-        signal (404 = feature disabled).
+        The status is itself a signal for these endpoints (404 = feature
+        disabled). If a *later* page fails, the partial items gathered so far
+        are returned alongside that failing status (not 200): the data is
+        incomplete, so callers must be able to degrade to UNKNOWN rather than
+        treat an undercount as authoritative. The failed response is closed to
+        avoid leaking a pooled connection (its body is never read).
         """
         resp = await self._request("GET", url, params={**params, "per_page": 100})
         if resp.status_code != 200:
-            return resp.status_code, []
+            status = resp.status_code
+            await resp.aclose()  # unread body would leak a pooled connection
+            return status, []
         items = list(resp.json())
         next_url = resp.links.get("next", {}).get("url")
+        await resp.aclose()  # release the connection once body/links are read
         while next_url:
             resp = await self._request("GET", next_url)
             if resp.status_code != 200:
-                break
+                log.warning(
+                    "pagination stopped early: %s -> %s (results may be partial)",
+                    next_url,
+                    resp.status_code,
+                )
+                await resp.aclose()
+                return resp.status_code, items
             items.extend(resp.json())
             next_url = resp.links.get("next", {}).get("url")
+            await resp.aclose()
         return 200, items
 
     # ------------------------------------------------------------------ #
     # Repositories
     # ------------------------------------------------------------------ #
-    async def list_org_repos(self, org: str) -> list[Repo]:
-        """List an organisation's repositories, skipping disabled/empty ones."""
-        repos: list[Repo] = []
-        async for raw in self._paginate(
+    async def list_org_repos(self, org: str) -> tuple[int, list[Repo]]:
+        """List an organisation's repositories, skipping disabled/empty ones.
+
+        Returns the listing status alongside the repos: a non-200 (a failed or
+        mid-pagination-truncated listing) means the set is incomplete, so the
+        caller can flag a partial report rather than silently omitting repos
+        (and their offenders).
+        """
+        status, raws = await self._get_list(
             f"{self._api_url}/orgs/{org}/repos", type="all"
-        ):
+        )
+        repos: list[Repo] = []
+        for raw in raws:
             if raw.get("disabled") or raw.get("size", 0) == 0:
                 log.info("skipping %s: disabled or empty", raw.get("full_name"))
                 continue
@@ -179,39 +199,54 @@ class GitHubClient:
                     private=raw.get("private", False),
                 )
             )
-        return repos
+        return status, repos
 
     # ------------------------------------------------------------------ #
     # Org-bulk alert sweeps
     # ------------------------------------------------------------------ #
-    async def org_bulk_alerts(self, org: str, kind: str) -> list[dict]:
-        """Sweep all open alerts of one kind across the org (one paginated pass)."""
+    async def org_bulk_alerts(self, org: str, kind: str) -> tuple[int, list[dict]]:
+        """Sweep all open alerts of one kind across the org.
+
+        Returns the first-page HTTP status alongside the alerts so callers can
+        tell an authoritative empty result (200 ``[]``) apart from an unreadable
+        sweep (403/404/5xx), which must never be reported as "clean".
+        """
         path = BULK_KINDS[kind]
-        return [
-            item
-            async for item in self._paginate(
-                f"{self._api_url}/orgs/{org}/{path}", state="open"
-            )
-        ]
+        return await self._get_list(
+            f"{self._api_url}/orgs/{org}/{path}", state="open"
+        )
 
     # ------------------------------------------------------------------ #
     # Per-repo enabled-probes
     # ------------------------------------------------------------------ #
     async def code_scanning_tools(self, org: str, repo: str) -> tuple[int, set[str]]:
-        """Return (status, distinct tool names) from code-scanning analyses.
+        """Return (status, enabled signal tool names) from code-scanning analyses.
 
-        Status 404 means code scanning is disabled entirely; 403 indeterminate.
-        The tool set drives CodeQL/Scorecard/zizmor enablement.
+        Each tool in ``_CODE_SCANNING_SIGNAL_TOOLS`` is probed with the analyses
+        ``tool_name`` filter, a definitive presence test that does not depend on
+        how many analyses a busy repo has accumulated (the previous page-by-page
+        scan could miss a low-frequency tool past its page cap and wrongly nag
+        it). The first probe's status is authoritative for the endpoint (404 =
+        code scanning disabled, 403 = forbidden, 5xx/0 = indeterminate); a later
+        per-tool probe that fails is skipped (its tool goes undetected for this
+        run) rather than discarding the whole result.
         """
-        resp = await self._request(
-            "GET",
-            f"{self._api_url}/repos/{org}/{repo}/code-scanning/analyses",
-            params={"per_page": 100},
-        )
-        if resp.status_code != 200:
-            return resp.status_code, set()
-        tools = {(a.get("tool") or {}).get("name", "") for a in resp.json()}
-        tools.discard("")
+        url = f"{self._api_url}/repos/{org}/{repo}/code-scanning/analyses"
+        tools: set[str] = set()
+        for index, tool in enumerate(_CODE_SCANNING_SIGNAL_TOOLS):
+            resp = await self._request(
+                "GET", url, params={"per_page": 1, "tool_name": tool}
+            )
+            if resp.status_code != 200:
+                status = resp.status_code
+                await resp.aclose()  # unread body would leak a pooled connection
+                if index == 0:
+                    return status, set()
+                continue
+            has_analyses = bool(resp.json())
+            await resp.aclose()  # release the connection once the body is read
+            if has_analyses:
+                tools.add(tool)
         return 200, tools
 
     async def secret_scanning_status(self, org: str, repo: str) -> int:
@@ -221,7 +256,9 @@ class GitHubClient:
             f"{self._api_url}/repos/{org}/{repo}/secret-scanning/alerts",
             params={"per_page": 1, "state": "open"},
         )
-        return int(resp.status_code)
+        status = int(resp.status_code)
+        await resp.aclose()  # only the status is needed; release the connection
+        return status
 
     async def dependabot_enabled(self, org: str, repo: str) -> bool | None:
         """Whether Dependabot alerts are enabled (None when indeterminate)."""
@@ -234,23 +271,30 @@ class GitHubClient:
             },
         )
         if resp.status_code != 200:
+            await resp.aclose()  # unread body would leak a pooled connection
             return None
         node = (resp.json().get("data") or {}).get("repository")
+        await resp.aclose()  # release the connection once the body is read
         if not node:
             return None
         return bool(node.get("hasVulnerabilityAlertsEnabled"))
 
     async def scorecard_score(self, org: str, repo: str) -> tuple[int, float | None]:
-        """External OpenSSF Scorecard aggregate score (status, score|None)."""
+        """External OpenSSF Scorecard aggregate score (status, score|None).
+
+        Transport failures to this third-party API are handled centrally by
+        ``_request`` (which returns an indeterminate 503), so a network blip
+        degrades the Scorecard signal rather than aborting the run.
+        """
         url = f"{self._scorecard_url}/projects/github.com/{org}/{repo}"
-        try:
-            resp = await self._request("GET", url, client=self._ext_client)
-        except httpx.HTTPError as exc:  # external service; tolerate failure
-            log.debug("scorecard request failed for %s/%s: %s", org, repo, exc)
-            return 0, None
+        resp = await self._request("GET", url, client=self._ext_client)
         if resp.status_code != 200:
-            return resp.status_code, None
-        return 200, resp.json().get("score")
+            status = resp.status_code
+            await resp.aclose()  # unread body would leak a pooled connection
+            return status, None
+        score = resp.json().get("score")
+        await resp.aclose()  # release the connection once the body is read
+        return 200, score
 
     # ------------------------------------------------------------------ #
     # Repository rulesets (workflow-driven tool enablement)
@@ -277,6 +321,7 @@ class GitHubClient:
             )
             if resp.status_code == 200:
                 details.append(resp.json())
+            await resp.aclose()  # release the connection once the body is read
         return 200, details
 
     async def repo_branch_rules(
@@ -287,8 +332,12 @@ class GitHubClient:
             "GET", f"{self._api_url}/repos/{org}/{repo}/rules/branches/{branch}"
         )
         if resp.status_code != 200:
-            return resp.status_code, []
-        return 200, list(resp.json())
+            status = resp.status_code
+            await resp.aclose()  # unread body would leak a pooled connection
+            return status, []
+        rules = list(resp.json())
+        await resp.aclose()  # release the connection once the body is read
+        return 200, rules
 
     # ------------------------------------------------------------------ #
     # Per-repo data (repo mode)
@@ -297,8 +346,10 @@ class GitHubClient:
         """Fetch a single repository's identity."""
         resp = await self._request("GET", f"{self._api_url}/repos/{org}/{repo}")
         if resp.status_code != 200:
+            await resp.aclose()  # unread body would leak a pooled connection
             return None
         raw = resp.json()
+        await resp.aclose()  # release the connection once the body is read
         return Repo(
             name=raw["name"],
             full_name=raw["full_name"],

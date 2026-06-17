@@ -117,6 +117,19 @@ class TestSecretScanning:
         assert sig.state is RepoState.OFFENDER
         assert sig.counts.total == 3
 
+    def test_partial_read_with_open_secrets_is_offender(self) -> None:
+        # A non-200 (incomplete) read that still found open secrets is
+        # actionable evidence -> offender, not unknown.
+        facts = RepoFacts(
+            repo=_repo(),
+            secret_scanning_status=503,
+            secret_scanning_open=2,
+            secret_scanning_open_status=503,
+        )
+        sig = _by_signal(facts)[SignalType.SECRET_SCANNING]
+        assert sig.state is RepoState.OFFENDER
+        assert sig.counts.total == 2
+
 
 class TestDependabot:
     def test_disabled_is_nag(self) -> None:
@@ -185,13 +198,25 @@ class TestScorecardSources:
         assert sig.score is None
 
     def test_transient_external_failure_is_unknown(self) -> None:
-        # scorecard_score returns status 0 on an httpx error; with no
-        # code-scanning Scorecard data this is indeterminate, not a nag.
+        # A transport failure to the external Scorecard API surfaces as a 503
+        # (via the client's _request); with no code-scanning Scorecard data
+        # this is indeterminate, not a nag.
         facts = RepoFacts(
             repo=_repo(),
             code_scanning_status=200,
             code_scanning_tools={"CodeQL"},
-            scorecard_status=0,
+            scorecard_status=503,
+        )
+        assert _by_signal(facts)[SignalType.SCORECARD].state is RepoState.UNKNOWN
+
+    def test_external_403_is_unknown_not_nag(self) -> None:
+        # A 403 (forbidden/blocked external Scorecard API) is indeterminate per
+        # the module contract, not a definitive "no results" nag.
+        facts = RepoFacts(
+            repo=_repo(),
+            code_scanning_status=200,
+            code_scanning_tools={"CodeQL"},
+            scorecard_status=403,
         )
         assert _by_signal(facts)[SignalType.SCORECARD].state is RepoState.UNKNOWN
 
@@ -237,3 +262,83 @@ class TestRulesetCoverage:
         assert _by_signal(facts)[SignalType.ZIZMOR].state is RepoState.CLEAN
         # CodeQL (not ruleset-covered) is still nagged when code scanning is off.
         assert _by_signal(facts)[SignalType.CODEQL].state is RepoState.NAG
+
+
+class TestUnreadableAlertSweep:
+    """An enabled signal with an unreadable alert read is unknown, not clean."""
+
+    def test_code_scanning_sweep_failure_is_unknown(self) -> None:
+        # CodeQL is enabled (analyses present) but the alert sweep returned a
+        # non-200 status, so a zero count must not be reported as clean.
+        facts = RepoFacts(
+            repo=_repo(),
+            code_scanning_status=200,
+            code_scanning_tools={"CodeQL"},
+            code_scanning_alerts=[],
+            code_scanning_alerts_status=403,
+        )
+        assert _by_signal(facts)[SignalType.CODEQL].state is RepoState.UNKNOWN
+
+    def test_code_scanning_sweep_failure_with_findings_is_offender(self) -> None:
+        # Partial data (some alerts present) is still actionable evidence.
+        facts = RepoFacts(
+            repo=_repo(),
+            code_scanning_status=200,
+            code_scanning_tools={"CodeQL"},
+            code_scanning_alerts=[_cs_alert("CodeQL", "high")],
+            code_scanning_alerts_status=403,
+        )
+        assert _by_signal(facts)[SignalType.CODEQL].state is RepoState.OFFENDER
+
+    def test_secret_scanning_sweep_failure_is_unknown(self) -> None:
+        facts = RepoFacts(
+            repo=_repo(),
+            secret_scanning_status=200,
+            secret_scanning_open=0,
+            secret_scanning_open_status=403,
+        )
+        assert _by_signal(facts)[SignalType.SECRET_SCANNING].state is RepoState.UNKNOWN
+
+    def test_dependabot_sweep_failure_is_unknown(self) -> None:
+        facts = RepoFacts(
+            repo=_repo(),
+            dependabot_enabled=True,
+            dependabot_alerts=[],
+            dependabot_alerts_status=502,
+        )
+        assert _by_signal(facts)[SignalType.DEPENDABOT].state is RepoState.UNKNOWN
+
+    def test_successful_empty_sweep_is_clean(self) -> None:
+        # The default status (200) keeps the existing enabled-clean behaviour.
+        facts = RepoFacts(
+            repo=_repo(),
+            code_scanning_status=200,
+            code_scanning_tools={"CodeQL"},
+            dependabot_enabled=True,
+            secret_scanning_status=200,
+        )
+        signals = _by_signal(facts)
+        assert signals[SignalType.CODEQL].state is RepoState.CLEAN
+        assert signals[SignalType.DEPENDABOT].state is RepoState.CLEAN
+        assert signals[SignalType.SECRET_SCANNING].state is RepoState.CLEAN
+
+
+class TestIndeterminateProbeStatus:
+    """A failed probe (5xx / synthetic 0) is unknown, never a nag or clean."""
+
+    def test_code_scanning_5xx_is_unknown_not_nag(self) -> None:
+        facts = RepoFacts(repo=_repo(), code_scanning_status=503)
+        assert _by_signal(facts)[SignalType.CODEQL].state is RepoState.UNKNOWN
+
+    def test_code_scanning_zero_is_unknown(self) -> None:
+        facts = RepoFacts(repo=_repo(), code_scanning_status=0)
+        assert _by_signal(facts)[SignalType.ZIZMOR].state is RepoState.UNKNOWN
+
+    def test_code_scanning_disabled_still_nags(self) -> None:
+        # A genuine 404 (feature off) remains a nag, not unknown.
+        facts = RepoFacts(repo=_repo(), code_scanning_status=404)
+        assert _by_signal(facts)[SignalType.CODEQL].state is RepoState.NAG
+
+    def test_secret_scanning_5xx_is_unknown(self) -> None:
+        facts = RepoFacts(repo=_repo(), secret_scanning_status=503)
+        assert _by_signal(facts)[SignalType.SECRET_SCANNING].state is RepoState.UNKNOWN

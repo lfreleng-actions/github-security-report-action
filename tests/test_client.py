@@ -41,8 +41,26 @@ async def test_list_org_repos_skips_disabled_and_empty(client: GitHubClient) -> 
             ],
         )
     )
-    repos = await client.list_org_repos("o")
+    status, repos = await client.list_org_repos("o")
+    assert status == 200
     assert [r.name for r in repos] == ["live"]
+
+
+@respx.mock
+async def test_list_org_repos_reports_incomplete_status(client: GitHubClient) -> None:
+    # A first page that succeeds followed by a failing page must surface the
+    # failing status so the caller can flag the report as partial.
+    page1 = httpx.Response(
+        200,
+        json=[{"name": "r1", "full_name": "o/r1", "html_url": "u", "size": 10}],
+        headers={"Link": f'<{API}/orgs/o/repos?page=2>; rel="next"'},
+    )
+    page2 = httpx.Response(403)
+    route = respx.get(url__startswith=f"{API}/orgs/o/repos")
+    route.side_effect = [page1, page2]
+    status, repos = await client.list_org_repos("o")
+    assert status == 403
+    assert [r.name for r in repos] == ["r1"]
 
 
 @respx.mock
@@ -55,25 +73,79 @@ async def test_org_bulk_alerts_paginates(client: GitHubClient) -> None:
     page2 = httpx.Response(200, json=[{"number": 2}])
     route = respx.get(url__startswith=f"{API}/orgs/o/code-scanning/alerts")
     route.side_effect = [page1, page2]
-    alerts = await client.org_bulk_alerts("o", "code-scanning")
+    status, alerts = await client.org_bulk_alerts("o", "code-scanning")
+    assert status == 200
     assert [a["number"] for a in alerts] == [1, 2]
 
 
 @respx.mock
+async def test_org_bulk_alerts_reports_error_status(client: GitHubClient) -> None:
+    # A forbidden sweep must surface its status so callers can degrade affected
+    # signals to unknown rather than treating the empty result as clean.
+    respx.get(url__startswith=f"{API}/orgs/o/dependabot/alerts").mock(
+        return_value=httpx.Response(403)
+    )
+    status, alerts = await client.org_bulk_alerts("o", "dependabot")
+    assert status == 403
+    assert alerts == []
+
+
+@respx.mock
+async def test_get_list_later_page_failure_returns_partial_and_status(
+    client: GitHubClient,
+) -> None:
+    # A first page that succeeds followed by a failing page must return the
+    # partial items WITH the failing status, so callers know the data is
+    # incomplete and do not report a falsely-clean undercount.
+    page1 = httpx.Response(
+        200,
+        json=[{"number": 1}],
+        headers={"Link": f'<{API}/orgs/o/dependabot/alerts?page=2>; rel="next"'},
+    )
+    page2 = httpx.Response(403)
+    route = respx.get(url__startswith=f"{API}/orgs/o/dependabot/alerts")
+    route.side_effect = [page1, page2]
+    status, alerts = await client.org_bulk_alerts("o", "dependabot")
+    assert status == 403
+    assert [a["number"] for a in alerts] == [1]
+
+
+@respx.mock
 async def test_code_scanning_tools(client: GitHubClient) -> None:
-    respx.get(f"{API}/repos/o/r/code-scanning/analyses").mock(
-        return_value=httpx.Response(
-            200,
-            json=[
-                {"tool": {"name": "CodeQL"}},
-                {"tool": {"name": "Scorecard"}},
-                {"tool": {"name": "CodeQL"}},
-            ],
-        )
+    # Each signal tool is probed via the analyses tool_name filter; CodeQL and
+    # Scorecard have analyses, zizmor does not.
+    def _side(request: httpx.Request) -> httpx.Response:
+        tool = request.url.params.get("tool_name")
+        if tool in ("CodeQL", "Scorecard"):
+            return httpx.Response(200, json=[{"tool": {"name": tool}}])
+        return httpx.Response(200, json=[])
+
+    respx.get(url__startswith=f"{API}/repos/o/r/code-scanning/analyses").mock(
+        side_effect=_side
     )
     status, tools = await client.code_scanning_tools("o", "r")
     assert status == 200
     assert tools == {"CodeQL", "Scorecard"}
+
+
+@respx.mock
+async def test_code_scanning_tools_detects_low_frequency_tool(
+    client: GitHubClient,
+) -> None:
+    # A tool the page-by-page scan could have missed (only zizmor present) is
+    # detected definitively via its tool_name filter.
+    def _side(request: httpx.Request) -> httpx.Response:
+        tool = request.url.params.get("tool_name")
+        if tool == "zizmor":
+            return httpx.Response(200, json=[{"tool": {"name": "zizmor"}}])
+        return httpx.Response(200, json=[])
+
+    respx.get(url__startswith=f"{API}/repos/o/r/code-scanning/analyses").mock(
+        side_effect=_side
+    )
+    status, tools = await client.code_scanning_tools("o", "r")
+    assert status == 200
+    assert tools == {"zizmor"}
 
 
 @respx.mock
@@ -153,6 +225,17 @@ async def test_genuine_403_not_retried(client: GitHubClient) -> None:
     )
     status, tools = await client.code_scanning_tools("o", "r")
     assert status == 403
+
+
+@respx.mock
+async def test_transport_error_becomes_indeterminate(client: GitHubClient) -> None:
+    # A transport failure (DNS/TLS/connect/read) must not abort the run; it is
+    # converted into an indeterminate non-200 status so signals degrade.
+    respx.get(f"{API}/repos/o/r/secret-scanning/alerts").mock(
+        side_effect=httpx.ConnectError("boom")
+    )
+    status = await client.secret_scanning_status("o", "r")
+    assert status == 503
 
 
 @respx.mock

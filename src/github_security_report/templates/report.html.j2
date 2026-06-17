@@ -4,10 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Security report: {{ org }}</title>
-  {#- Simple-DataTables: version-pinned (not @latest). SRI to be added once a
-      stable subresource hash is published for this exact version. -#}
+  {#- Simple-DataTables: version-pinned with Subresource Integrity, so the
+      browser rejects a tampered/substituted CDN asset. -#}
   <link rel="stylesheet"
-        href="https://cdn.jsdelivr.net/npm/simple-datatables@{{ datatables_version }}/dist/style.css">
+        href="https://cdn.jsdelivr.net/npm/simple-datatables@{{ datatables_version }}/dist/style.css"
+        integrity="{{ datatables_css_sri }}"
+        crossorigin="anonymous">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -34,15 +36,25 @@
     .unknown { color: #718096; font-size: 0.9rem; margin-top: 0.75rem; }
     .empty { color: #718096; font-style: italic; margin-top: 0.5rem; }
     .crit { color: #c53030; font-weight: 600; }
+    .partial-banner { background: #fffaf0; border: 1px solid #dd6b20; color: #9c4221;
+                      border-radius: 8px; padding: 0.75rem 1rem; margin-bottom: 1.5rem; }
     footer { text-align: center; color: #718096; font-size: 0.85rem; padding: 1rem; }
   </style>
 </head>
 <body>
   <div class="container">
     <header>
-      <h1>🔐 Security report: {{ org }}</h1>
+      <h1><span aria-hidden="true">🔐</span> Security report: {{ org }}</h1>
       <div class="meta">{{ repo_count }} repositories analysed · generated {{ generated_at }}</div>
     </header>
+
+    {% if partial %}
+    <div class="partial-banner" role="alert">
+      <span aria-hidden="true">⚠️</span> <strong>Incomplete:</strong> the repository
+      listing could not be fully read, so some repositories may be missing from
+      this report.
+    </div>
+    {% endif %}
 
     {% for s in sections %}
     <section>
@@ -62,12 +74,12 @@
         </tbody>
       </table>
       {% endif %}
-      {% if s.clean_count %}<p class="clean">✅ {{ s.clean_count }} repositories clean</p>{% endif %}
+      {% if s.clean_count %}<p class="clean"><span aria-hidden="true">✅</span> {{ s.clean_count }} repositories clean</p>{% endif %}
       {% if s.nag %}
       <p class="nag-title">Not enabled — enable to appear in future reports:</p>
       <ul class="nag">{% for r in s.nag %}<li><a href="{{ r.url }}">{{ r.name }}</a></li>{% endfor %}</ul>
       {% endif %}
-      {% if s.unknown_count %}<p class="unknown">ℹ️ {{ s.unknown_count }} repositories with unknown status (insufficient permissions)</p>{% endif %}
+      {% if s.unknown_count %}<p class="unknown"><span aria-hidden="true">ℹ️</span> {{ s.unknown_count }} repositories with unknown status (insufficient permissions)</p>{% endif %}
       {% if not (s.rows or s.clean_count or s.nag or s.unknown_count) %}<p class="empty">No data available.</p>{% endif %}
     </section>
     {% endfor %}
@@ -79,6 +91,8 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/simple-datatables@{{ datatables_version }}/dist/umd/simple-datatables.min.js"
+          integrity="{{ datatables_js_sri }}"
+          crossorigin="anonymous"
           type="text/javascript"></script>
   <script>
     document.addEventListener('DOMContentLoaded', function () {

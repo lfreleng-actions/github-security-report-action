@@ -82,6 +82,13 @@ class TestCoverage:
             == set()
         )
 
+    def test_empty_keyword_does_not_match_everything(self) -> None:
+        # A misconfigured empty keyword must not substring-match every path and
+        # mark all repos as covered (which would wrongly suppress nags).
+        assert (
+            rulesets.signals_covered("dependamerge", self.rs, {"zizmor": ""}) == set()
+        )
+
 
 class TestGlobMatching:
     def test_glob_include(self) -> None:

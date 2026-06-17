@@ -70,6 +70,11 @@ def render_section(section: SignalSection, console: Console) -> None:
 def render_org(org: OrgReport, console: Console) -> None:
     console.rule(f"[bold]Security report: {org.org}[/bold]")
     console.print(f"[dim]{org.repo_count} repositories analysed[/dim]\n")
+    if org.partial:
+        console.print(
+            "[yellow]⚠ Incomplete: the repository listing could not be fully "
+            "read; some repositories may be missing.[/yellow]\n"
+        )
     for section in org.sections:
         render_section(section, console)
 

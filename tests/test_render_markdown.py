@@ -95,6 +95,14 @@ class TestOrgAndReport:
         assert "# Security report: lfreleng-actions" in out
         assert "5 repositories analysed" in out
         assert "2026-06-16 09:00 UTC" in out
+        assert "Incomplete" not in out  # complete report carries no banner
+
+    def test_partial_report_shows_incomplete_banner(self) -> None:
+        org = report.build_org_report(
+            "lfreleng-actions", [], repo_count=1, generated_at=WHEN, partial=True
+        )
+        out = markdown.render_org(org)
+        assert "Incomplete" in out
 
     def test_full_report_multi_org(self) -> None:
         r = report.Report(

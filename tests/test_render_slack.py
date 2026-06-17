@@ -36,6 +36,23 @@ def test_payload_shape() -> None:
     assert "lfreleng-actions" in payload["blocks"][0]["text"]["text"]
 
 
+def test_payload_enforces_slack_block_limit() -> None:
+    # Many orgs would blow past Slack's 50-block ceiling and make the whole
+    # message fail; the payload must be capped with a truncation note instead.
+    sigs = [
+        RepoSignal(_repo("r"), st, RepoState.CLEAN, counts=SeverityCounts())
+        for st in SignalType
+    ]
+    orgs = [_org(sigs) for _ in range(12)]
+    payload = slack.render_payload(
+        orgs, channel="C", pages_url="https://x.github.io/r/"
+    )
+    blocks = payload["blocks"]
+    assert len(blocks) <= 50
+    assert blocks[-1]["type"] == "context"
+    assert "truncated" in blocks[-1]["elements"][0]["text"]
+
+
 def test_offenders_are_code_fenced() -> None:
     sig = RepoSignal(
         _repo("bad"), SignalType.CODEQL, RepoState.OFFENDER, SeverityCounts(critical=1)

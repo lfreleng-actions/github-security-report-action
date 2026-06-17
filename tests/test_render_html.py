@@ -40,6 +40,8 @@ class TestOrgHtml:
         ]
         out = html.render_org_html(_org("lfreleng-actions", signals, count=2))
         assert "Security report: lfreleng-actions" in out
+        # The decorative heading emoji is hidden from assistive tech.
+        assert 'aria-hidden="true"' in out
         assert "CodeQL" in out
         assert '<a href="https://github.com/o/bad">bad</a>' in out
         assert "Not enabled" in out
@@ -50,6 +52,10 @@ class TestOrgHtml:
         assert f"simple-datatables@{html.DATATABLES_VERSION}" in out
         assert "simple-datatables@latest" not in out
         assert "simpleDatatables.DataTable" in out
+        # CDN assets carry Subresource Integrity hashes + crossorigin.
+        assert f'integrity="{html.DATATABLES_CSS_SRI}"' in out
+        assert f'integrity="{html.DATATABLES_JS_SRI}"' in out
+        assert 'crossorigin="anonymous"' in out
 
     def test_html_escaping(self) -> None:
         # A pathological repo name must be escaped, not injected.
@@ -78,3 +84,15 @@ class TestIndexHtml:
 
     def test_slugify(self) -> None:
         assert html.slugify("Linux Foundation") == "linux-foundation"
+
+    def test_slugify_strips_path_traversal(self) -> None:
+        # A hostile org name must never produce a path separator or ".." that
+        # could escape the output directory.
+        for hostile in ("../etc", "a/b", "..", "../../x"):
+            slug = html.slugify(hostile)
+            assert "/" not in slug
+            assert ".." not in slug
+
+    def test_slugify_empty_falls_back(self) -> None:
+        assert html.slugify("///") == "org"
+        assert html.slugify("   ") == "org"

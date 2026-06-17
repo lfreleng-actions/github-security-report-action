@@ -13,6 +13,10 @@ from __future__ import annotations
 from github_security_report.models import RepoSignal, SignalType
 from github_security_report.report import OrgReport, SignalSection
 
+# Slack rejects a chat.postMessage with more than 50 blocks, so a digest
+# spanning many orgs must be capped or the whole message fails to deliver.
+_SLACK_MAX_BLOCKS = 50
+
 
 def _plain_columns(signal: SignalType) -> list[str]:
     if signal is SignalType.SECRET_SCANNING:
@@ -70,6 +74,19 @@ def render_org_blocks(org: OrgReport, *, top_n: int, pages_url: str | None) -> l
             "text": {"type": "plain_text", "text": f"🔐 Security report: {org.org}"},
         }
     ]
+    if org.partial:
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": "⚠️ Incomplete: the repository listing could not "
+                        "be fully read; some repositories may be missing.",
+                    }
+                ],
+            }
+        )
     for section in org.sections:
         summary = _summary(section)
         text = f"*{section.signal.heading}* — {summary}"
@@ -89,6 +106,27 @@ def render_org_blocks(org: OrgReport, *, top_n: int, pages_url: str | None) -> l
     return blocks
 
 
+def _enforce_block_limit(blocks: list[dict], pages_url: str | None) -> list[dict]:
+    """Cap blocks at Slack's per-message limit, noting any truncation.
+
+    A digest covering many orgs can exceed 50 blocks, which makes Slack reject
+    the entire message (no digest delivered). Keep the first blocks and replace
+    the overflow with a single note pointing at the full report.
+    """
+    if len(blocks) <= _SLACK_MAX_BLOCKS:
+        return blocks
+    if pages_url:
+        note = (
+            f"… digest truncated to Slack's {_SLACK_MAX_BLOCKS}-block limit; "
+            f"<{pages_url}|view the full report>."
+        )
+    else:
+        note = f"… digest truncated to Slack's {_SLACK_MAX_BLOCKS}-block limit."
+    kept = blocks[: _SLACK_MAX_BLOCKS - 1]
+    kept.append({"type": "context", "elements": [{"type": "mrkdwn", "text": note}]})
+    return kept
+
+
 def render_payload(
     orgs: list[OrgReport], *, channel: str, top_n: int = 10, pages_url: str | None = None
 ) -> dict:
@@ -96,6 +134,7 @@ def render_payload(
     blocks: list[dict] = []
     for org in orgs:
         blocks.extend(render_org_blocks(org, top_n=top_n, pages_url=pages_url))
+    blocks = _enforce_block_limit(blocks, pages_url)
     names = ", ".join(o.org for o in orgs)
     return {
         "channel": channel,

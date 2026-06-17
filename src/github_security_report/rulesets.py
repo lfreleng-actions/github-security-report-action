@@ -83,6 +83,10 @@ def repo_covered(name: str, ruleset: WorkflowRuleset) -> bool:
 
 def _paths_match_keyword(paths: tuple[str, ...] | list[str], keyword: str) -> bool:
     kw = keyword.lower()
+    # An empty keyword would substring-match every path; treat it as no match
+    # so a misconfigured mapping cannot mark every repo as covered.
+    if not kw:
+        return False
     return any(kw in path.lower() for path in paths)
 
 

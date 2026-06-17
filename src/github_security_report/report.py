@@ -53,6 +53,9 @@ class OrgReport:
     sections: list[SignalSection]
     repo_count: int
     generated_at: dt.datetime
+    # True when the repository listing was incomplete (e.g. a truncated or
+    # forbidden org repos read), so the report may omit repositories.
+    partial: bool = False
 
 
 @dataclass
@@ -67,6 +70,7 @@ def build_org_report(
     *,
     repo_count: int,
     generated_at: dt.datetime | None = None,
+    partial: bool = False,
 ) -> OrgReport:
     """Assemble an :class:`OrgReport` from a flat list of classified signals."""
     when = generated_at or dt.datetime.now(dt.timezone.utc)
@@ -91,4 +95,10 @@ def build_org_report(
                 unknown_count=sum(1 for s in results if s.state is RepoState.UNKNOWN),
             )
         )
-    return OrgReport(org=org, sections=sections, repo_count=repo_count, generated_at=when)
+    return OrgReport(
+        org=org,
+        sections=sections,
+        repo_count=repo_count,
+        generated_at=when,
+        partial=partial,
+    )

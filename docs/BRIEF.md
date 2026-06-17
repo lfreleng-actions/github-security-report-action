@@ -346,7 +346,7 @@ First spike run recorded in [`docs/phase0-findings.md`](phase0-findings.md).
 3. Per-report metric definitions; severity-weighted where available, else count.
 4. Separate severity columns; rows sorted critical→high→medium→low desc.
 5. Scope = non-archived/non-fork/non-template/sources; public+private.
-6. Mandatory per-org exclude list; archived opt-in; test opt-in.
+6. Optional per-org exclude list (defaults to empty); archived opt-in; test opt-in.
 7. `test` matched as delimited token, not substring; exclusions logged.
 8. Config: token by env-var name; global+per-org; jsonschema; flexible
    `report_day`.

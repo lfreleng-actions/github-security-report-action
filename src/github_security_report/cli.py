@@ -15,6 +15,7 @@ import datetime as dt
 import json
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -68,6 +69,9 @@ def _org_to_dict(org: OrgReport) -> dict:
         "org": org.org,
         "repo_count": org.repo_count,
         "generated_at": org.generated_at.isoformat(),
+        # Surfaced so JSON consumers can distinguish a complete result from a
+        # partial one (the repository listing could not be fully read).
+        "partial": org.partial,
         "sections": [
             {
                 "signal": s.signal.value,
@@ -98,6 +102,17 @@ def _org_to_dict(org: OrgReport) -> dict:
 # --------------------------------------------------------------------------- #
 # Output writers
 # --------------------------------------------------------------------------- #
+# Keep filenames within output_dir: a channel value containing "/" or ".."
+# (misconfiguration or hostile input) must not escape the directory.
+_UNSAFE_COMPONENT = re.compile(r"[^A-Za-z0-9_.-]+")
+
+
+def _safe_component(value: str) -> str:
+    """Sanitise a string for safe use as a single path component."""
+    safe = _UNSAFE_COMPONENT.sub("-", value).strip("-.")
+    return safe or "channel"
+
+
 def _write_org_files(org: OrgReport, output_dir: Path) -> None:
     slug = html_render.slugify(org.org)
     org_dir = output_dir / slug
@@ -112,13 +127,20 @@ def _write_org_files(org: OrgReport, output_dir: Path) -> None:
 # --------------------------------------------------------------------------- #
 # Config resolution
 # --------------------------------------------------------------------------- #
-def _load_config(config_file: str | None, config_data: str | None, org: str | None) -> Config | None:
+def _load_config(
+    config_file: str | None,
+    config_data: str | None,
+    org: str | None,
+    token_env: str = "GITHUB_TOKEN",
+) -> Config | None:
     if config_file:
         return config.load_file(config_file)
     if config_data:
         return config.loads(config_data)
     if org:
-        return Config(organizations=(OrgConfig(name=org),))
+        # Honour the selected token env var so --org works with non-default
+        # token environment variable names (e.g. a classic PAT secret).
+        return Config(organizations=(OrgConfig(name=org, token_env=token_env),))
     return None
 
 
@@ -126,7 +148,7 @@ def _load_config(config_file: str | None, config_data: str | None, org: str | No
 # Modes
 # --------------------------------------------------------------------------- #
 async def _run_org(cfg: Config, *, console: Console, output_dir: Path | None,
-                   pages_url: str | None, top_n: int, force_notify: bool,
+                   pages_url: str | None, top_n: int | None, force_notify: bool,
                    slack_channel: str | None = None) -> int:
     now = dt.datetime.now(dt.timezone.utc)
     pairs: list[tuple[OrgConfig, OrgReport]] = []
@@ -141,7 +163,7 @@ async def _run_org(cfg: Config, *, console: Console, output_dir: Path | None,
             )
     org_reports = [report for _, report in pairs]
 
-    report = Report(orgs=org_reports, generated_at=now)
+    full_report = Report(orgs=org_reports, generated_at=now)
     term_render.render_orgs(org_reports, console)
 
     if output_dir:
@@ -163,18 +185,36 @@ async def _run_org(cfg: Config, *, console: Console, output_dir: Path | None,
         for org_cfg, org_report in pairs
         if org_cfg.slack.report_day.should_notify(now=now.date(), force=force_notify)
     ]
-    outputs = {"should_notify": "true" if notifying else "false", "failed": "false"}
+    outputs = {
+        "should_notify": "true" if notifying else "false",
+        "failed": "false",
+        # Always declared so the action output is stable even when no digest is
+        # produced (no notifying org or no configured channel).
+        "slack_payload": "",
+    }
 
-    by_channel: dict[str, list[OrgReport]] = {}
+    by_channel: dict[str, list[tuple[OrgConfig, OrgReport]]] = {}
     for org_cfg, org_report in notifying:
         channel = slack_channel or org_cfg.slack.channel
         if not channel:
             continue
-        by_channel.setdefault(channel, []).append(org_report)
+        by_channel.setdefault(channel, []).append((org_cfg, org_report))
 
+    # The CLI --top-n (when given) overrides config; otherwise each org's
+    # report.top_n applies. Orgs sharing a channel render into one payload, so
+    # take the most generous configured value for that channel.
     payloads = [
-        slack_render.render_payload(orgs, channel=channel, top_n=top_n, pages_url=pages_url)
-        for channel, orgs in by_channel.items()
+        slack_render.render_payload(
+            [report for _, report in items],
+            channel=channel,
+            top_n=(
+                top_n
+                if top_n is not None
+                else max(oc.report.top_n for oc, _ in items)
+            ),
+            pages_url=pages_url,
+        )
+        for channel, items in by_channel.items()
     ]
     if payloads:
         # The single action output carries the first channel's payload (the
@@ -182,21 +222,24 @@ async def _run_org(cfg: Config, *, console: Console, output_dir: Path | None,
         outputs["slack_payload"] = json.dumps(payloads[0])
         if output_dir:
             for payload in payloads:
-                dest = output_dir / f"slack-payload-{payload['channel']}.json"
+                dest = output_dir / f"slack-payload-{_safe_component(payload['channel'])}.json"
                 dest.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     runner.write_github_output(outputs)
-    runner.append_step_summary(md_render.render_report(report))
+    runner.append_step_summary(md_render.render_report(full_report))
     return 0
 
 
 async def _run_repo(owner: str, repo_name: str, *, token_env: str, console: Console,
-                    fail_threshold: str) -> int:
+                    fail_threshold: str,
+                    ruleset_workflows: dict[str, str] | None = None) -> int:
     token = os.environ.get(token_env, "").strip()
     if not token:
         console.print(f"[red]No token in ${token_env}[/red]")
         return 2
     async with GitHubClient(token) as client:
-        repo, signals = await collect.collect_repo(client, owner, repo_name)
+        repo, signals = await collect.collect_repo(
+            client, owner, repo_name, ruleset_workflows=ruleset_workflows
+        )
     if repo is None:
         return 2
 
@@ -228,16 +271,16 @@ def _repo_outputs(signals: list[RepoSignal], fail_threshold: str) -> dict[str, s
 # --------------------------------------------------------------------------- #
 @app.command()
 def report(
-    config_file: str = typer.Option(None, "--config", "-c", help="Path to a JSON config file."),
-    config_data: str = typer.Option(None, "--config-data", help="Raw or base64 JSON config (vars/secrets)."),
-    org: str = typer.Option(None, "--org", help="Single organisation (shorthand for org mode)."),
+    config_file: str | None = typer.Option(None, "--config", "-c", help="Path to a JSON config file."),
+    config_data: str | None = typer.Option(None, "--config-data", help="Raw or base64 JSON config (vars/secrets)."),
+    org: str | None = typer.Option(None, "--org", help="Single organisation (shorthand for org mode)."),
     scope: str = typer.Option("auto", "--scope", help="auto | org | repo."),
-    repo: str = typer.Option(None, "--repo", help="owner/name for repo mode (else git-detected)."),
+    repo: str | None = typer.Option(None, "--repo", help="owner/name for repo mode (else git-detected)."),
     token_env: str = typer.Option("GITHUB_TOKEN", "--token-env", help="Env var holding the repo-mode token."),
-    output_dir: str = typer.Option(None, "--output-dir", "-o", help="Directory for Pages output (org mode)."),
-    pages_url: str = typer.Option(None, "--pages-url", help="GitHub Pages URL for the Slack link."),
-    slack_channel: str = typer.Option(None, "--slack-channel", help="Slack channel ID; overrides config slack.channel (e.g. SLACK_CHANNEL_ID)."),
-    top_n: int = typer.Option(10, "--top-n", help="Offenders shown per signal in Slack."),
+    output_dir: str | None = typer.Option(None, "--output-dir", "-o", help="Directory for Pages output (org mode)."),
+    pages_url: str | None = typer.Option(None, "--pages-url", help="GitHub Pages URL for the Slack link."),
+    slack_channel: str | None = typer.Option(None, "--slack-channel", help="Slack channel ID; overrides config slack.channel (e.g. SLACK_CHANNEL_ID)."),
+    top_n: int | None = typer.Option(None, "--top-n", help="Offenders shown per signal in Slack (default: config report.top_n, else 10)."),
     fail_threshold: str = typer.Option("none", "--fail-threshold", help="none|low|medium|high|critical|any (repo mode)."),
     force_notify: bool = typer.Option(False, "--force-notify", help="Post to Slack regardless of report_day."),
     no_color: bool = typer.Option(False, "--no-color", help="Disable coloured output."),
@@ -246,9 +289,22 @@ def report(
     plain = no_color or bool(os.environ.get("CI")) or not sys.stdout.isatty()
     console = Console(no_color=plain, highlight=False)
 
-    cfg = _load_config(config_file, config_data, org)
+    # Match the config schema (report.top_n minimum is 1): reject a non-positive
+    # override at the boundary rather than rendering an empty/odd digest.
+    if top_n is not None and top_n < 1:
+        console.print("[red]--top-n must be 1 or greater[/red]")
+        raise typer.Exit(2)
+
+    cfg = _load_config(config_file, config_data, org, token_env)
     detected: tuple[str, str] | None = None
-    if repo and "/" in repo:
+    if repo:
+        # An explicit --repo must be exactly 'owner/name' (one slash, both
+        # parts non-empty). A malformed value would otherwise be split
+        # incorrectly or fall back to git detection, risking a report against
+        # an unintended repository.
+        if not re.fullmatch(r"[^/]+/[^/]+", repo):
+            console.print("[red]--repo must be in 'owner/name' format[/red]")
+            raise typer.Exit(2)
         owner, name = repo.split("/", 1)
         detected = (owner, name)
     elif scope != "org":
@@ -274,10 +330,15 @@ def report(
         )
     else:
         assert detected is not None
+        # In repo mode there is no per-org config; honour report.ruleset_workflows
+        # from a supplied config (e.g. --scope repo with --config) so keyword
+        # customisation applies, falling back to the built-in default otherwise.
+        rw = cfg.report.ruleset_workflows if cfg is not None else None
         code = asyncio.run(
             _run_repo(
                 detected[0], detected[1], token_env=token_env,
                 console=console, fail_threshold=fail_threshold,
+                ruleset_workflows=rw,
             )
         )
     raise typer.Exit(code)

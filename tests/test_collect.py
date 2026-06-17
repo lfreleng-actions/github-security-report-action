@@ -54,11 +54,11 @@ class FakeClient:
         }
         self.scores = {"dependamerge": 8.2}
 
-    async def list_org_repos(self, org: str) -> list[Repo]:
-        return self.repos
+    async def list_org_repos(self, org: str) -> tuple[int, list[Repo]]:
+        return 200, self.repos
 
-    async def org_bulk_alerts(self, org: str, kind: str) -> list[dict]:
-        return self.bulk[kind]
+    async def org_bulk_alerts(self, org: str, kind: str) -> tuple[int, list[dict]]:
+        return 200, self.bulk[kind]
 
     async def org_workflow_rulesets(self, org: str) -> tuple[int, list[dict]]:
         # A zizmor ruleset enforcing the central workflow on every repo.
@@ -144,6 +144,47 @@ async def test_collect_org_groups_alerts_by_repo() -> None:
     assert dep.state is RepoState.OFFENDER
 
 
+async def test_collect_org_degrades_failed_sweep_to_unknown() -> None:
+    # When the dependabot org-bulk sweep is unreadable (403), enabled repos
+    # with a zero count must be reported as unknown rather than clean.
+    class DegradedClient(FakeClient):
+        async def org_bulk_alerts(self, org: str, kind: str) -> tuple[int, list[dict]]:
+            if kind == "dependabot":
+                return 403, []
+            return 200, self.bulk[kind]
+
+        async def dependabot_enabled(self, org: str, repo: str) -> bool | None:
+            return True  # enabled everywhere, so only the sweep status matters
+
+    report = await collect.collect_org(
+        DegradedClient(), OrgConfig(name="o"), ReportConfig(), generated_at=WHEN
+    )
+    dependabot = _sections(report)[SignalType.DEPENDABOT]
+    assert dependabot.offenders == []
+    assert dependabot.clean_count == 0  # nothing is asserted clean
+    assert dependabot.unknown_count > 0
+
+
+async def test_collect_org_flags_incomplete_repo_listing() -> None:
+    # A non-200 repository listing must mark the org report partial so the
+    # renderers can warn that repositories may be missing.
+    class PartialListClient(FakeClient):
+        async def list_org_repos(self, org: str) -> tuple[int, list[Repo]]:
+            return 403, self.repos  # truncated/forbidden listing
+
+    report = await collect.collect_org(
+        PartialListClient(), OrgConfig(name="o"), ReportConfig(), generated_at=WHEN
+    )
+    assert report.partial is True
+
+
+async def test_collect_org_complete_listing_is_not_partial() -> None:
+    report = await collect.collect_org(
+        FakeClient(), OrgConfig(name="o"), ReportConfig(), generated_at=WHEN
+    )
+    assert report.partial is False
+
+
 class FakeRepoClient:
     """Per-repo client stand-in modelling the dependamerge fork mixed state."""
 
@@ -207,3 +248,32 @@ async def test_collect_repo_unreadable_returns_none() -> None:
     repo, signals = await collect.collect_repo(FakeRepoClient(), "o", "missing")
     assert repo is None
     assert signals == []
+
+
+async def test_collect_repo_secret_read_failure_is_unknown() -> None:
+    # A non-200 secret-scanning read that returns an empty count must not be
+    # reported as an authoritative zero (clean); it degrades to unknown.
+    class SecretFailClient(FakeRepoClient):
+        async def repo_secret_scanning(self, org: str, repo: str) -> tuple[int, int]:
+            return 500, 0  # transient failure, empty count
+
+    repo, signals = await collect.collect_repo(SecretFailClient(), "o", "dependamerge")
+    assert repo is not None
+    by_signal = {s.signal: s for s in signals}
+    assert by_signal[SignalType.SECRET_SCANNING].state is RepoState.UNKNOWN
+
+
+async def test_collect_repo_honours_custom_ruleset_workflows() -> None:
+    # A custom keyword mapping that does not match the ruleset's zizmor.yaml
+    # path means the ruleset no longer counts as enabling zizmor, so the repo
+    # is nagged instead of clean. Confirms report.ruleset_workflows is honoured
+    # in repo mode (not just the built-in default).
+    repo, signals = await collect.collect_repo(
+        FakeRepoClient(),
+        "o",
+        "dependamerge",
+        ruleset_workflows={"zizmor": "no-such-keyword"},
+    )
+    assert repo is not None
+    by_signal = {s.signal: s for s in signals}
+    assert by_signal[SignalType.ZIZMOR].state is RepoState.NAG

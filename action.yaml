@@ -43,9 +43,9 @@ inputs:
     required: false
     default: ""
   top_n:
-    description: "Offenders shown per signal in the Slack digest"
+    description: "Offenders shown per signal in the Slack digest (default: config report.top_n, else 10)"
     required: false
-    default: "10"
+    default: ""
   fail_threshold:
     description: "none | low | medium | high | critical | any (repo mode gate)"
     required: false
@@ -91,6 +91,9 @@ runs:
         # Input defaults are literal strings, so the github.token fallback is
         # applied here in env: where the expression is evaluated.
         TOKEN_VALUE: ${{ inputs.token || github.token }}
+        # The explicitly-supplied token (empty when the caller relied on the
+        # github.token fallback); used to fail fast for org mode below.
+        INPUT_TOKEN: ${{ inputs.token }}
         INPUT_SCOPE: ${{ inputs.scope }}
         INPUT_CONFIG: ${{ inputs.config }}
         INPUT_ORG: ${{ inputs.org }}
@@ -114,6 +117,21 @@ runs:
           exit 1
         fi
         export "${TOKEN_ENV}=${TOKEN_VALUE}"
+
+        # Org mode needs a classic PAT with org-level security scopes; the
+        # ephemeral github.token is repo-scoped and 403s on org endpoints,
+        # producing an empty/partial report. Fail fast at the action boundary
+        # when org mode is selected without an explicit token, rather than
+        # silently degrading. Explicit 'repo' scope is always repo mode (a
+        # config there only overrides report settings), so it is exempt.
+        if [ -z "$INPUT_TOKEN" ] && [ "$INPUT_SCOPE" != "repo" ] && \
+            { [ "$INPUT_SCOPE" = "org" ] || [ -n "$INPUT_ORG" ] || \
+              [ -n "$INPUT_CONFIG" ]; }; then
+          echo "Error: org mode requires an explicit 'token' input (a classic" \
+            "PAT with org security scopes); the default github.token is" \
+            "repo-scoped and cannot read org-level security data." >&2
+          exit 1
+        fi
 
         # Hybrid runtime: pull requests (or an explicit use_local_source
         # toggle, for testing) exercise the checked-out source so unreleased

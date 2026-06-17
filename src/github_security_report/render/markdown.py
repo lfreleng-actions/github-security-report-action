@@ -45,6 +45,18 @@ def _table(section: SignalSection) -> list[str]:
     return lines
 
 
+# Public, render-surface-agnostic accessors for the per-signal table shape, so
+# other renderers (e.g. HTML) do not reach into this module's private helpers.
+def columns(signal: SignalType) -> list[str]:
+    """Column headings for a signal's offender table (repository first)."""
+    return _columns(signal)
+
+
+def row_cells(sig: RepoSignal) -> list[str]:
+    """Cells for one offender row (the repository link is the first cell)."""
+    return _row(sig)
+
+
 def render_section(section: SignalSection) -> str:
     lines = [f"## {section.signal.heading}", ""]
     if section.offenders:
@@ -83,6 +95,12 @@ def render_org(org: OrgReport) -> str:
         f"_{org.repo_count} repositories analysed · generated {when}_",
         "",
     ]
+    if org.partial:
+        parts.append(
+            "> ⚠️ **Incomplete:** the repository listing could not be fully "
+            "read, so some repositories may be missing from this report."
+        )
+        parts.append("")
     parts.extend(render_section(section) for section in org.sections)
     return "\n".join(parts).rstrip() + "\n"
 
