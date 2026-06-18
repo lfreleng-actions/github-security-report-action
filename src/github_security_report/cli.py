@@ -154,6 +154,8 @@ def _load_config(
     config_data: str | None,
     org: str | None,
     token_env: str = "GITHUB_TOKEN",
+    *,
+    console: Console | None = None,
 ) -> Config | None:
     if config_file:
         return config.load_file(config_file)
@@ -163,6 +165,13 @@ def _load_config(
         # Honour the selected token env var so --org works with non-default
         # token environment variable names (e.g. a classic PAT secret).
         return Config(organizations=(OrgConfig(name=org, token_env=token_env),))
+    # No explicit configuration: fall back to the per-user config file if one
+    # exists, so a local run with no flags works instead of erroring.
+    default_path = config.find_default_config()
+    if default_path is not None:
+        if console is not None:
+            console.print(f"[dim]Using config: {default_path}[/dim]")
+        return config.load_file(str(default_path))
     return None
 
 
@@ -334,7 +343,7 @@ def report(
         console.print("[red]--release-min-age-days must be 0 or greater[/red]")
         raise typer.Exit(2)
 
-    cfg = _load_config(config_file, config_data, org, token_env)
+    cfg = _load_config(config_file, config_data, org, token_env, console=console)
     detected: tuple[str, str] | None = None
     if repo:
         # An explicit --repo must be exactly 'owner/name' (one slash, both

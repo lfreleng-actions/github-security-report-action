@@ -130,6 +130,25 @@ locally with `--release-min-age-days` and the repeatable `--releases-exclude`.
 can live as an org/repo variable rather than in the config JSON. It must be the
 channel **ID** (`C0…`), not the name.
 
+### Config file location
+
+For local use you can drop the same JSON at a conventional per-user path and run
+with no flags — it is picked up automatically when no `--config`,
+`--config-data`, or `--org` is given (instead of erroring):
+
+```text
+$XDG_CONFIG_HOME/github-security-report/config.json
+# or, when XDG_CONFIG_HOME is unset:
+~/.config/github-security-report/config.json
+```
+
+An explicit `--config`, `--config-data`, or `--org` always takes precedence, and
+the action itself never reads this path (it is supplied configuration directly).
+Secrets stay out of the file: reference the token by environment-variable name
+via `token_env` (e.g. `SECURITY_REPORT_PAT`, exported in your shell or sourced
+from a secrets file) — the channel ID is the only Slack value the file holds,
+and the Slack **bot token** is consumed by the workflow, not the CLI.
+
 ## Inputs
 
 <!-- markdownlint-disable MD013 -->

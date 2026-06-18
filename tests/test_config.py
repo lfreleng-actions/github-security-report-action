@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import json
+from pathlib import Path
 
 import pytest
 
@@ -159,3 +160,45 @@ class TestResolveToken:
     def test_missing_returns_none(self) -> None:
         org = config.OrgConfig(name="o", token_env="MY_PAT")
         assert config.resolve_token(org, {}) is None
+
+
+class TestDefaultConfig:
+    def test_default_path_honours_xdg(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: object
+    ) -> None:
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        path = config.default_config_path()
+        assert path.parent.name == "github-security-report"
+        assert path.name == "config.json"
+        assert str(path).startswith(str(tmp_path))
+
+    def test_default_path_falls_back_to_home_config(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        path = config.default_config_path()
+        assert path.parts[-3:] == (
+            ".config",
+            "github-security-report",
+            "config.json",
+        )
+
+    def test_find_default_config_missing(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: object
+    ) -> None:
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        assert config.find_default_config() is None
+
+    def test_find_default_config_present(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        cfg_dir = tmp_path / "github-security-report"
+        cfg_dir.mkdir()
+        (cfg_dir / "config.json").write_text(json.dumps(MINIMAL), encoding="utf-8")
+        found = config.find_default_config()
+        assert found == cfg_dir / "config.json"
+        # And it loads as a valid config.
+        assert config.load_file(str(found)).organizations[0].name == (
+            "lfreleng-actions"
+        )

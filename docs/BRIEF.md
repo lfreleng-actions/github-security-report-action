@@ -256,6 +256,13 @@ Sketch:
   `releases_exclude` control the Releases / Tagging section (§4). Both can be
   overridden at the CLI with `--release-min-age-days` and the repeatable
   `--releases-exclude`.
+- **Config source precedence (CLI):** `--config` file > `--config-data`
+  (raw/base64) > `--org` shorthand > a per-user config file at
+  `$XDG_CONFIG_HOME/github-security-report/config.json` (falling back to
+  `~/.config/...`). The per-user file makes a flagless local run resolve to org
+  mode instead of erroring; the action never reads it (configuration is passed
+  explicitly). Secrets stay out of the file — the token is referenced by
+  `token_env`, and the Slack bot token is a workflow-only secret.
 
 ## 9. Credentials and operating modes
 

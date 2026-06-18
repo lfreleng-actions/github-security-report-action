@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 
 import httpx
 import pytest
@@ -113,6 +114,73 @@ def test_org_mode_writes_pages(tmp_path: object) -> None:
     # --slack-channel supplies the channel even though the config has none,
     # so a payload is written for that channel.
     assert (out / "slack-payload-CTEST123.json").exists()
+
+
+def _mock_org_o_r() -> None:
+    """Register the standard org-mode endpoint mocks for org ``o`` / repo ``r``."""
+    respx.get(url__startswith=f"{API}/orgs/o/repos").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "name": "r",
+                    "full_name": "o/r",
+                    "html_url": "https://github.com/o/r",
+                    "size": 10,
+                }
+            ],
+        )
+    )
+    for kind in ("code-scanning", "dependabot", "secret-scanning"):
+        respx.get(url__startswith=f"{API}/orgs/o/{kind}/alerts").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+    respx.get(url__startswith=f"{API}/orgs/o/rulesets").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    respx.get(url__startswith=f"{API}/repos/o/r/code-scanning/analyses").mock(
+        return_value=httpx.Response(200, json=[{"tool": {"name": "CodeQL"}}])
+    )
+    respx.get(url__startswith=f"{API}/repos/o/r/secret-scanning/alerts").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(
+            200, json={"data": {"repository": {"hasVulnerabilityAlertsEnabled": True}}}
+        )
+    )
+    respx.get(url__startswith=f"{SCORECARD}/projects/github.com/o/r").mock(
+        return_value=httpx.Response(404)
+    )
+    respx.get(url__startswith=f"{API}/repos/o/r/automated-security-fixes").mock(
+        return_value=httpx.Response(200, json={"enabled": True, "paused": False})
+    )
+    respx.get(url__startswith=f"{API}/repos/o/r/contents/.github/dependabot.yml").mock(
+        return_value=httpx.Response(404)
+    )
+    respx.get(url__startswith=f"{API}/repos/o/r/releases/latest").mock(
+        return_value=httpx.Response(404)
+    )
+
+
+@respx.mock
+def test_org_mode_uses_default_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With no --config/--config-data/--org, a per-user config file under
+    # $XDG_CONFIG_HOME is discovered and used (org mode), rather than erroring.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    cfg_dir = tmp_path / "github-security-report"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.json").write_text(
+        json.dumps({"organizations": [{"name": "o", "token_env": "GITHUB_TOKEN"}]}),
+        encoding="utf-8",
+    )
+    _mock_org_o_r()
+
+    result = cli.invoke(app, ["report", "--scope", "org", "--no-color"])
+    assert result.exit_code == 0, result.stdout
+    assert "Using config" in result.stdout
 
 
 @respx.mock

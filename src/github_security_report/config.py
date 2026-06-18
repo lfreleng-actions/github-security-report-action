@@ -18,6 +18,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 
 import jsonschema
 
@@ -279,6 +280,29 @@ def loads(raw: str) -> Config:
 def load_file(path: str) -> Config:
     with open(path, encoding="utf-8") as handle:
         return loads(handle.read())
+
+
+# Conventional per-user config location, so a local run with no flags picks up
+# a central config instead of erroring. Honours $XDG_CONFIG_HOME, falling back
+# to ~/.config (the XDG Base Directory default).
+DEFAULT_CONFIG_DIR = "github-security-report"
+DEFAULT_CONFIG_FILE = "config.json"
+
+
+def default_config_path() -> Path:
+    """The conventional per-user config path (whether or not it exists).
+
+    ``$XDG_CONFIG_HOME/github-security-report/config.json`` when the variable is
+    set, otherwise ``~/.config/github-security-report/config.json``.
+    """
+    base = os.environ.get("XDG_CONFIG_HOME", "").strip() or str(Path.home() / ".config")
+    return Path(base) / DEFAULT_CONFIG_DIR / DEFAULT_CONFIG_FILE
+
+
+def find_default_config() -> Path | None:
+    """The per-user config path if a readable file exists there, else None."""
+    path = default_config_path()
+    return path if path.is_file() else None
 
 
 def resolve_token(org: OrgConfig, env: dict[str, str] | None = None) -> str | None:
