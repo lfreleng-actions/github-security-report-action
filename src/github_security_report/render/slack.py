@@ -156,7 +156,7 @@ def render_org_blocks(org: OrgReport, *, top_n: int, pages_url: str | None) -> l
             table = _fixed_table(section, top_n)
             text += f"\n```\n{table}\n```"
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": text}})
-        # Dependabot posture sub-tables follow the Dependabot Alerts block.
+        # Dependabot posture sub-tables follow the Dependabot signal block.
         if section.signal is SignalType.DEPENDABOT:
             for table_section in org.dependabot_tables:
                 block = _table_block(table_section, top_n)

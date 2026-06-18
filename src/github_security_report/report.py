@@ -97,8 +97,8 @@ class OrgReport:
     # exclusion is visible and distinct from a "not enabled" nag.
     excluded_repos: list[Repo] = field(default_factory=list)
     # Extra Dependabot posture tables rendered as sub-sections beneath the
-    # Dependabot Alerts heading (alerts not enabled, security updates not
-    # enabled, update cooldown). Empty in repo mode / when not collected.
+    # Dependabot signal heading (alerts not enabled, security updates not
+    # enabled, cooldown settings). Empty in repo mode / when not collected.
     dependabot_tables: list[TableSection] = field(default_factory=list)
     # The Releases / Tagging table (release and tag staleness). None only when
     # not collected (repo mode); org mode always assigns a section, which may

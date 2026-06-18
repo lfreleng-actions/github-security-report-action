@@ -33,7 +33,7 @@ class SignalType(str, Enum):
             SignalType.CODEQL: "CodeQL",
             SignalType.SCORECARD: "OpenSSF Scorecard",
             SignalType.ZIZMOR: "Zizmor Static Analysis",
-            SignalType.DEPENDABOT: "Dependabot Alerts",
+            SignalType.DEPENDABOT: "Dependabot: Security Alerts",
             SignalType.SECRET_SCANNING: "Secret scanning",
         }[self]
 

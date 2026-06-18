@@ -101,8 +101,8 @@ def test_security_updates_table_lists_disabled_sorted() -> None:
         posture.RepoPosture(repo=_repo("on"), security_updates=True),
     ]
     table = posture.build_security_updates_table(postures)
-    assert table.title == "Security Updates Not Enabled"
-    assert table.columns == ("Repository",)
+    assert table.title == "Dependabot: Security Updates"
+    assert table.columns == ("Repositories NOT Enabled",)
     assert [r.repo.name for r in table.rows] == ["a", "b"]
 
 
@@ -128,8 +128,8 @@ def test_dependabot_tables_order_and_titles() -> None:
     tables = posture.build_dependabot_tables(postures)
     assert [t.title for t in tables] == [
         "Alerts Not Enabled",
-        "Security Updates Not Enabled",
-        "Update Cooldown",
+        "Dependabot: Security Updates",
+        "Dependabot: Cooldown Settings",
     ]
 
 

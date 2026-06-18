@@ -163,8 +163,10 @@ class TestExtraTables:
             rows=[report.TableRow(repo=_repo("z"), cells=("never", "never"))],
         )
         out = markdown.render_org(org)
-        # Dependabot sub-table nested under (after) the Dependabot Alerts heading.
-        assert out.index("## Dependabot Alerts") < out.index("### Update Cooldown")
+        # Dependabot sub-table nested under (after) the Dependabot signal heading.
+        assert out.index("## Dependabot: Security Alerts") < out.index(
+            "### Update Cooldown"
+        )
         # Releases section rendered at the top level after all signals.
         assert "## Releases / Tagging" in out
         assert "| [z](https://github.com/o/z) | never | never |" in out

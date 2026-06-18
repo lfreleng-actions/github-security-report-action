@@ -153,8 +153,8 @@ def render_org(org: OrgReport, *, top_n: int | None = None) -> str:
         parts.append("")
     for section in org.sections:
         parts.append(render_section(section, top_n=top_n))
-        # The Dependabot configuration-posture sub-tables (enablement, cooldown,
-        # feature matrix) nest beneath the Dependabot Alerts heading.
+        # The Dependabot configuration-posture sub-tables nest beneath the
+        # Dependabot signal heading.
         if section.signal is SignalType.DEPENDABOT:
             parts.extend(
                 render_table_section(table, level=3, top_n=top_n)

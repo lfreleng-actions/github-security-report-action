@@ -141,8 +141,8 @@ def build_security_updates_table(postures: list[RepoPosture]) -> TableSection:
         if p.security_updates is False
     ]
     return TableSection(
-        title="Security Updates Not Enabled",
-        columns=("Repository",),
+        title="Dependabot: Security Updates",
+        columns=("Repositories NOT Enabled",),
         rows=rows,
         empty_note=(
             "No in-scope repository has Dependabot security updates confirmed "
@@ -159,7 +159,7 @@ def build_cooldown_table(postures: list[RepoPosture]) -> TableSection:
         if p.cooldown_missing
     ]
     return TableSection(
-        title="Update Cooldown",
+        title="Dependabot: Cooldown Settings",
         columns=("Repository", "Ecosystems without cooldown"),
         rows=rows,
         empty_note=(

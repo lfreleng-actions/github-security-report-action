@@ -101,25 +101,26 @@ Beyond the five ranked signals, two further categories report **configuration
 posture** and **freshness**. They sit outside the four-state model and render as
 plain tables (no offender/clean/nag/unknown classification).
 
-**Dependabot** (sub-tables nested beneath the Dependabot Alerts heading):
+**Dependabot** (sub-tables nested beneath the "Dependabot: Security Alerts"
+signal heading):
 
-- **Enablement** — repositories where Dependabot alerts are *not* switched on
-  (the GraphQL `hasVulnerabilityAlertsEnabled` read). This replaces the
-  Dependabot signal's nag list so the same repositories are not listed twice.
-- **Update Cooldown** — repositories/ecosystems whose `.github/dependabot.yml`
-  declares an `updates` entry with **no `cooldown`**. A cooldown is a mandatory
-  requirement; **any** cooldown value passes. Repositories with no Dependabot
-  configuration are not listed.
-- **Feature Configuration** — a matrix of repo-level Dependabot features, one
-  column per feature (✅/❌/❓). Rows are ranked by the number of
-  confirmed-disabled features (unknowns do not count), worst first; that count
-  is a **hidden sort key and is never shown as a column** — the disabled cells
-  already make it visible. Only features with a public per-repository API are
-  checked: **Dependabot alerts** (`hasVulnerabilityAlertsEnabled`) and
-  **Security updates** (`GET /repos/{o}/{r}/automated-security-fixes`).
-  **Dependabot malware alerts** and **Grouped security updates** are
-  intentionally omitted — GitHub exposes no public per-repository API for them
-  at time of writing.
+- **Alerts Not Enabled** — repositories where Dependabot vulnerability alerts
+  are *not* switched on (the GraphQL `hasVulnerabilityAlertsEnabled` read). This
+  replaces the Dependabot signal's nag list so the same repositories are not
+  listed twice.
+- **Dependabot: Security Updates** — a single "Repositories NOT Enabled" column
+  listing repositories where Dependabot security updates
+  (`GET /repos/{o}/{r}/automated-security-fixes`) are *not* switched on.
+- **Dependabot: Cooldown Settings** — repositories/ecosystems whose
+  `.github/dependabot.yml` declares an `updates` entry with **no `cooldown`**. A
+  cooldown is a mandatory requirement; **any** cooldown value passes.
+  Repositories with no Dependabot configuration are not listed.
+
+Alerts and security updates are deliberately two separate single-feature tables
+rather than one matrix — they are the only two features with a public
+per-repository API. **Dependabot malware alerts** and **Grouped security
+updates** are intentionally omitted; GitHub exposes no public per-repository API
+for them at time of writing.
 
 **Releases / Tagging** (top-level section): repositories that have gone too long
 without a release or tag. Releases (`GET /repos/{o}/{r}/releases/latest`) and
