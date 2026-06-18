@@ -57,10 +57,10 @@ def test_clean_nag_unknown_notes() -> None:
         RepoSignal(_repo("dunno"), SignalType.CODEQL, RepoState.UNKNOWN),
     ]
     out = _render(_org(signals, count=3))
-    assert "1 clean" in out
-    assert "1 disabled" in out  # numerical total
+    assert "1 Clean" in out
+    assert "1 Disabled" in out  # numerical total
     assert "Disabled: nagme" in out  # name breakdown, separate line
-    assert "1 unknown" in out
+    assert "1 Unknown" in out
 
 
 def test_scorecard_score_shown() -> None:
@@ -108,7 +108,7 @@ def test_excluded_repos_shown_under_each_section_with_count() -> None:
     org.excluded_repos = [_repo("opted-out")]
     out = _render(org)
     # Numerical total separated from the name breakdown.
-    assert "1 excluded" in out
+    assert "1 Excluded" in out
     assert "Excluded: opted-out" in out
 
 
@@ -130,7 +130,7 @@ def test_table_note_split_one_sentence_per_line() -> None:
 def test_disabled_total_and_names_on_separate_lines() -> None:
     signals = [RepoSignal(_repo("nagme"), SignalType.CODEQL, RepoState.NAG)]
     out = _render(_org(signals, count=1))
-    assert "1 disabled" in out  # total line
+    assert "1 Disabled" in out  # total line
     assert "Disabled: nagme" in out  # names line
     assert "not enabled" not in out  # old lowercase label is gone
 
@@ -155,9 +155,9 @@ def test_top_n_limits_generic_table_and_name_lists() -> None:
     terminal.render_org(org, console, top_n=2)
     out = console.export_text()
     # Totals remain the true count; the name lists are truncated with a tally.
-    assert "5 disabled" in out
+    assert "5 Disabled" in out
     assert "(+3 more)" in out  # 5 disabled, 2 shown
-    assert "4 excluded" in out
+    assert "4 Excluded" in out
     assert "(+2 more)" in out  # 4 excluded, 2 shown
     # The generic Releases table is limited to 2 rows + an "and N more" line.
     assert "… and 5 more" in out  # 7 rows, 2 shown

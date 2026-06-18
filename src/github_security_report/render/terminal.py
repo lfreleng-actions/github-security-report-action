@@ -95,13 +95,13 @@ def render_section(
     # line, and the name lists honour the same offender limit as the tables.
     totals: list[str] = []
     if section.clean_count:
-        totals.append(f"[green]✓ {section.clean_count} clean[/green]")
+        totals.append(f"[green]✅ {section.clean_count} Clean[/green]")
     if section.nag_repos:
-        totals.append(f"[yellow]❌ {len(section.nag_repos)} disabled[/yellow]")
+        totals.append(f"[yellow]❌ {len(section.nag_repos)} Disabled[/yellow]")
     if excluded:
-        totals.append(f"[blue]⏩ {len(excluded)} excluded[/blue]")
+        totals.append(f"[blue]⏩ {len(excluded)} Excluded[/blue]")
     if section.unknown_count:
-        totals.append(f"[dim]❓ {section.unknown_count} unknown[/dim]")
+        totals.append(f"[dim]❓ {section.unknown_count} Unknown[/dim]")
     if not (offenders or totals):
         totals.append("[dim]No data[/dim]")
     for line in totals:
@@ -135,7 +135,7 @@ def render_table_section(
     else:
         console.print(f"[bold]{section.title}[/bold]")
         if section.empty_note:
-            console.print(f"  [green]✓ {section.empty_note}[/green]")
+            console.print(f"  [green]✅ {section.empty_note}[/green]")
     console.print()
 
 
