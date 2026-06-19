@@ -215,25 +215,25 @@ def test_dependabot_tables_order_and_titles() -> None:
 # --------------------------------------------------------------------------- #
 def test_release_excluded_by_name() -> None:
     assert posture.is_release_excluded(
-        _repo("tooling"), generated_at=NOW, min_age_days=28, exclude=("tooling",)
+        _repo("tooling"), generated_at=NOW, repo_min_age_days=28, exclude=("tooling",)
     )
 
 
 def test_release_excluded_when_young() -> None:
     assert posture.is_release_excluded(
-        _repo("fresh", age_days=5), generated_at=NOW, min_age_days=28, exclude=()
+        _repo("fresh", age_days=5), generated_at=NOW, repo_min_age_days=28, exclude=()
     )
 
 
 def test_release_not_excluded_when_old_enough() -> None:
     assert not posture.is_release_excluded(
-        _repo("mature", age_days=400), generated_at=NOW, min_age_days=28, exclude=()
+        _repo("mature", age_days=400), generated_at=NOW, repo_min_age_days=28, exclude=()
     )
 
 
 def test_release_min_age_zero_includes_everything() -> None:
     assert not posture.is_release_excluded(
-        _repo("brand-new", age_days=0), generated_at=NOW, min_age_days=0, exclude=()
+        _repo("brand-new", age_days=0), generated_at=NOW, repo_min_age_days=0, exclude=()
     )
 
 
@@ -251,7 +251,7 @@ def test_releases_table_excludes_young_and_named_repos() -> None:
         ),
     ]
     table = posture.build_releases_table(
-        postures, generated_at=NOW, min_age_days=28, exclude=("skipme",)
+        postures, generated_at=NOW, repo_min_age_days=28, exclude=("skipme",)
     )
     assert [r.repo.name for r in table.rows] == ["kept"]
 
@@ -272,7 +272,7 @@ def test_releases_table_ranks_by_hidden_compound_score() -> None:
         ),
     ]
     table = posture.build_releases_table(
-        postures, generated_at=NOW, min_age_days=28, exclude=()
+        postures, generated_at=NOW, repo_min_age_days=28, exclude=()
     )
     # never (400) > no-tag (305) > fresh-ish (15)
     assert [r.repo.name for r in table.rows] == ["never", "no-tag", "fresh-ish"]
@@ -290,9 +290,67 @@ def test_releases_table_age_cells_humanise() -> None:
         ),
     ]
     table = posture.build_releases_table(
-        postures, generated_at=NOW, min_age_days=28, exclude=()
+        postures, generated_at=NOW, repo_min_age_days=28, exclude=()
     )
     assert table.rows[0].cells == ("today", "1 day ago")
+
+
+def test_releases_table_release_max_age_omits_current_repos() -> None:
+    # With a release-age threshold, repos whose newest release OR tag is within
+    # the window drop out; stale repos and those with neither remain.
+    postures = [
+        # newest signal (tag, 20d) within the 60d window -> omitted
+        posture.RepoPosture(
+            repo=_repo("current", age_days=400),
+            latest_release_at=_ago(120),
+            latest_tag_at=_ago(20),
+        ),
+        # newest signal (release, 90d) older than the window -> flagged
+        posture.RepoPosture(
+            repo=_repo("stale", age_days=400),
+            latest_release_at=_ago(90),
+            latest_tag_at=_ago(200),
+        ),
+        # neither a release nor a tag -> always flagged
+        posture.RepoPosture(repo=_repo("never", age_days=400)),
+    ]
+    table = posture.build_releases_table(
+        postures, generated_at=NOW, repo_min_age_days=28, release_max_age_days=60,
+        exclude=(),
+    )
+    assert sorted(r.repo.name for r in table.rows) == ["never", "stale"]
+    assert "older than 60 day(s)" in table.note
+
+
+def test_releases_table_release_max_age_boundary_is_inclusive() -> None:
+    # A repo whose newest signal is exactly at the threshold counts as current
+    # (within the window) and is omitted.
+    postures = [
+        posture.RepoPosture(
+            repo=_repo("edge", age_days=400), latest_release_at=_ago(60)
+        ),
+    ]
+    table = posture.build_releases_table(
+        postures, generated_at=NOW, repo_min_age_days=28, release_max_age_days=60,
+        exclude=(),
+    )
+    assert table.rows == []
+
+
+def test_releases_table_release_max_age_zero_keeps_all_eligible() -> None:
+    # The threshold disabled (0) preserves the original behaviour: every
+    # eligible repo is listed regardless of how recent its release/tag is.
+    postures = [
+        posture.RepoPosture(
+            repo=_repo("fresh", age_days=400), latest_release_at=_ago(1)
+        ),
+    ]
+    table = posture.build_releases_table(
+        postures, generated_at=NOW, repo_min_age_days=28, release_max_age_days=0,
+        exclude=(),
+    )
+    assert [r.repo.name for r in table.rows] == ["fresh"]
+    assert "older than" not in table.note
 
 
 # --------------------------------------------------------------------------- #

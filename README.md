@@ -44,8 +44,10 @@ tables (org mode):
   with no update `cooldown` configured (mandatory; any value passes).
 - **Releases / Tagging** — repositories overdue a release or tag, ranked by a
   hidden compound staleness score. Repositories younger than
-  `release_min_age_days` (default 28; `0` includes all) and those in
-  `releases_exclude` are omitted.
+  `repo_min_age_days` (default 28; `0` includes all) and those in
+  `releases_exclude` are omitted. Set `release_max_age_days` to only flag
+  repositories whose newest release or tag is older than that many days
+  (default `0` = flag every eligible repository).
 
 ## Operating modes
 
@@ -174,7 +176,8 @@ environment-variable name, never embedded.
     "top_n_slack": 10,
     "include_archived": false,
     "include_test": false,
-    "release_min_age_days": 28
+    "repo_min_age_days": 28,
+    "release_max_age_days": 0
   },
   "organizations": [
     {
@@ -197,9 +200,25 @@ individual output. Set a value to `0` to remove the limit entirely and show
 every offender. Each can also be set at the CLI with `--top-n`,
 `--top-n-report`, `--top-n-cli`, and `--top-n-slack`.
 
-`report.release_min_age_days` (default `28`, `0` = include all) and the per-org
-`releases_exclude` tune the Releases / Tagging section; they can be overridden
-locally with `--release-min-age-days` and the repeatable `--releases-exclude`.
+The Releases / Tagging section has two independent freshness levers:
+
+- `report.repo_min_age_days` (default `28`, `0` = include all) is a grace
+  period that omits **brand-new repositories** — those *created* within that
+  many days — before a release or tag is expected of them. CLI:
+  `--repo-min-age-days`.
+- `report.release_max_age_days` (default `0` = flag everything) is the
+  release-staleness threshold: a repository is only flagged when its newest
+  release **or** tag is older than that many days (a repository with neither is
+  always flagged). Raise it to match your release cadence so actively released
+  repositories drop out of the table. CLI: `--release-max-age-days`.
+
+The per-org `releases_exclude` (CLI `--releases-exclude`, repeatable) drops
+named repositories from the section entirely.
+
+> The former `release_min_age_days` key was a misleading name for
+> `repo_min_age_days` (it gates *repository* age, not *release* age). It is
+> still accepted as a deprecated alias and emits a warning; prefer
+> `repo_min_age_days`.
 
 The per-org `exclude` list removes repositories from analysis entirely; they are
 reported as **excluded** (distinct from "not enabled"), so an intentional

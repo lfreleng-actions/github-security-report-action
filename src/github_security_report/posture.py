@@ -90,21 +90,25 @@ def is_release_excluded(
     repo: Repo,
     *,
     generated_at: dt.datetime,
-    min_age_days: int,
+    repo_min_age_days: int,
     exclude: frozenset[str] | set[str] | tuple[str, ...],
 ) -> bool:
-    """Whether a repository is left out of the Releases / Tagging requirement.
+    """Whether a repository is ineligible for the Releases / Tagging table.
 
     A repository is excluded when its name is in ``exclude`` (never released /
-    not consumed externally) or when it was created within ``min_age_days``
-    (``0`` disables the age hold, so every repository is included). Used both to
-    skip the release/tag probes during collection and to filter the rendered
-    table, keeping the two decisions identical.
+    not consumed externally) or when it was created within ``repo_min_age_days``
+    (``0`` disables the age hold, so every repository is eligible). This is the
+    repository-eligibility gate; the separate release-staleness threshold is
+    applied later, once each repository's release/tag ages are known.
     """
     if repo.name in exclude:
         return True
     repo_age = _age_days(repo.created_at, generated_at)
-    return min_age_days > 0 and repo_age is not None and repo_age < min_age_days
+    return (
+        repo_min_age_days > 0
+        and repo_age is not None
+        and repo_age < repo_min_age_days
+    )
 
 
 def _age_days(when: dt.datetime | None, now: dt.datetime) -> int | None:
@@ -113,6 +117,26 @@ def _age_days(when: dt.datetime | None, now: dt.datetime) -> int | None:
         return None
     delta = (now - when).days
     return max(delta, 0)
+
+
+def _release_is_current(
+    release_age: int | None, tag_age: int | None, release_max_age_days: int
+) -> bool:
+    """Whether a repository's newest release/tag is recent enough to omit it.
+
+    With ``release_max_age_days`` > 0, a repository counts as *current* (and is
+    left out of the table) when its most recent release **or** tag is no older
+    than that many days. A repository with neither a release nor a tag is never
+    current. ``0`` disables the threshold, so nothing is treated as current and
+    every eligible repository is listed.
+    """
+    if release_max_age_days <= 0:
+        return False
+    freshest = min(
+        (age for age in (release_age, tag_age) if age is not None),
+        default=None,
+    )
+    return freshest is not None and freshest <= release_max_age_days
 
 
 def _age_cell(age: int | None) -> str:
@@ -241,16 +265,20 @@ def build_releases_table(
     postures: list[RepoPosture],
     *,
     generated_at: dt.datetime,
-    min_age_days: int = 28,
+    repo_min_age_days: int = 28,
+    release_max_age_days: int = 0,
     exclude: tuple[str, ...] = (),
 ) -> TableSection:
     """The Releases / Tagging table, oldest-overall first.
 
-    Repositories created within ``min_age_days`` are excluded (0 = none
-    excluded), as are any whose name is in ``exclude``. Ranking uses a hidden
-    compound score = release-staleness-days + tag-staleness-days, where an
-    absent release or tag contributes the full repository age (so a repository
-    with neither effectively counts its age twice).
+    Repositories created within ``repo_min_age_days`` are excluded (0 = none
+    excluded), as are any whose name is in ``exclude``. When
+    ``release_max_age_days`` is greater than 0, a repository is only listed when
+    its newest release or tag is older than that many days (or it has neither),
+    so actively released repositories drop out. Ranking uses a hidden compound
+    score = release-staleness-days + tag-staleness-days, where an absent release
+    or tag contributes the full repository age (so a repository with neither
+    effectively counts its age twice).
     """
     excluded = frozenset(exclude)
     ranked: list[tuple[int, RepoPosture, int | None, int | None]] = []
@@ -259,13 +287,15 @@ def build_releases_table(
         if is_release_excluded(
             repo,
             generated_at=generated_at,
-            min_age_days=min_age_days,
+            repo_min_age_days=repo_min_age_days,
             exclude=excluded,
         ):
             continue
         repo_age = _age_days(repo.created_at, generated_at)
         release_age = _age_days(posture.latest_release_at, generated_at)
         tag_age = _age_days(posture.latest_tag_at, generated_at)
+        if _release_is_current(release_age, tag_age, release_max_age_days):
+            continue
         # Absent release/tag contributes the full repository age; an unknown
         # creation date falls back to the staleness we do know (or zero).
         fallback = repo_age if repo_age is not None else 0
@@ -281,22 +311,30 @@ def build_releases_table(
         )
         for _compound, posture, release_age, tag_age in ranked
     ]
-    if min_age_days > 0:
+    if repo_min_age_days > 0:
         age_note = (
-            f"Repositories created within {min_age_days} day(s) are excluded. "
+            f"Repositories created within {repo_min_age_days} day(s) are excluded. "
         )
     else:
         age_note = "All repositories are included (no minimum age). "
+    if release_max_age_days > 0:
+        stale_note = (
+            "Only repositories whose newest release or tag is older than "
+            f"{release_max_age_days} day(s) (or have neither) are shown. "
+        )
+    else:
+        stale_note = ""
     return TableSection(
         title="Releases / Tagging",
         columns=("Repository", "Last release", "Last tag"),
         rows=rows,
         empty_note=(
-            "No repositories to report (all were excluded by the minimum age "
-            "or the exclusion list)."
+            "No repositories to report (all were excluded by the minimum age, "
+            "the release-age threshold, or the exclusion list)."
         ),
         note=(
             age_note
+            + stale_note
             + "Ranked by combined release and tag staleness (oldest first). "
             "A repository with neither a release nor a tag ranks highest."
         ),

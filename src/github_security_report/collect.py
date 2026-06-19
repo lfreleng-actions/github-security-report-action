@@ -367,7 +367,8 @@ async def collect_org(
     report.releases = posture.build_releases_table(
         postures,
         generated_at=when,
-        min_age_days=report_cfg.release_min_age_days,
+        repo_min_age_days=report_cfg.repo_min_age_days,
+        release_max_age_days=report_cfg.release_max_age_days,
         exclude=org_cfg.releases_exclude,
     )
     report.mutable_releases = posture.build_mutable_releases_table(postures)

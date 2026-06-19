@@ -84,16 +84,48 @@ class TestBuildConfig:
         assert org.report.top_n == 20
         assert org.exclude == ("x",)
 
-    def test_release_min_age_days_default_and_override(self) -> None:
-        assert config.build_config(MINIMAL).report.release_min_age_days == 28
+    def test_repo_min_age_days_default_and_override(self) -> None:
+        assert config.build_config(MINIMAL).report.repo_min_age_days == 28
         data = {
-            "report": {"release_min_age_days": 0},
+            "report": {"repo_min_age_days": 0},
             "organizations": [
-                {"name": "o", "report": {"release_min_age_days": 14}},
+                {"name": "o", "report": {"repo_min_age_days": 14}},
             ],
         }
         org = config.build_config(data).organizations[0]
-        assert org.report.release_min_age_days == 14
+        assert org.report.repo_min_age_days == 14
+
+    def test_release_min_age_days_is_deprecated_alias(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # The old key still maps to repo_min_age_days, emitting a warning.
+        data = {
+            "report": {"release_min_age_days": 14},
+            "organizations": [{"name": "o"}],
+        }
+        org = config.build_config(data).organizations[0]
+        assert org.report.repo_min_age_days == 14
+        assert any("deprecated" in r.message for r in caplog.records)
+
+    def test_repo_min_age_days_wins_over_legacy_alias(self) -> None:
+        # An explicit new key takes precedence over the deprecated alias.
+        data = {
+            "report": {"repo_min_age_days": 14, "release_min_age_days": 99},
+            "organizations": [{"name": "o"}],
+        }
+        org = config.build_config(data).organizations[0]
+        assert org.report.repo_min_age_days == 14
+
+    def test_release_max_age_days_default_and_override(self) -> None:
+        assert config.build_config(MINIMAL).report.release_max_age_days == 0
+        data = {
+            "report": {"release_max_age_days": 60},
+            "organizations": [
+                {"name": "o", "report": {"release_max_age_days": 90}},
+            ],
+        }
+        org = config.build_config(data).organizations[0]
+        assert org.report.release_max_age_days == 90
 
     def test_releases_exclude_parsed(self) -> None:
         data = {
@@ -104,11 +136,20 @@ class TestBuildConfig:
         org = config.build_config(data).organizations[0]
         assert org.releases_exclude == ("internal-a", "internal-b")
 
-    def test_rejects_negative_release_min_age_days(self) -> None:
+    def test_rejects_negative_repo_min_age_days(self) -> None:
         with pytest.raises(ConfigError):
             config.build_config(
                 {
-                    "report": {"release_min_age_days": -1},
+                    "report": {"repo_min_age_days": -1},
+                    "organizations": [{"name": "o"}],
+                }
+            )
+
+    def test_rejects_negative_release_max_age_days(self) -> None:
+        with pytest.raises(ConfigError):
+            config.build_config(
+                {
+                    "report": {"release_max_age_days": -1},
                     "organizations": [{"name": "o"}],
                 }
             )

@@ -425,7 +425,7 @@ async def test_collect_org_releases_exclude_and_min_age() -> None:
     report = await collect.collect_org(
         AgedPostureClient(),
         OrgConfig(name="o", releases_exclude=("dependamerge",)),
-        ReportConfig(release_min_age_days=28),
+        ReportConfig(repo_min_age_days=28),
         generated_at=WHEN,
     )
     assert report.releases is not None

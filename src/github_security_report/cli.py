@@ -192,7 +192,8 @@ def _load_config(
 async def _run_org(cfg: Config, *, console: Console, output_dir: Path | None,
                    pages_url: str | None, top_n: int | None, force_notify: bool,
                    slack_channel: str | None = None,
-                   release_min_age_days: int | None = None,
+                   repo_min_age_days: int | None = None,
+                   release_max_age_days: int | None = None,
                    releases_exclude: tuple[str, ...] | None = None,
                    top_n_report: int | None = None,
                    top_n_cli: int | None = None,
@@ -206,8 +207,12 @@ async def _run_org(cfg: Config, *, console: Console, output_dir: Path | None,
             return 2
         # CLI overrides win over config for the Releases/Tagging controls.
         report_cfg = org_cfg.report
-        if release_min_age_days is not None:
-            report_cfg = replace(report_cfg, release_min_age_days=release_min_age_days)
+        if repo_min_age_days is not None:
+            report_cfg = replace(report_cfg, repo_min_age_days=repo_min_age_days)
+        if release_max_age_days is not None:
+            report_cfg = replace(
+                report_cfg, release_max_age_days=release_max_age_days
+            )
         effective_cfg = org_cfg
         if releases_exclude is not None:
             effective_cfg = replace(org_cfg, releases_exclude=releases_exclude)
@@ -373,7 +378,8 @@ def report(
     top_n_slack: int | None = typer.Option(None, "--top-n-slack", help="Offenders per signal in the Slack digest (0 = no limit; overrides --top-n)."),
     fail_threshold: str = typer.Option("none", "--fail-threshold", help="none|low|medium|high|critical|any (repo mode)."),
     force_notify: bool = typer.Option(False, "--force-notify", help="Post to Slack regardless of report_day."),
-    release_min_age_days: int | None = typer.Option(None, "--release-min-age-days", help="Exclude repos created within N days from Releases/Tagging (0 = include all; default: config, else 28)."),
+    repo_min_age_days: int | None = typer.Option(None, "--repo-min-age-days", "--release-min-age-days", help="Exclude repos created within N days from Releases/Tagging (0 = include all; default: config, else 28). --release-min-age-days is a deprecated alias."),
+    release_max_age_days: int | None = typer.Option(None, "--release-max-age-days", help="Flag a repo in Releases/Tagging only when its newest release or tag is older than N days (0 = flag every eligible repo; default: config, else 0)."),
     releases_exclude: list[str] | None = typer.Option(None, "--releases-exclude", help="Repository name to omit from the Releases/Tagging table (repeatable; overrides config)."),
     no_color: bool = typer.Option(False, "--no-color", help="Disable coloured output."),
 ) -> None:
@@ -393,10 +399,13 @@ def report(
             console.print(f"[red]{name} must be 0 or greater (0 = no limit)[/red]")
             raise typer.Exit(2)
 
-    # Match the config schema (release_min_age_days minimum is 0): reject a
-    # negative override at the boundary.
-    if release_min_age_days is not None and release_min_age_days < 0:
-        console.print("[red]--release-min-age-days must be 0 or greater[/red]")
+    # Match the config schema (minimum is 0): reject negative overrides at the
+    # boundary.
+    if repo_min_age_days is not None and repo_min_age_days < 0:
+        console.print("[red]--repo-min-age-days must be 0 or greater[/red]")
+        raise typer.Exit(2)
+    if release_max_age_days is not None and release_max_age_days < 0:
+        console.print("[red]--release-max-age-days must be 0 or greater[/red]")
         raise typer.Exit(2)
 
     cfg = _load_config(config_file, config_data, org, token_env, console=console)
@@ -430,7 +439,8 @@ def report(
                 output_dir=Path(output_dir) if output_dir else None,
                 pages_url=pages_url, top_n=top_n, force_notify=force_notify,
                 slack_channel=slack_channel or None,
-                release_min_age_days=release_min_age_days,
+                repo_min_age_days=repo_min_age_days,
+                release_max_age_days=release_max_age_days,
                 releases_exclude=tuple(releases_exclude) if releases_exclude else None,
                 top_n_report=top_n_report,
                 top_n_cli=top_n_cli,
