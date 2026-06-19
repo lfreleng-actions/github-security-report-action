@@ -5,6 +5,55 @@
 
 # Scripts
 
+## `enable_dependabot_security_updates.py`
+
+Bulk-enables **Dependabot security updates** across an organisation, clearing
+the "Dependabot: Security Updates" nag list the reporting tool produces. It
+drives three REST endpoints per repository:
+
+- `PUT /repos/{owner}/{repo}/vulnerability-alerts` — Dependabot *alerts* (the
+  prerequisite; idempotent).
+- `PUT /repos/{owner}/{repo}/automated-security-fixes` — Dependabot *security
+  updates*.
+- `GET /repos/{owner}/{repo}/automated-security-fixes` — current state, read
+  before and after each change.
+
+Scope mirrors the reporting tool exactly (it reuses the same fork / template /
+archived / test-name / explicit-exclude rules from
+[`../src/github_security_report/scope.py`](../src/github_security_report/scope.py)),
+and additionally skips empty repositories. Pass `--config` to read the org name
+and exclusions straight from the tool's JSON config so the two never drift.
+
+It is a self-contained [PEP 723](https://peps.python.org/pep-0723/) script; `uv`
+resolves its inline dependencies (`httpx`, `rich`) on the fly.
+
+### Run
+
+```bash
+# An org-admin token is required (e.g. a classic PAT with repo admin /
+# admin:org). The god token export publishes it as $GITHUB_TOKEN:
+source ~/.secrets.github.classic.god
+
+# Dry run (default): previews exactly what would change, touches nothing.
+uv run scripts/enable_dependabot_security_updates.py \
+  --config ~/.config/github-security-report/config.json
+
+# Apply: switch the feature on for every in-scope repository.
+uv run scripts/enable_dependabot_security_updates.py \
+  --config ~/.config/github-security-report/config.json --apply
+
+# Or drive it from flags, with a different token variable:
+uv run scripts/enable_dependabot_security_updates.py \
+  --org lfreleng-actions --token-env SECURITY_REPORT_PAT \
+  --exclude project-reporting-artifacts --apply
+```
+
+**Dry-run by default.** These are privileged writes, so the script previews
+unless you pass `--apply`. Useful extra flags: `--repo` (operate on named repos
+only, skipping scope), `--limit N`, and `--include-archived` /
+`--include-test` / `--include-empty`. The operation is reversible via
+`DELETE /repos/{owner}/{repo}/automated-security-fixes`.
+
 ## `phase0_capability_spike.py` (throwaway)
 
 A self-contained [PEP 723](https://peps.python.org/pep-0723/) spike that

@@ -277,6 +277,46 @@ uvx github-security-report report
 uvx github-security-report report --org lfreleng-actions
 ```
 
+## Bulk Remediation Scripts
+
+The report ends with **nag lists** — repositories where a supported feature is
+switched off. Where GitHub exposes the relevant toggle through its REST API,
+the [`scripts/`](scripts/) directory ships standalone helpers that clear a whole
+nag list in one pass instead of clicking through each repository's settings.
+They reuse the tool's own scoping rules
+([`src/github_security_report/scope.py`](src/github_security_report/scope.py)),
+so they act on exactly the repositories the report does. See
+[`scripts/README.md`](scripts/README.md) for full details.
+
+Each script is a self-contained [PEP 723](https://peps.python.org/pep-0723/)
+program: `uv run` resolves its inline dependencies on the fly — no project
+install required.
+
+### `enable_dependabot_security_updates.py`
+
+Enables **Dependabot security updates** (and the prerequisite alerts) across an
+organisation, clearing the "Dependabot: Security Updates" nag list. It reads
+the current state of each repository, enables the feature where it is off, and
+verifies the result.
+
+```bash
+# An org-admin token is required (classic PAT with repo admin / admin:org).
+source ~/.secrets.github.classic.god   # exports $GITHUB_TOKEN
+
+# Dry run (default): preview every change, touch nothing.
+uv run scripts/enable_dependabot_security_updates.py \
+  --config ~/.config/github-security-report/config.json
+
+# Apply: switch the feature on for every in-scope repository.
+uv run scripts/enable_dependabot_security_updates.py \
+  --config ~/.config/github-security-report/config.json --apply
+```
+
+`--config` reads the organisation name and exclusions straight from the
+reporting tool's JSON config, so the script and the report never drift. The
+operation is **dry-run by default** (these are privileged writes) and reversible
+via `DELETE /repos/{owner}/{repo}/automated-security-fixes`.
+
 ## Development
 
 ```bash
