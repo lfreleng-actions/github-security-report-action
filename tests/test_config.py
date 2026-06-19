@@ -156,12 +156,16 @@ class TestBuildConfig:
         assert rc.slack_top_n == 3
 
     def test_zero_top_n_category_disables_limit(self) -> None:
-        rc = config.build_config(
-            {
-                "report": {"top_n_cli": 0},
-                "organizations": [{"name": "o"}],
-            }
-        ).organizations[0].report
+        rc = (
+            config.build_config(
+                {
+                    "report": {"top_n_cli": 0},
+                    "organizations": [{"name": "o"}],
+                }
+            )
+            .organizations[0]
+            .report
+        )
         assert rc.cli_top_n == 0  # 0 = no limit (show every offender)
 
     def test_requires_organizations(self) -> None:
