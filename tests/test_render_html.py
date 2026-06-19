@@ -79,6 +79,7 @@ class TestOrgHtml:
                 title="Enablement",
                 columns=("Repository", "Dependabot alerts"),
                 rows=[report.TableRow(repo=_repo("off"), cells=("❌ not enabled",))],
+                summary="1 not enabled, 5 enabled",
             )
         ]
         org.releases = report.TableSection(
@@ -86,11 +87,13 @@ class TestOrgHtml:
             columns=("Repository", "Last release", "Last tag"),
             rows=[report.TableRow(repo=_repo("stale"), cells=("never", "never"))],
             note="Ranked by combined staleness.",
+            summary="3 stale, 7 fresh",
         )
         out = html.render_org_html(org)
-        assert "<h3>Enablement</h3>" in out
+        # Sub-table and release headings carry their count summary too.
+        assert "<h3>Enablement — 1 not enabled, 5 enabled</h3>" in out
         assert '<a href="https://github.com/o/off">off</a>' in out
-        assert "<h2>Releases / Tagging</h2>" in out
+        assert "<h2>Releases / Tagging — 3 stale, 7 fresh</h2>" in out
         assert '<a href="https://github.com/o/stale">stale</a>' in out
         assert "Ranked by combined staleness." in out
 

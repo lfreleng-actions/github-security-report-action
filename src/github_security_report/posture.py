@@ -132,11 +132,18 @@ def build_alerts_table(postures: list[RepoPosture]) -> TableSection:
         for p in sorted(postures, key=lambda p: p.repo.name)
         if p.dependabot_alerts is False
     ]
+    not_enabled = sum(1 for p in postures if p.dependabot_alerts is False)
+    enabled = sum(1 for p in postures if p.dependabot_alerts is True)
     return TableSection(
         title="Alerts Not Enabled",
         columns=("Repository",),
         rows=rows,
         empty_note="No in-scope repository has Dependabot alerts confirmed disabled.",
+        note=(
+            "Dependabot security alerts are disabled on these repositories; "
+            "enable them so vulnerable dependencies are reported."
+        ),
+        summary=f"{not_enabled} not enabled, {enabled} enabled",
     )
 
 
@@ -147,6 +154,8 @@ def build_security_updates_table(postures: list[RepoPosture]) -> TableSection:
         for p in sorted(postures, key=lambda p: p.repo.name)
         if p.security_updates is False
     ]
+    not_enabled = sum(1 for p in postures if p.security_updates is False)
+    enabled = sum(1 for p in postures if p.security_updates is True)
     return TableSection(
         title="Dependabot: Security Updates",
         columns=("Repositories NOT Enabled",),
@@ -155,6 +164,12 @@ def build_security_updates_table(postures: list[RepoPosture]) -> TableSection:
             "No in-scope repository has Dependabot security updates confirmed "
             "disabled."
         ),
+        note=(
+            "Dependabot security updates are disabled on these repositories; "
+            "enable them so fixes for vulnerable dependencies are proposed "
+            "automatically."
+        ),
+        summary=f"{not_enabled} not enabled, {enabled} enabled",
     )
 
 
@@ -165,6 +180,10 @@ def build_cooldown_table(postures: list[RepoPosture]) -> TableSection:
         for p in sorted(postures, key=lambda p: p.repo.name)
         if p.cooldown_missing
     ]
+    missing = sum(1 for p in postures if p.cooldown_missing)
+    with_cooldown = sum(
+        1 for p in postures if p.has_dependabot_config and not p.cooldown_missing
+    )
     return TableSection(
         title="Dependabot: Cooldown Settings",
         columns=("Repository", "Ecosystems without cooldown"),
@@ -176,6 +195,7 @@ def build_cooldown_table(postures: list[RepoPosture]) -> TableSection:
             "A cooldown is mandatory; any cooldown value passes. Repositories "
             "with no Dependabot configuration are not listed here."
         ),
+        summary=f"{missing} without cooldown, {with_cooldown} with cooldown",
     )
 
 

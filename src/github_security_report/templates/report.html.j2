@@ -94,7 +94,7 @@
       {% if s.unknown_count %}<p class="unknown"><span aria-hidden="true">ℹ️</span> {{ s.unknown_count }} repositories with unknown status (insufficient permission or a transient read failure)</p>{% endif %}
       {% if not (s.rows or s.clean_count or s.nag or s.unknown_count) %}<p class="empty">No data available.</p>{% endif %}
       {% for t in s.extra_tables or [] %}
-      <h3>{{ t.title }}</h3>
+      <h3>{{ t.title }}{% if t.summary %} — {{ t.summary }}{% endif %}</h3>
       {% if t.rows %}
       <table class="dt-enabled">
         <thead>
@@ -118,7 +118,7 @@
 
     {% if releases %}
     <section>
-      <h2>{{ releases.title }}</h2>
+      <h2>{{ releases.title }}{% if releases.summary %} — {{ releases.summary }}{% endif %}</h2>
       {% if releases.rows %}
       <table class="dt-enabled">
         <thead>

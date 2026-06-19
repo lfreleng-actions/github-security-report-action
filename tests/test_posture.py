@@ -84,6 +84,9 @@ def test_alerts_table_lists_disabled_sorted() -> None:
     assert table.title == "Alerts Not Enabled"
     assert table.columns == ("Repository",)
     assert [r.repo.name for r in table.rows] == ["alpha", "zeta"]
+    # The indeterminate (None) repo counts towards neither side of the summary.
+    assert table.summary == "2 not enabled, 1 enabled"
+    assert table.note
 
 
 def test_alerts_table_empty_has_note_only() -> None:
@@ -104,16 +107,23 @@ def test_security_updates_table_lists_disabled_sorted() -> None:
     assert table.title == "Dependabot: Security Updates"
     assert table.columns == ("Repositories NOT Enabled",)
     assert [r.repo.name for r in table.rows] == ["a", "b"]
+    assert table.summary == "2 not enabled, 1 enabled"
+    assert table.note
 
 
 def test_cooldown_table_lists_repos_missing_cooldown() -> None:
     postures = [
         posture.RepoPosture(repo=_repo("a"), cooldown_missing=("pip", "npm")),
-        posture.RepoPosture(repo=_repo("b"), cooldown_missing=()),
+        posture.RepoPosture(
+            repo=_repo("b"), cooldown_missing=(), has_dependabot_config=True
+        ),
+        # No config at all: counts as neither missing nor with-cooldown.
+        posture.RepoPosture(repo=_repo("c"), cooldown_missing=()),
     ]
     table = posture.build_cooldown_table(postures)
     assert [r.repo.name for r in table.rows] == ["a"]
     assert table.rows[0].cells == ("pip, npm",)
+    assert table.summary == "1 without cooldown, 1 with cooldown"
 
 
 def test_dependabot_tables_order_and_titles() -> None:
