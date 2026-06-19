@@ -81,7 +81,7 @@ def test_alerts_table_lists_disabled_sorted() -> None:
         posture.RepoPosture(repo=_repo("dunno"), dependabot_alerts=None),
     ]
     table = posture.build_alerts_table(postures)
-    assert table.title == "Dependabot: Alerts"
+    assert table.title == "Dependabot: Security Alerts"
     assert table.columns == ("Repository",)
     assert [r.repo.name for r in table.rows] == ["alpha", "zeta"]
     # The indeterminate (None) repo counts towards neither side of the summary.
@@ -98,7 +98,7 @@ def test_alerts_table_empty_has_note_only() -> None:
     # note reads positively.
     assert table.summary == "1 enabled"
     assert table.empty_note == (
-        "All in-scope repositories have Dependabot alerts enabled."
+        "All in-scope repositories have this feature enabled."
     )
 
 
@@ -114,7 +114,7 @@ def test_alerts_table_empty_with_indeterminate_is_not_assertive() -> None:
     assert table.rows == []
     assert table.summary == "1 enabled"
     assert table.empty_note == (
-        "No in-scope repository has Dependabot alerts confirmed disabled."
+        "No in-scope repository has this feature confirmed disabled."
     )
 
 
@@ -156,7 +156,7 @@ def test_security_updates_table_all_enabled_summary() -> None:
     assert table.rows == []
     assert table.summary == "2 enabled"
     assert table.empty_note == (
-        "All in-scope repositories have Dependabot security updates enabled."
+        "All in-scope repositories have this feature enabled."
     )
 
 
@@ -172,7 +172,7 @@ def test_security_updates_table_empty_with_indeterminate() -> None:
     assert table.rows == []
     assert table.summary == "1 enabled"
     assert table.empty_note == (
-        "No in-scope repository has Dependabot security updates confirmed disabled."
+        "No in-scope repository has this feature confirmed disabled."
     )
 
 
@@ -218,7 +218,7 @@ def test_dependabot_tables_order_and_titles() -> None:
     ]
     tables = posture.build_dependabot_tables(postures)
     assert [t.title for t in tables] == [
-        "Dependabot: Alerts",
+        "Dependabot: Security Alerts",
         "Dependabot: Security Updates",
         "Dependabot: Cooldown Settings",
     ]

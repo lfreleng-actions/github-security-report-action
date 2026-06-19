@@ -104,10 +104,12 @@ plain tables (no offender/clean/nag/unknown classification).
 **Dependabot** (sub-tables nested beneath the "Dependabot: Security Alerts"
 signal heading):
 
-- **Dependabot: Alerts** — repositories where Dependabot vulnerability alerts
-  are *not* switched on (the GraphQL `hasVulnerabilityAlertsEnabled` read). This
-  replaces the Dependabot signal's nag list so the same repositories are not
-  listed twice.
+- **Dependabot: Security Alerts** (enablement) — repositories where Dependabot
+  vulnerability alerts are *not* switched on (the GraphQL
+  `hasVulnerabilityAlertsEnabled` read). This replaces the Dependabot signal's
+  nag list so the same repositories are not listed twice. Its empty/all-enabled
+  note is feature-agnostic ("this feature"), shared with the Security Updates
+  table below.
 - **Dependabot: Security Updates** — a single "Repositories NOT Enabled" column
   listing repositories where Dependabot security updates
   (`GET /repos/{o}/{r}/automated-security-fixes`) are *not* switched on.

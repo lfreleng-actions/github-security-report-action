@@ -374,7 +374,7 @@ async def test_collect_org_attaches_dependabot_tables_and_releases() -> None:
     )
     titles = [t.title for t in report.dependabot_tables]
     assert titles == [
-        "Dependabot: Alerts",
+        "Dependabot: Security Alerts",
         "Dependabot: Security Updates",
         "Dependabot: Cooldown Settings",
     ]
@@ -388,7 +388,7 @@ async def test_collect_org_attaches_dependabot_tables_and_releases() -> None:
     cooldown = report.dependabot_tables[2]
     assert [r.repo.name for r in cooldown.rows] == ["dependamerge"]  # pip, no cooldown
 
-    # The Dependabot signal nag is moved into the Dependabot: Alerts sub-table.
+    # The Dependabot signal nag is moved into the alerts enablement sub-table.
     dependabot = _sections(report)[SignalType.DEPENDABOT]
     assert dependabot.nag_repos == []
 

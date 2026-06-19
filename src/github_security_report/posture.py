@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import yaml
@@ -167,61 +168,71 @@ def _posture_summary(bad: int, bad_label: str, good: int, good_label: str) -> st
     return f"{bad} {bad_label}, {good} {good_label}"
 
 
-def build_alerts_table(postures: list[RepoPosture]) -> TableSection:
-    """Repositories where Dependabot vulnerability alerts are not enabled."""
+def _build_feature_table(
+    postures: list[RepoPosture],
+    *,
+    title: str,
+    columns: tuple[str, ...],
+    enabled_of: Callable[[RepoPosture], bool | None],
+    note: str,
+) -> TableSection:
+    """A single-feature enablement table (offenders = feature confirmed off).
+
+    Shared by the Dependabot alerts and security-updates checks: both list the
+    repositories where one boolean feature is explicitly disabled, summarise the
+    enabled/not-enabled split, and use feature-agnostic empty notes ("this
+    feature") so the wording need not be repeated per feature. An indeterminate
+    (``None``) reading counts towards neither side and softens the empty note so
+    it never over-claims that every repository is enabled.
+    """
     rows = [
         TableRow(repo=p.repo, cells=())
         for p in sorted(postures, key=lambda p: p.repo.name)
-        if p.dependabot_alerts is False
+        if enabled_of(p) is False
     ]
-    not_enabled = sum(1 for p in postures if p.dependabot_alerts is False)
-    enabled = sum(1 for p in postures if p.dependabot_alerts is True)
-    indeterminate = sum(1 for p in postures if p.dependabot_alerts is None)
+    not_enabled = sum(1 for p in postures if enabled_of(p) is False)
+    enabled = sum(1 for p in postures if enabled_of(p) is True)
+    indeterminate = sum(1 for p in postures if enabled_of(p) is None)
     return TableSection(
-        title="Dependabot: Alerts",
-        columns=("Repository",),
+        title=title,
+        columns=columns,
         rows=rows,
         empty_note=(
-            "All in-scope repositories have Dependabot alerts enabled."
+            "All in-scope repositories have this feature enabled."
             if indeterminate == 0
-            else "No in-scope repository has Dependabot alerts confirmed "
-            "disabled."
+            else "No in-scope repository has this feature confirmed disabled."
         ),
+        note=note,
+        summary=_posture_summary(not_enabled, "not enabled", enabled, "enabled"),
+    )
+
+
+def build_alerts_table(postures: list[RepoPosture]) -> TableSection:
+    """Repositories where Dependabot vulnerability alerts are not enabled."""
+    return _build_feature_table(
+        postures,
+        title="Dependabot: Security Alerts",
+        columns=("Repository",),
+        enabled_of=lambda p: p.dependabot_alerts,
         note=(
             "Dependabot security alerts are disabled on these repositories; "
             "enable them so vulnerable dependencies are reported."
         ),
-        summary=_posture_summary(not_enabled, "not enabled", enabled, "enabled"),
     )
 
 
 def build_security_updates_table(postures: list[RepoPosture]) -> TableSection:
     """Repositories where Dependabot security updates are not enabled."""
-    rows = [
-        TableRow(repo=p.repo, cells=())
-        for p in sorted(postures, key=lambda p: p.repo.name)
-        if p.security_updates is False
-    ]
-    not_enabled = sum(1 for p in postures if p.security_updates is False)
-    enabled = sum(1 for p in postures if p.security_updates is True)
-    indeterminate = sum(1 for p in postures if p.security_updates is None)
-    return TableSection(
+    return _build_feature_table(
+        postures,
         title="Dependabot: Security Updates",
         columns=("Repositories NOT Enabled",),
-        rows=rows,
-        empty_note=(
-            "All in-scope repositories have Dependabot security updates "
-            "enabled."
-            if indeterminate == 0
-            else "No in-scope repository has Dependabot security updates "
-            "confirmed disabled."
-        ),
+        enabled_of=lambda p: p.security_updates,
         note=(
             "Dependabot security updates are disabled on these repositories; "
             "enable them so fixes for vulnerable dependencies are proposed "
             "automatically."
         ),
-        summary=_posture_summary(not_enabled, "not enabled", enabled, "enabled"),
     )
 
 
