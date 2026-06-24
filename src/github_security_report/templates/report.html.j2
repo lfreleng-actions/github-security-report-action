@@ -28,10 +28,12 @@
     section h2 { color: #2d3748; border-bottom: 2px solid #e2e8f0; padding-bottom: 0.5rem; }
     section h3 { color: #2d3748; margin-top: 1.5rem; font-size: 1.05rem; }
     .note { color: #718096; font-size: 0.85rem; margin-top: 0.5rem; font-style: italic; }
+    .summary { color: #4a5568; font-size: 0.9rem; margin-top: 0.5rem; }
     table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
     th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #edf2f7; }
     th { background: #f7fafc; }
     td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    tfoot td { font-weight: 600; border-top: 2px solid #cbd5e0; }
     .clean { color: #2f855a; margin-top: 0.75rem; }
     .nag-title { margin-top: 1rem; font-weight: 600; color: #b7791f; }
     .nag { margin: 0.25rem 0 0 1.25rem; }
@@ -83,6 +85,11 @@
           </tr>
           {% endfor %}
         </tbody>
+        {% if s.total_cells %}
+        <tfoot>
+          <tr><td>{{ s.total_cells[0] }}</td>{% for cell in s.total_cells[1:] %}<td class="num">{{ cell }}</td>{% endfor %}</tr>
+        </tfoot>
+        {% endif %}
       </table>
       {% if s.hidden %}<p class="note">… and {{ s.hidden }} more</p>{% endif %}
       {% endif %}
@@ -111,7 +118,8 @@
       </table>
       {% if t.hidden %}<p class="note">… and {{ t.hidden }} more</p>{% endif %}
       {% elif t.empty_note %}<p class="clean"><span aria-hidden="true">✅</span> {{ t.empty_note }}</p>{% endif %}
-      {% if t.rows and t.note %}<p class="note">{{ t.note }}</p>{% endif %}
+      {% if t.rows and t.note_lines %}{% for line in t.note_lines %}<p class="note">{{ line }}</p>{% endfor %}{% endif %}
+      {% if t.summary %}<p class="summary">{{ t.summary }}</p>{% endif %}
       {% endfor %}
     </section>
     {% endfor %}
@@ -135,7 +143,32 @@
       </table>
       {% if releases.hidden %}<p class="note">… and {{ releases.hidden }} more</p>{% endif %}
       {% elif releases.empty_note %}<p class="clean"><span aria-hidden="true">✅</span> {{ releases.empty_note }}</p>{% endif %}
-      {% if releases.rows and releases.note %}<p class="note">{{ releases.note }}</p>{% endif %}
+      {% if releases.rows and releases.note_lines %}{% for line in releases.note_lines %}<p class="note">{{ line }}</p>{% endfor %}{% endif %}
+      {% if releases.summary %}<p class="summary">{{ releases.summary }}</p>{% endif %}
+    </section>
+    {% endif %}
+
+    {% if mutable_releases %}
+    <section>
+      <h2>{{ mutable_releases.title }}</h2>
+      {% if mutable_releases.rows %}
+      <table class="dt-enabled">
+        <thead>
+          <tr>{% for col in mutable_releases.columns %}<th>{{ col }}</th>{% endfor %}</tr>
+        </thead>
+        <tbody>
+          {% for row in mutable_releases.rows %}
+          <tr>
+            <td><a href="{{ row.url }}">{{ row.name }}</a></td>
+            {% for cell in row.cells %}<td>{{ cell }}</td>{% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if mutable_releases.hidden %}<p class="note">… and {{ mutable_releases.hidden }} more</p>{% endif %}
+      {% elif mutable_releases.empty_note %}<p class="clean"><span aria-hidden="true">✅</span> {{ mutable_releases.empty_note }}</p>{% endif %}
+      {% if mutable_releases.rows and mutable_releases.note_lines %}{% for line in mutable_releases.note_lines %}<p class="note">{{ line }}</p>{% endfor %}{% endif %}
+      {% if mutable_releases.summary %}<p class="summary">{{ mutable_releases.summary }}</p>{% endif %}
     </section>
     {% endif %}
 

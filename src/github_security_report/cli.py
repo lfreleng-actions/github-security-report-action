@@ -192,7 +192,8 @@ def _load_config(
 async def _run_org(cfg: Config, *, console: Console, output_dir: Path | None,
                    pages_url: str | None, top_n: int | None, force_notify: bool,
                    slack_channel: str | None = None,
-                   release_min_age_days: int | None = None,
+                   repo_min_age_days: int | None = None,
+                   release_max_age_days: int | None = None,
                    releases_exclude: tuple[str, ...] | None = None,
                    top_n_report: int | None = None,
                    top_n_cli: int | None = None,
@@ -206,8 +207,12 @@ async def _run_org(cfg: Config, *, console: Console, output_dir: Path | None,
             return 2
         # CLI overrides win over config for the Releases/Tagging controls.
         report_cfg = org_cfg.report
-        if release_min_age_days is not None:
-            report_cfg = replace(report_cfg, release_min_age_days=release_min_age_days)
+        if repo_min_age_days is not None:
+            report_cfg = replace(report_cfg, repo_min_age_days=repo_min_age_days)
+        if release_max_age_days is not None:
+            report_cfg = replace(
+                report_cfg, release_max_age_days=release_max_age_days
+            )
         effective_cfg = org_cfg
         if releases_exclude is not None:
             effective_cfg = replace(org_cfg, releases_exclude=releases_exclude)
@@ -225,6 +230,15 @@ async def _run_org(cfg: Config, *, console: Console, output_dir: Path | None,
         if top_n is not None:
             return top_n
         return int(getattr(org_cfg.report, attr))
+
+    def _most_generous(limits: list[int]) -> int:
+        # 0 means "no limit", so it is the most generous value of all; otherwise
+        # the largest positive cap wins. Without this, max() would treat 0 as
+        # the smallest limit and silently re-impose a cap on an org that asked
+        # for everything when it shares a channel with a capped org.
+        if any(limit <= 0 for limit in limits):
+            return 0
+        return max(limits)
 
     for org_cfg, org_report in pairs:
         term_render.render_org(
@@ -276,8 +290,8 @@ async def _run_org(cfg: Config, *, console: Console, output_dir: Path | None,
         slack_render.render_payload(
             [report for _, report in items],
             channel=channel,
-            top_n=max(
-                _limit(oc, top_n_slack, "slack_top_n") for oc, _ in items
+            top_n=_most_generous(
+                [_limit(oc, top_n_slack, "slack_top_n") for oc, _ in items]
             ),
             pages_url=pages_url,
         )
@@ -358,13 +372,14 @@ def report(
     output_dir: str | None = typer.Option(None, "--output-dir", "-o", help="Directory for Pages output (org mode)."),
     pages_url: str | None = typer.Option(None, "--pages-url", help="GitHub Pages URL for the Slack link."),
     slack_channel: str | None = typer.Option(None, "--slack-channel", help="Slack channel ID; overrides config slack.channel (e.g. SLACK_CHANNEL_ID)."),
-    top_n: int | None = typer.Option(None, "--top-n", help="Offenders shown per signal across all outputs (default: config, else 10). Overridden per output by the flags below."),
-    top_n_report: int | None = typer.Option(None, "--top-n-report", help="Offenders per signal in the GitHub Pages output (overrides --top-n)."),
-    top_n_cli: int | None = typer.Option(None, "--top-n-cli", help="Offenders per signal in the terminal output (overrides --top-n)."),
-    top_n_slack: int | None = typer.Option(None, "--top-n-slack", help="Offenders per signal in the Slack digest (overrides --top-n)."),
+    top_n: int | None = typer.Option(None, "--top-n", help="Offenders shown per signal across all outputs (0 = no limit; default: config, else 10). Overridden per output by the flags below."),
+    top_n_report: int | None = typer.Option(None, "--top-n-report", help="Offenders per signal in the GitHub Pages output (0 = no limit; overrides --top-n)."),
+    top_n_cli: int | None = typer.Option(None, "--top-n-cli", help="Offenders per signal in the terminal output (0 = no limit; overrides --top-n)."),
+    top_n_slack: int | None = typer.Option(None, "--top-n-slack", help="Offenders per signal in the Slack digest (0 = no limit; overrides --top-n)."),
     fail_threshold: str = typer.Option("none", "--fail-threshold", help="none|low|medium|high|critical|any (repo mode)."),
     force_notify: bool = typer.Option(False, "--force-notify", help="Post to Slack regardless of report_day."),
-    release_min_age_days: int | None = typer.Option(None, "--release-min-age-days", help="Exclude repos created within N days from Releases/Tagging (0 = include all; default: config, else 28)."),
+    repo_min_age_days: int | None = typer.Option(None, "--repo-min-age-days", "--release-min-age-days", help="Exclude repos created within N days from Releases/Tagging (0 = include all; default: config, else 28). --release-min-age-days is a deprecated alias."),
+    release_max_age_days: int | None = typer.Option(None, "--release-max-age-days", help="Flag a repo in Releases/Tagging only when its newest release or tag is older than N days (0 = flag every eligible repo; default: config, else 0)."),
     releases_exclude: list[str] | None = typer.Option(None, "--releases-exclude", help="Repository name to omit from the Releases/Tagging table (repeatable; overrides config)."),
     no_color: bool = typer.Option(False, "--no-color", help="Disable coloured output."),
 ) -> None:
@@ -372,22 +387,25 @@ def report(
     plain = no_color or bool(os.environ.get("CI")) or not sys.stdout.isatty()
     console = Console(no_color=plain, highlight=False)
 
-    # Match the config schema (top_n minimum is 1): reject a non-positive
-    # override at the boundary rather than rendering an empty/odd digest.
+    # Match the config schema (top_n minimum is 0): reject a negative override
+    # at the boundary. 0 is permitted and disables the limit (show everything).
     for name, value in (
         ("--top-n", top_n),
         ("--top-n-report", top_n_report),
         ("--top-n-cli", top_n_cli),
         ("--top-n-slack", top_n_slack),
     ):
-        if value is not None and value < 1:
-            console.print(f"[red]{name} must be 1 or greater[/red]")
+        if value is not None and value < 0:
+            console.print(f"[red]{name} must be 0 or greater (0 = no limit)[/red]")
             raise typer.Exit(2)
 
-    # Match the config schema (release_min_age_days minimum is 0): reject a
-    # negative override at the boundary.
-    if release_min_age_days is not None and release_min_age_days < 0:
-        console.print("[red]--release-min-age-days must be 0 or greater[/red]")
+    # Match the config schema (minimum is 0): reject negative overrides at the
+    # boundary.
+    if repo_min_age_days is not None and repo_min_age_days < 0:
+        console.print("[red]--repo-min-age-days must be 0 or greater[/red]")
+        raise typer.Exit(2)
+    if release_max_age_days is not None and release_max_age_days < 0:
+        console.print("[red]--release-max-age-days must be 0 or greater[/red]")
         raise typer.Exit(2)
 
     cfg = _load_config(config_file, config_data, org, token_env, console=console)
@@ -421,7 +439,8 @@ def report(
                 output_dir=Path(output_dir) if output_dir else None,
                 pages_url=pages_url, top_n=top_n, force_notify=force_notify,
                 slack_channel=slack_channel or None,
-                release_min_age_days=release_min_age_days,
+                repo_min_age_days=repo_min_age_days,
+                release_max_age_days=release_max_age_days,
                 releases_exclude=tuple(releases_exclude) if releases_exclude else None,
                 top_n_report=top_n_report,
                 top_n_cli=top_n_cli,

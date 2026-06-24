@@ -104,10 +104,12 @@ plain tables (no offender/clean/nag/unknown classification).
 **Dependabot** (sub-tables nested beneath the "Dependabot: Security Alerts"
 signal heading):
 
-- **Alerts Not Enabled** — repositories where Dependabot vulnerability alerts
-  are *not* switched on (the GraphQL `hasVulnerabilityAlertsEnabled` read). This
-  replaces the Dependabot signal's nag list so the same repositories are not
-  listed twice.
+- **Dependabot: Security Alerts** (enablement) — repositories where Dependabot
+  vulnerability alerts are *not* switched on (the GraphQL
+  `hasVulnerabilityAlertsEnabled` read). This replaces the Dependabot signal's
+  nag list so the same repositories are not listed twice. Its empty/all-enabled
+  note is feature-agnostic ("this feature"), shared with the Security Updates
+  table below.
 - **Dependabot: Security Updates** — a single "Repositories NOT Enabled" column
   listing repositories where Dependabot security updates
   (`GET /repos/{o}/{r}/automated-security-fixes`) are *not* switched on.
@@ -127,20 +129,30 @@ without a release or tag. Releases (`GET /repos/{o}/{r}/releases/latest`) and
 tags (GraphQL `refs(refPrefix: "refs/tags/", orderBy: TAG_COMMIT_DATE)`) are
 reported in **two separate columns** as a human "last release / last tag" age.
 
-- **Age hold:** repositories created within `report.release_min_age_days` days
-  (default **28**, CLI `--release-min-age-days`) are excluded; **0** disables
-  the hold so every repository is included.
+- **Age hold:** repositories created within `report.repo_min_age_days` days
+  (default **28**, CLI `--repo-min-age-days`) are excluded; **0** disables
+  the hold so every repository is included. (`release_min_age_days` /
+  `--release-min-age-days` are deprecated aliases of this control.)
+- **Release-staleness threshold:** `report.release_max_age_days` (default **0**,
+  CLI `--release-max-age-days`) flags a repository only when its newest release
+  **or** tag is older than that many days; a repository with neither is always
+  flagged. **0** disables the threshold, so every eligible repository is listed.
 - **On-demand exclusions:** `releases_exclude` (per org; CLI `--releases-exclude`,
   repeatable) drops repositories that are never released / not consumed
   externally.
-- **Hidden compound sort score (never displayed):** rows rank by
-  `release_staleness_days + tag_staleness_days`. A **missing** release or tag
-  contributes the repository's **full age**, so a repository with **neither** a
-  release nor a tag effectively counts its age **twice** and ranks highest. The
-  two columns show the individual staleness; the compound value is used only for
-  ordering and is deliberately not rendered. Probes are skipped for excluded /
-  too-young repositories (they cannot appear in the table anyway), saving two
-  HTTP calls each.
+- **Hidden sort key (never displayed):** rows rank by release/tag staleness
+  alone; repository age only gates scope and never affects ordering. A
+  **missing** release or tag is treated as the worst possible signal, so a
+  repository missing one sorts above any fully-dated repository, and a
+  repository with **neither** a release nor a tag ranks highest of all.
+  Repositories with the same number of missing signals are then ordered by
+  their combined known staleness (oldest first), and ties break on repository
+  name. The two columns show the individual staleness; the sort key is used
+  only for ordering and is deliberately not rendered. Release and tag data are
+  gathered for every in-scope repository through the batched GraphQL prefetch;
+  the repository-age grace period and `releases_exclude` are then applied when
+  the Releases/Tagging table is built, rather than skipping per-repository
+  probes up front.
 
 ## 5. Metrics, ranking and columns
 
@@ -245,7 +257,8 @@ Sketch:
     "top_n": 10,
     "include_archived": false,
     "include_test": false,
-    "release_min_age_days": 28
+    "repo_min_age_days": 28,
+    "release_max_age_days": 0
   },
   "organizations": [
     {
@@ -258,10 +271,14 @@ Sketch:
 }
 ```
 
-- `report.release_min_age_days` (default `28`, `0` = include all) and the per-org
-  `releases_exclude` control the Releases / Tagging section (§4). Both can be
-  overridden at the CLI with `--release-min-age-days` and the repeatable
-  `--releases-exclude`.
+- `report.repo_min_age_days` (default `28`, `0` = include all) is the
+  repository-age grace period and `report.release_max_age_days` (default `0` =
+  flag every eligible repo) is the release-staleness threshold; together with
+  the per-org `releases_exclude` they control the Releases / Tagging section
+  (§4). All three can be overridden at the CLI with `--repo-min-age-days`,
+  `--release-max-age-days`, and the repeatable `--releases-exclude`. The former
+  `release_min_age_days` key (and `--release-min-age-days` flag) is a deprecated
+  alias of `repo_min_age_days`, retained for backward compatibility.
 - **Config source precedence (CLI):** `--config` file > `--config-data`
   (raw/base64) > `--org` shorthand > a per-user config file at
   `$XDG_CONFIG_HOME/github-security-report/config.json` (falling back to

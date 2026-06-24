@@ -32,6 +32,28 @@ def _sections(org: report.OrgReport) -> dict[SignalType, report.SignalSection]:
     return {s.signal: s for s in org.sections}
 
 
+class TestNoteSentences:
+    def test_single_sentence_is_one_line(self) -> None:
+        assert report.note_sentences("Just the one.") == ["Just the one."]
+
+    def test_splits_on_sentence_boundary(self) -> None:
+        assert report.note_sentences("First here. Second here.") == [
+            "First here.",
+            "Second here.",
+        ]
+
+    def test_semicolon_does_not_split(self) -> None:
+        # A semicolon clause stays on one line; only a period followed by
+        # whitespace breaks.
+        assert report.note_sentences("Mandatory; any value passes.") == [
+            "Mandatory; any value passes."
+        ]
+
+    def test_empty_note_has_no_lines(self) -> None:
+        assert report.note_sentences("") == []
+        assert report.note_sentences("   ") == []
+
+
 class TestBuildOrgReport:
     def test_sections_in_fixed_order(self) -> None:
         org = report.build_org_report("o", [], repo_count=0, generated_at=WHEN)
@@ -130,6 +152,10 @@ class TestBuildOrgReport:
 class TestTruncate:
     def test_no_limit_returns_all(self) -> None:
         assert report.truncate([1, 2, 3], None) == ([1, 2, 3], 0)
+
+    def test_zero_limit_returns_all(self) -> None:
+        # 0 is the documented "no limit" setting: show everything, hide nothing.
+        assert report.truncate([1, 2, 3], 0) == ([1, 2, 3], 0)
 
     def test_under_limit_returns_all(self) -> None:
         assert report.truncate([1, 2], 5) == ([1, 2], 0)

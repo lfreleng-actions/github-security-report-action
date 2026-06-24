@@ -61,6 +61,10 @@ def test_offenders_are_code_fenced() -> None:
     codeql = next(b for b in blocks if "CodeQL" in b.get("text", {}).get("text", ""))
     assert "```" in codeql["text"]["text"]
     assert "bad" in codeql["text"]["text"]
+    # The fixed-width header capitalises the repository column for consistency
+    # with the posture/release tables and the other render surfaces.
+    assert "Repository" in codeql["text"]["text"]
+    assert "repo " not in codeql["text"]["text"]
 
 
 def test_top_n_limits_code_fence_rows() -> None:
@@ -76,8 +80,9 @@ def test_top_n_limits_code_fence_rows() -> None:
     blocks = slack.render_org_blocks(_org(signals, count=5), top_n=2, pages_url=None)
     codeql = next(b for b in blocks if "CodeQL" in b.get("text", {}).get("text", ""))
     fence = codeql["text"]["text"].split("```")[1]
-    # header row + 2 data rows + a "… and N more" tally (5 offenders, 2 shown).
-    assert len(fence.strip().splitlines()) == 4
+    # header + 2 data rows + a Total row + a "… and N more" tally (5 offenders,
+    # 2 shown).
+    assert len(fence.strip().splitlines()) == 5
     assert "… and 3 more" in fence
 
 
@@ -119,6 +124,30 @@ def test_dependabot_and_releases_tables_rendered() -> None:
     assert any("Releases / Tagging" in t and "stale" in t for t in texts)
 
 
+def test_mutable_releases_block_shows_summary() -> None:
+    org = _org([], count=84)
+    org.mutable_releases = report.TableSection(
+        title="Mutable Releases",
+        columns=("Repository", "Releases"),
+        rows=[report.TableRow(repo=_repo("img"), cells=("v0.1.0 (latest)",))],
+        note="Recent releases in the repositories above are not immutable.",
+        summary="2 with findings, 82 clean",
+    )
+    blocks = slack.render_org_blocks(org, top_n=10, pages_url=None)
+    texts = [b.get("text", {}).get("text", "") for b in blocks]
+    block = next(t for t in texts if "Mutable Releases" in t)
+    # The heading is bare; the summary is on its own line beneath the table.
+    assert "*Mutable Releases*" in block
+    assert "*Mutable Releases —" not in block
+    assert "\n2 with findings, 82 clean" in block
+    assert "img" in block and "v0.1.0 (latest)" in block
+    # The explanatory note is surfaced (outside the code fence) like the other
+    # renderers, before the summary line.
+    note = "Recent releases in the repositories above are not immutable."
+    assert note in block
+    assert block.index(note) < block.index("2 with findings, 82 clean")
+
+
 def test_empty_extra_tables_are_skipped() -> None:
     org = _org([], count=1)
     org.dependabot_tables = [
@@ -131,3 +160,70 @@ def test_empty_extra_tables_are_skipped() -> None:
     texts = [b.get("text", {}).get("text", "") for b in blocks]
     assert not any("Enablement" in t for t in texts)
     assert not any("Releases / Tagging" in t for t in texts)
+
+
+def test_offender_table_has_totals_row() -> None:
+    signals = [
+        RepoSignal(
+            _repo("a"),
+            SignalType.CODEQL,
+            RepoState.OFFENDER,
+            SeverityCounts(critical=1, high=2, medium=3, low=4),
+        ),
+        RepoSignal(
+            _repo("b"),
+            SignalType.CODEQL,
+            RepoState.OFFENDER,
+            SeverityCounts(critical=1, high=1, medium=1, low=1),
+        ),
+    ]
+    blocks = slack.render_org_blocks(_org(signals, count=2), top_n=10, pages_url=None)
+    codeql = next(b for b in blocks if "CodeQL" in b["text"]["text"])
+    fence = codeql["text"]["text"].split("```")[1]
+    total_line = next(line for line in fence.splitlines() if "Total" in line)
+    # Slack omits the Total column; the severity columns are summed in place.
+    assert total_line.split() == ["Total", "2", "3", "4", "5"]
+
+
+def test_secret_scanning_has_no_totals_row() -> None:
+    sig = RepoSignal(
+        _repo("leaky"),
+        SignalType.SECRET_SCANNING,
+        RepoState.OFFENDER,
+        SeverityCounts(critical=4),
+    )
+    blocks = slack.render_org_blocks(_org([sig]), top_n=10, pages_url=None)
+    heading = SignalType.SECRET_SCANNING.heading
+    secret = next(b for b in blocks if heading in b["text"]["text"])
+    assert "Total" not in secret["text"]["text"]
+
+
+def test_table_headers_are_title_case() -> None:
+    # Slack headers must be capitalised consistently ("Open"/"Score"), matching
+    # the "Repository" column and the other render surfaces.
+    secret_sig = RepoSignal(
+        _repo("leaky"),
+        SignalType.SECRET_SCANNING,
+        RepoState.OFFENDER,
+        SeverityCounts(critical=4),
+    )
+    score_sig = RepoSignal(
+        _repo("scored"),
+        SignalType.SCORECARD,
+        RepoState.OFFENDER,
+        SeverityCounts(high=1),
+        score=6.5,
+    )
+    blocks = slack.render_org_blocks(
+        _org([secret_sig, score_sig], count=2), top_n=10, pages_url=None
+    )
+    secret = next(
+        b for b in blocks if SignalType.SECRET_SCANNING.heading in b["text"]["text"]
+    )
+    assert "Open" in secret["text"]["text"]
+    assert " open " not in secret["text"]["text"]
+    scorecard = next(
+        b for b in blocks if SignalType.SCORECARD.heading in b["text"]["text"]
+    )
+    assert "Score" in scorecard["text"]["text"]
+    assert " score " not in scorecard["text"]["text"]

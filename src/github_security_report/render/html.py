@@ -19,6 +19,7 @@ from github_security_report.report import (
     OrgReport,
     SignalSection,
     TableSection,
+    note_sentences,
     truncate,
 )
 
@@ -72,12 +73,21 @@ def _table_context(section: TableSection, top_n: int | None = None) -> dict:
         "hidden": hidden,
         "empty_note": section.empty_note,
         "note": section.note,
+        "note_lines": note_sentences(section.note),
+        "summary": section.summary,
     }
 
 
 def _section_context(section: SignalSection, top_n: int | None = None) -> dict:
     offenders, hidden = truncate(section.offenders, top_n)
     nag, nag_hidden = truncate(section.nag_repos, top_n)
+    # A trailing totals row sums the additive severity columns across the shown
+    # rows; secret scanning has no such columns, so it gets none.
+    total_cells = (
+        markdown.total_row_cells(section.signal, offenders)
+        if section.signal.uses_severity_columns and offenders
+        else None
+    )
     return {
         "title": section.signal.heading,
         "columns": markdown.columns(section.signal),
@@ -86,6 +96,7 @@ def _section_context(section: SignalSection, top_n: int | None = None) -> dict:
             for s in offenders
         ],
         "hidden": hidden,
+        "total_cells": total_cells,
         "clean_count": section.clean_count,
         "nag": [{"name": r.name, "url": r.html_url} for r in nag],
         "nag_hidden": nag_hidden,
@@ -119,6 +130,11 @@ def render_org_html(org: OrgReport, *, top_n: int | None = None) -> str:
             excluded_hidden=excluded_hidden,
             sections=sections,
             releases=_table_context(org.releases, top_n) if org.releases else None,
+            mutable_releases=(
+                _table_context(org.mutable_releases, top_n)
+                if org.mutable_releases
+                else None
+            ),
             datatables_version=DATATABLES_VERSION,
             datatables_css_sri=DATATABLES_CSS_SRI,
             datatables_js_sri=DATATABLES_JS_SRI,

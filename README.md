@@ -42,10 +42,13 @@ tables (org mode):
 - **Dependabot** — three tables: repositories with vulnerability **alerts not
   enabled**, repositories with **security updates not enabled**, and ecosystems
   with no update `cooldown` configured (mandatory; any value passes).
-- **Releases / Tagging** — repositories overdue a release or tag, ranked by a
-  hidden compound staleness score. Repositories younger than
-  `release_min_age_days` (default 28; `0` includes all) and those in
-  `releases_exclude` are omitted.
+- **Releases / Tagging** — repositories overdue a release or tag, ranked by
+  release/tag staleness (repository age never affects ordering; a repository
+  with no release or tag ranks highest). Repositories younger than
+  `repo_min_age_days` (default 28; `0` includes all) and those in
+  `releases_exclude` are omitted. Set `release_max_age_days` to only flag
+  repositories whose newest release or tag is older than that many days
+  (default `0` = flag every eligible repository).
 
 ## Operating modes
 
@@ -65,10 +68,19 @@ Repo mode needs nothing beyond the workflow's ephemeral `GITHUB_TOKEN`. Org mode
 needs a Personal Access Token; choose **one** of the two options below depending
 on how many organisations the report covers.
 
-All required access is **read-only**. The tool degrades any read it is not
-permitted to make to an "unknown" status rather than reporting a repository as
-clean, so an under-scoped token surfaces as unknowns in the report instead of
+Almost all required access is **read-only**. The tool degrades any read it is
+not permitted to make to an "unknown" status rather than reporting a repository
+as clean, so an under-scoped token surfaces as unknowns in the report instead of
 silently wrong results — start minimal and widen if you see unknowns.
+
+The **one** exception is organisation-ruleset coverage. GitHub gates the
+org-rulesets endpoint behind an org-admin permission (classic `admin:org` scope,
+or fine-grained Administration **write**), even though the tool only reads it.
+That coverage is **optional**: it detects tools enforced through an org ruleset
+(for example a required-workflow or code-scanning ruleset). Without it that one
+signal is skipped and every other part of the report is unaffected, so the
+minimal tokens below omit it. Grant the org-admin permission only if you want
+ruleset-based tool coverage.
 
 ### Single organisation — fine-grained PAT
 
@@ -87,14 +99,15 @@ organisation and **Repository access** set to *All repositories*, then grant:
 | Secret scanning alerts | Open secret-scanning alerts |
 | Administration | Dependabot enablement + security-updates status, and effective branch rules |
 
-**Organization permissions** (Read-only):
+**Organization permissions:**
 
-| Permission | Used for |
-| ---------- | -------- |
-| Administration | Organisation rulesets (detect tools enabled via a required workflow) |
+| Permission | Access | Used for |
+| ---------- | ------ | -------- |
+| Administration | Read and write | *Optional* — organisation rulesets (detect tools enforced through an org ruleset). GitHub gates this endpoint behind Administration **write**; omit it to keep the token read-only and skip ruleset-based tool coverage. |
 
-> A fine-grained token cannot span organisations. For a report covering more
-> than one org, use a classic PAT (below).
+> Read-only is enough for everything except the optional ruleset coverage
+> above. A fine-grained token cannot span organisations. For a report covering
+> more than one org, use a classic PAT (below).
 
 ### Multiple organisations — classic PAT
 
@@ -106,7 +119,8 @@ organisations. Grant these scopes:
 | ----- | -------- |
 | `repo` | Repository data, including private repositories |
 | `security_events` | Code scanning, secret scanning, and Dependabot alerts (org-bulk and per-repo) |
-| `read:org` | Listing organisation repositories and reading organisation rulesets |
+| `read:org` | Listing organisation repositories |
+| `admin:org` | *Optional* — reading organisation rulesets for ruleset-based tool coverage. GitHub gates `GET /orgs/{org}/rulesets` behind the full `admin:org` scope; `read:org` and `write:org` return 404. Omit it to skip that one signal; everything else is unaffected. |
 
 > For organisations that enforce SSO, the PAT must be **SSO-authorised** for
 > each target organisation, or the org-level endpoints return `403` (reported as
@@ -163,7 +177,8 @@ environment-variable name, never embedded.
     "top_n_slack": 10,
     "include_archived": false,
     "include_test": false,
-    "release_min_age_days": 28
+    "repo_min_age_days": 28,
+    "release_max_age_days": 0
   },
   "organizations": [
     {
@@ -182,12 +197,29 @@ environment-variable name, never embedded.
 `top_n` controls how many offenders are shown per signal. It is the shared
 default for all three outputs; set any of `top_n_report` (GitHub Pages),
 `top_n_cli` (terminal), or `top_n_slack` (Slack digest) to override an
-individual output. Each can also be set at the CLI with `--top-n`,
+individual output. Set a value to `0` to remove the limit entirely and show
+every offender. Each can also be set at the CLI with `--top-n`,
 `--top-n-report`, `--top-n-cli`, and `--top-n-slack`.
 
-`report.release_min_age_days` (default `28`, `0` = include all) and the per-org
-`releases_exclude` tune the Releases / Tagging section; they can be overridden
-locally with `--release-min-age-days` and the repeatable `--releases-exclude`.
+The Releases / Tagging section has two independent freshness levers:
+
+- `report.repo_min_age_days` (default `28`, `0` = include all) is a grace
+  period that omits **brand-new repositories** — those *created* within that
+  many days — before a release or tag is expected of them. CLI:
+  `--repo-min-age-days`.
+- `report.release_max_age_days` (default `0` = flag everything) is the
+  release-staleness threshold: a repository is only flagged when its newest
+  release **or** tag is older than that many days (a repository with neither is
+  always flagged). Raise it to match your release cadence so actively released
+  repositories drop out of the table. CLI: `--release-max-age-days`.
+
+The per-org `releases_exclude` (CLI `--releases-exclude`, repeatable) drops
+named repositories from the section entirely.
+
+> The former `release_min_age_days` key was a misleading name for
+> `repo_min_age_days` (it gates *repository* age, not *release* age). It is
+> still accepted as a deprecated alias and emits a warning; prefer
+> `repo_min_age_days`.
 
 The per-org `exclude` list removes repositories from analysis entirely; they are
 reported as **excluded** (distinct from "not enabled"), so an intentional
@@ -232,10 +264,10 @@ and the Slack **bot token** is consumed by the workflow, not the CLI.
 | `output_dir` | No | — | Directory for Pages output (org mode) |
 | `pages_url` | No | — | Published Pages URL (used in the Slack link) |
 | `slack_channel` | No | — | Slack channel ID; overrides the config `slack.channel` (e.g. the `SLACK_CHANNEL_ID` variable) |
-| `top_n` | No | `10` | Offenders per signal across all outputs (shared default) |
-| `top_n_report` | No | — | Offenders per signal in the GitHub Pages output (overrides `top_n`) |
-| `top_n_cli` | No | — | Offenders per signal in the terminal output (overrides `top_n`) |
-| `top_n_slack` | No | — | Offenders per signal in the Slack digest (overrides `top_n`) |
+| `top_n` | No | `10` | Offenders per signal across all outputs (shared default; `0` = no limit) |
+| `top_n_report` | No | — | Offenders per signal in the GitHub Pages output (`0` = no limit; overrides `top_n`) |
+| `top_n_cli` | No | — | Offenders per signal in the terminal output (`0` = no limit; overrides `top_n`) |
+| `top_n_slack` | No | — | Offenders per signal in the Slack digest (`0` = no limit; overrides `top_n`) |
 | `fail_threshold` | No | `none` | `none`/`low`/`medium`/`high`/`critical`/`any` (repo mode) |
 | `force_notify` | No | `false` | Post to Slack regardless of `report_day` |
 | `tool_version` | No | `0.1.0` | Published PyPI version (ignored on pull requests) |
@@ -264,6 +296,46 @@ uvx github-security-report report
 # Or org mode locally with a PAT:
 uvx github-security-report report --org lfreleng-actions
 ```
+
+## Bulk Remediation Scripts
+
+The report ends with **nag lists** — repositories where a supported feature is
+switched off. Where GitHub exposes the relevant toggle through its REST API,
+the [`scripts/`](scripts/) directory ships standalone helpers that clear a whole
+nag list in one pass instead of clicking through each repository's settings.
+They reuse the tool's own scoping rules
+([`src/github_security_report/scope.py`](src/github_security_report/scope.py)),
+so they act on exactly the repositories the report does. See
+[`scripts/README.md`](scripts/README.md) for full details.
+
+Each script is a self-contained [PEP 723](https://peps.python.org/pep-0723/)
+program: `uv run` resolves its inline dependencies on the fly — no project
+install required.
+
+### `enable_dependabot_security_updates.py`
+
+Enables **Dependabot security updates** (and the prerequisite alerts) across an
+organisation, clearing the "Dependabot: Security Updates" nag list. It reads
+the current state of each repository, enables the feature where it is off, and
+verifies the result.
+
+```bash
+# An org-admin token is required (classic PAT with repo admin / admin:org).
+source ~/.secrets.github.classic.god   # exports $GITHUB_TOKEN
+
+# Dry run (default): preview every change, touch nothing.
+uv run scripts/enable_dependabot_security_updates.py \
+  --config ~/.config/github-security-report/config.json
+
+# Apply: switch the feature on for every in-scope repository.
+uv run scripts/enable_dependabot_security_updates.py \
+  --config ~/.config/github-security-report/config.json --apply
+```
+
+`--config` reads the organisation name and exclusions straight from the
+reporting tool's JSON config, so the script and the report never drift. The
+operation is **dry-run by default** (these are privileged writes) and reversible
+via `DELETE /repos/{owner}/{repo}/automated-security-fixes`.
 
 ## Development
 

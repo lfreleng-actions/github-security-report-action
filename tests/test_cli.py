@@ -20,6 +20,28 @@ SCORECARD = "https://api.securityscorecards.dev"
 cli = CliRunner()
 
 
+def _org_graphql_side(request: httpx.Request) -> httpx.Response:
+    """Answer the batched org-mode prefetch query for each ``n{idx}`` variable.
+
+    Returns a minimal repository node per alias (alerts enabled, no config, no
+    tags, no releases), mirroring the shape :func:`client.repo_graph_batch`
+    expects so org-mode tests need no per-repo dependabot.yml/releases mocks.
+    """
+    variables = json.loads(request.content).get("variables", {})
+    data: dict[str, object] = {}
+    for key in variables:
+        if not key.startswith("n"):
+            continue
+        idx = key[1:]
+        data[f"r{idx}"] = {
+            "hasVulnerabilityAlertsEnabled": True,
+            "dependabotConfig": None,
+            "tags": {"nodes": []},
+            "releases": {"nodes": []},
+        }
+    return httpx.Response(200, json={"data": data})
+
+
 @pytest.fixture(autouse=True)
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", "t")
@@ -71,24 +93,15 @@ def test_org_mode_writes_pages(tmp_path: object) -> None:
     respx.get(url__startswith=f"{API}/repos/o/r/secret-scanning/alerts").mock(
         return_value=httpx.Response(200, json=[])
     )
-    respx.post(f"{API}/graphql").mock(
-        return_value=httpx.Response(
-            200, json={"data": {"repository": {"hasVulnerabilityAlertsEnabled": True}}}
-        )
-    )
+    respx.post(f"{API}/graphql").mock(side_effect=_org_graphql_side)
     respx.get(url__startswith=f"{SCORECARD}/projects/github.com/o/r").mock(
         return_value=httpx.Response(404)
     )
 
-    # Dependabot posture + release/tag freshness probes (extra sections).
+    # Dependabot posture: only the security-updates flag remains a REST call;
+    # alerts/config/releases all come from the batched GraphQL prefetch.
     respx.get(url__startswith=f"{API}/repos/o/r/automated-security-fixes").mock(
         return_value=httpx.Response(200, json={"enabled": True, "paused": False})
-    )
-    respx.get(url__startswith=f"{API}/repos/o/r/contents/.github/dependabot.yml").mock(
-        return_value=httpx.Response(404)
-    )
-    respx.get(url__startswith=f"{API}/repos/o/r/releases/latest").mock(
-        return_value=httpx.Response(404)
     )
 
     out = tmp_path / "site"
@@ -144,22 +157,12 @@ def _mock_org_o_r() -> None:
     respx.get(url__startswith=f"{API}/repos/o/r/secret-scanning/alerts").mock(
         return_value=httpx.Response(200, json=[])
     )
-    respx.post(f"{API}/graphql").mock(
-        return_value=httpx.Response(
-            200, json={"data": {"repository": {"hasVulnerabilityAlertsEnabled": True}}}
-        )
-    )
+    respx.post(f"{API}/graphql").mock(side_effect=_org_graphql_side)
     respx.get(url__startswith=f"{SCORECARD}/projects/github.com/o/r").mock(
         return_value=httpx.Response(404)
     )
     respx.get(url__startswith=f"{API}/repos/o/r/automated-security-fixes").mock(
         return_value=httpx.Response(200, json={"enabled": True, "paused": False})
-    )
-    respx.get(url__startswith=f"{API}/repos/o/r/contents/.github/dependabot.yml").mock(
-        return_value=httpx.Response(404)
-    )
-    respx.get(url__startswith=f"{API}/repos/o/r/releases/latest").mock(
-        return_value=httpx.Response(404)
     )
 
 
@@ -266,16 +269,16 @@ def test_unresolvable_scope_errors() -> None:
     assert result.exit_code == 2
 
 
-def test_non_positive_top_n_rejected() -> None:
-    # --top-n must match the config schema minimum of 1.
-    result = cli.invoke(app, ["report", "--org", "o", "--top-n", "0", "--no-color"])
+def test_negative_top_n_rejected() -> None:
+    # --top-n must match the config schema minimum of 0 (0 = no limit).
+    result = cli.invoke(app, ["report", "--org", "o", "--top-n=-1", "--no-color"])
     assert result.exit_code == 2
     assert "top-n" in result.stdout
 
 
 @pytest.mark.parametrize("flag", ["--top-n-report", "--top-n-cli", "--top-n-slack"])
-def test_non_positive_per_category_top_n_rejected(flag: str) -> None:
-    result = cli.invoke(app, ["report", "--org", "o", flag, "0", "--no-color"])
+def test_negative_per_category_top_n_rejected(flag: str) -> None:
+    result = cli.invoke(app, ["report", "--org", "o", f"{flag}=-1", "--no-color"])
     assert result.exit_code == 2
     assert flag in result.stdout
 
@@ -355,25 +358,15 @@ def test_org_mode_top_n_from_config(tmp_path: object) -> None:
     respx.get(url__regex=rf"{re.escape(API)}/repos/o/r\d/secret-scanning/alerts").mock(
         return_value=httpx.Response(200, json=[])
     )
-    respx.post(f"{API}/graphql").mock(
-        return_value=httpx.Response(
-            200, json={"data": {"repository": {"hasVulnerabilityAlertsEnabled": True}}}
-        )
-    )
+    respx.post(f"{API}/graphql").mock(side_effect=_org_graphql_side)
     respx.get(url__regex=rf"{re.escape(SCORECARD)}/projects/github.com/o/r\d").mock(
         return_value=httpx.Response(404)
     )
 
-    # Dependabot posture + release/tag freshness probes (extra sections).
+    # Dependabot posture: only the security-updates flag remains a REST call.
     respx.get(
         url__regex=rf"{re.escape(API)}/repos/o/r\d/automated-security-fixes"
     ).mock(return_value=httpx.Response(404))
-    respx.get(
-        url__regex=rf"{re.escape(API)}/repos/o/r\d/contents/.github/dependabot.yml"
-    ).mock(return_value=httpx.Response(404))
-    respx.get(url__regex=rf"{re.escape(API)}/repos/o/r\d/releases/latest").mock(
-        return_value=httpx.Response(404)
-    )
 
     cfg = (
         '{"report": {"top_n": 1}, '

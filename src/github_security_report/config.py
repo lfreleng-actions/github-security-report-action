@@ -66,13 +66,24 @@ CONFIG_SCHEMA: dict = {
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "top_n": {"type": "integer", "minimum": 1},
-                "top_n_report": {"type": "integer", "minimum": 1},
-                "top_n_cli": {"type": "integer", "minimum": 1},
-                "top_n_slack": {"type": "integer", "minimum": 1},
+                # 0 disables the per-signal offender limit (show everything);
+                # any positive value caps each table/list at that many rows.
+                "top_n": {"type": "integer", "minimum": 0},
+                "top_n_report": {"type": "integer", "minimum": 0},
+                "top_n_cli": {"type": "integer", "minimum": 0},
+                "top_n_slack": {"type": "integer", "minimum": 0},
                 "include_archived": {"type": "boolean"},
                 "include_test": {"type": "boolean"},
+                # Repository-age grace period: repos created within this many
+                # days are omitted from Releases/Tagging (0 = include all).
+                # `release_min_age_days` is the deprecated former name for this
+                # same control and is still accepted for backward compatibility.
+                "repo_min_age_days": {"type": "integer", "minimum": 0},
                 "release_min_age_days": {"type": "integer", "minimum": 0},
+                # Release-staleness threshold: a repo is flagged in
+                # Releases/Tagging only when its newest release or tag is older
+                # than this many days (0 = flag every eligible repository).
+                "release_max_age_days": {"type": "integer", "minimum": 0},
                 "ruleset_workflows": {
                     "type": "object",
                     "additionalProperties": {"type": "string"},
@@ -139,7 +150,8 @@ DEFAULT_RULESET_WORKFLOWS = {"zizmor": "zizmor"}
 class ReportConfig:
     # Shared default number of offenders shown per signal; per-output overrides
     # below take precedence when set. report = GitHub Pages (Markdown + HTML),
-    # cli = terminal, slack = the Slack digest.
+    # cli = terminal, slack = the Slack digest. A value of 0 disables the limit
+    # for that output (every offender is shown).
     top_n: int = 10
     top_n_report: int | None = None
     top_n_cli: int | None = None
@@ -147,8 +159,14 @@ class ReportConfig:
     include_archived: bool = False
     include_test: bool = False
     # Repositories created within this many days are excluded from the
-    # Releases/Tagging requirement (0 = include all repositories).
-    release_min_age_days: int = 28
+    # Releases/Tagging requirement, giving brand-new repositories a grace
+    # period before a release or tag is expected (0 = include all repositories).
+    repo_min_age_days: int = 28
+    # A repository is flagged in the Releases/Tagging table only when its most
+    # recent release or tag is older than this many days; a repository with
+    # neither a release nor a tag is always flagged. 0 disables the threshold,
+    # so every eligible repository is listed (ranked by staleness).
+    release_max_age_days: int = 0
     # Read-only mapping (frozen dataclasses do not deep-freeze a plain dict, so a
     # MappingProxyType prevents in-place mutation of a shared config).
     ruleset_workflows: Mapping[str, str] = field(
@@ -228,6 +246,14 @@ def _slack_from(data: dict, base: SlackConfig) -> SlackConfig:
 
 
 def _report_from(data: dict, base: ReportConfig) -> ReportConfig:
+    data = dict(data)
+    # Back-compat: `release_min_age_days` was the original (misleading) name for
+    # the repository-age grace period now called `repo_min_age_days`. Accept it
+    # as an alias and let an explicit new key win if both appear. The (single)
+    # deprecation warning is emitted by build_config, which sees every block.
+    if "release_min_age_days" in data:
+        legacy = data.pop("release_min_age_days")
+        data.setdefault("repo_min_age_days", legacy)
     result = replace(
         base,
         **{
@@ -240,7 +266,8 @@ def _report_from(data: dict, base: ReportConfig) -> ReportConfig:
                 "top_n_slack",
                 "include_archived",
                 "include_test",
-                "release_min_age_days",
+                "repo_min_age_days",
+                "release_max_age_days",
             }
         },
     )
@@ -257,6 +284,17 @@ def build_config(data: dict) -> Config:
         jsonschema.validate(data, CONFIG_SCHEMA)
     except jsonschema.ValidationError as exc:
         raise ConfigError(f"configuration is invalid: {exc.message}") from exc
+
+    # The deprecated `release_min_age_days` alias can appear in the global report
+    # block and in any org override; warn exactly once however many blocks use
+    # it, so users are not alarmed by a repeated message.
+    report_blocks = [data.get("report", {})]
+    report_blocks += [o.get("report", {}) for o in data.get("organizations", [])]
+    if any("release_min_age_days" in block for block in report_blocks):
+        log.warning(
+            "config key 'release_min_age_days' is deprecated; use "
+            "'repo_min_age_days' (the repository-age grace period) instead"
+        )
 
     global_slack = _slack_from(data.get("slack", {}), SlackConfig())
     global_report = _report_from(data.get("report", {}), ReportConfig())

@@ -8,7 +8,7 @@ import datetime as dt
 
 from github_security_report import collect
 from github_security_report.config import OrgConfig, ReportConfig
-from github_security_report.models import Repo, RepoState, SignalType
+from github_security_report.models import Repo, RepoGraphData, RepoState, SignalType
 
 WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.timezone.utc)
 
@@ -109,6 +109,22 @@ class FakeClient:
 
     async def latest_tag_at(self, org: str, repo: str) -> dt.datetime | None:
         return None
+
+    async def repo_graph_batch(
+        self, org: str, names: list[str]
+    ) -> dict[str, RepoGraphData]:
+        # Assemble the batched prefetch result from the per-repo helper methods
+        # above, so subclasses overriding those helpers flow through unchanged.
+        out: dict[str, RepoGraphData] = {}
+        for name in names:
+            cfg_status, cfg_text = await self.dependabot_config(org, name)
+            out[name] = RepoGraphData(
+                dependabot_alerts_enabled=await self.dependabot_enabled(org, name),
+                latest_tag_at=await self.latest_tag_at(org, name),
+                latest_release_at=await self.latest_release_at(org, name),
+                dependabot_config=cfg_text if cfg_status == 200 else None,
+            )
+        return out
 
 
 def _sections(org_report: object) -> dict[SignalType, object]:
@@ -358,7 +374,7 @@ async def test_collect_org_attaches_dependabot_tables_and_releases() -> None:
     )
     titles = [t.title for t in report.dependabot_tables]
     assert titles == [
-        "Alerts Not Enabled",
+        "Dependabot: Security Alerts",
         "Dependabot: Security Updates",
         "Dependabot: Cooldown Settings",
     ]
@@ -372,7 +388,7 @@ async def test_collect_org_attaches_dependabot_tables_and_releases() -> None:
     cooldown = report.dependabot_tables[2]
     assert [r.repo.name for r in cooldown.rows] == ["dependamerge"]  # pip, no cooldown
 
-    # The Dependabot signal nag is moved into the Alerts Not Enabled sub-table.
+    # The Dependabot signal nag is moved into the alerts enablement sub-table.
     dependabot = _sections(report)[SignalType.DEPENDABOT]
     assert dependabot.nag_repos == []
 
@@ -382,6 +398,12 @@ async def test_collect_org_attaches_dependabot_tables_and_releases() -> None:
         "dependamerge",
         "git-configure-action",
     }
+
+    # The Mutable Releases section is attached (no release data in this fake, so
+    # it reports nothing flagged).
+    assert report.mutable_releases is not None
+    assert report.mutable_releases.title == "Mutable Releases"
+    assert report.mutable_releases.rows == []
 
 
 async def test_collect_org_releases_exclude_and_min_age() -> None:
@@ -403,7 +425,7 @@ async def test_collect_org_releases_exclude_and_min_age() -> None:
     report = await collect.collect_org(
         AgedPostureClient(),
         OrgConfig(name="o", releases_exclude=("dependamerge",)),
-        ReportConfig(release_min_age_days=28),
+        ReportConfig(repo_min_age_days=28),
         generated_at=WHEN,
     )
     assert report.releases is not None

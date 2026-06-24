@@ -78,6 +78,47 @@ class Repo:
     created_at: dt.datetime | None = None
 
 
+@dataclass(frozen=True)
+class ReleaseRef:
+    """A single release's identity and immutability, for the release checks.
+
+    ``published_at`` falls back to the release's creation time when GitHub does
+    not supply a publish timestamp. ``is_latest`` marks the release carrying
+    GitHub's "Latest" badge; ``is_prerelease`` distinguishes a pre-release.
+    ``immutable`` is ``None`` when GitHub does not report an immutability state
+    (the GraphQL field is nullable), distinct from a confirmed mutable (False).
+    """
+
+    tag: str
+    immutable: bool | None
+    published_at: dt.datetime | None = None
+    is_latest: bool = False
+    is_prerelease: bool = False
+
+
+@dataclass
+class RepoGraphData:
+    """Per-repository data fetched in the batched GraphQL prefetch.
+
+    One aliased GraphQL query gathers these for many repositories at once,
+    folding the former per-repo Dependabot-enabled, latest-release, latest-tag
+    and ``dependabot.yml`` round-trips into a single request. Defaults model the
+    degraded case (an unreadable repository or a failed query), so affected
+    repositories drop out of the dependent tables rather than being mislabelled.
+    """
+
+    dependabot_alerts_enabled: bool | None = None
+    latest_tag_at: dt.datetime | None = None
+    # Publish time of the "Latest" release, for release/tag staleness.
+    latest_release_at: dt.datetime | None = None
+    # The "Latest" release and the most-recent published release (which may be a
+    # newer pre-release), for the immutability check. None when absent.
+    latest_release: ReleaseRef | None = None
+    last_published_release: ReleaseRef | None = None
+    # Raw ``.github/dependabot.yml`` text, or None when the file is absent.
+    dependabot_config: str | None = None
+
+
 @dataclass
 class SeverityCounts:
     """Open-finding counts by severity, with worst-first ordering."""

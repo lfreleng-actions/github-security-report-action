@@ -43,19 +43,19 @@ inputs:
     required: false
     default: ""
   top_n:
-    description: "Offenders shown per signal across all outputs (default: config, else 10); per-output inputs below override it"
+    description: "Offenders shown per signal across all outputs (0 = no limit; default: config, else 10); per-output inputs below override it"
     required: false
     default: ""
   top_n_report:
-    description: "Offenders shown per signal in the GitHub Pages output (overrides top_n)"
+    description: "Offenders shown per signal in the GitHub Pages output (0 = no limit; overrides top_n)"
     required: false
     default: ""
   top_n_cli:
-    description: "Offenders shown per signal in the terminal output (overrides top_n)"
+    description: "Offenders shown per signal in the terminal output (0 = no limit; overrides top_n)"
     required: false
     default: ""
   top_n_slack:
-    description: "Offenders shown per signal in the Slack digest (overrides top_n)"
+    description: "Offenders shown per signal in the Slack digest (0 = no limit; overrides top_n)"
     required: false
     default: ""
   fail_threshold:

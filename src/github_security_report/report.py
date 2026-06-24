@@ -11,6 +11,7 @@ repos excluded), and an unknown count. See ``docs/BRIEF.md`` sections 4-6, 11.
 from __future__ import annotations
 
 import datetime as dt
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TypeVar
@@ -20,6 +21,7 @@ from github_security_report.models import (
     Repo,
     RepoSignal,
     RepoState,
+    SeverityCounts,
     SignalType,
     rank_offenders,
 )
@@ -81,6 +83,10 @@ class TableSection:
     empty_note: str = ""
     # Optional explanatory footnote rendered beneath the table.
     note: str = ""
+    # Optional one-line count summary rendered beneath the table (after any
+    # note), e.g. "2 with findings, 82 clean". Empty for tables that show no
+    # summary.
+    summary: str = ""
 
 
 @dataclass
@@ -104,6 +110,9 @@ class OrgReport:
     # not collected (repo mode); org mode always assigns a section, which may
     # have zero rows and render its empty_note instead.
     releases: TableSection | None = None
+    # The Mutable Releases table: repositories whose "Latest" or last-published
+    # release is not immutable. None in repo mode / when not collected.
+    mutable_releases: TableSection | None = None
 
 
 @dataclass
@@ -114,21 +123,53 @@ class Report:
 
 _T = TypeVar("_T")
 
+# Splits a footnote on a sentence-ending period followed by whitespace, keeping
+# the period. A semicolon does not end a sentence, so a clause such as
+# "mandatory; any value passes." stays on one line.
+_SENTENCE_BREAK = re.compile(r"(?<=\.)\s+")
+
+
+def note_sentences(note: str) -> list[str]:
+    """Split a table footnote into one sentence per line.
+
+    Render surfaces that show a note across multiple lines (the terminal and
+    HTML) share this splitter so a multi-sentence note breaks identically. A
+    single-sentence note returns one line; an empty note returns no lines.
+    """
+    return [part for part in _SENTENCE_BREAK.split(note.strip()) if part]
+
 
 def truncate(items: Sequence[_T], top_n: int | None) -> tuple[list[_T], int]:
     """Limit a sequence for display, returning ``(shown, hidden_count)``.
 
     The single place every render surface applies an offender limit, so the
     GitHub Pages, terminal and Slack outputs truncate tables and name lists
-    identically. ``top_n`` of ``None`` or a negative value (or one at least the
-    sequence length) shows everything and reports ``0`` hidden -- the negative
-    case is a defensive no-op, since negative slicing would otherwise drop
-    items from the end.
+    identically. ``top_n`` of ``None`` or any value of ``0`` or below shows
+    everything and reports ``0`` hidden: ``0`` is the documented "no limit"
+    setting, and the negative case is a defensive no-op (negative slicing would
+    otherwise drop items from the end).
     """
     seq = list(items)
-    if top_n is None or top_n < 0 or len(seq) <= top_n:
+    if top_n is None or top_n <= 0 or len(seq) <= top_n:
         return seq, 0
     return seq[:top_n], len(seq) - top_n
+
+
+def offender_column_totals(offenders: Sequence[RepoSignal]) -> SeverityCounts:
+    """Sum the severity columns across a set of offender rows.
+
+    Every render surface uses this to draw a trailing "Total" row beneath an
+    offender table. Only the rows passed in are summed (callers pass the
+    displayed, already-truncated set), so the totals match the visible table
+    even when an "and N more" tally hides further offenders.
+    """
+    totals = SeverityCounts()
+    for sig in offenders:
+        totals.critical += sig.counts.critical
+        totals.high += sig.counts.high
+        totals.medium += sig.counts.medium
+        totals.low += sig.counts.low
+    return totals
 
 
 def build_org_report(

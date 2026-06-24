@@ -79,6 +79,7 @@ class TestOrgHtml:
                 title="Enablement",
                 columns=("Repository", "Dependabot alerts"),
                 rows=[report.TableRow(repo=_repo("off"), cells=("❌ not enabled",))],
+                summary="1 not enabled, 5 enabled",
             )
         ]
         org.releases = report.TableSection(
@@ -86,13 +87,53 @@ class TestOrgHtml:
             columns=("Repository", "Last release", "Last tag"),
             rows=[report.TableRow(repo=_repo("stale"), cells=("never", "never"))],
             note="Ranked by combined staleness.",
+            summary="3 stale, 7 fresh",
         )
         out = html.render_org_html(org)
+        # Headings are bare; the count summary renders in its own paragraph below.
         assert "<h3>Enablement</h3>" in out
+        assert "<h3>Enablement —" not in out
+        assert '<p class="summary">1 not enabled, 5 enabled</p>' in out
         assert '<a href="https://github.com/o/off">off</a>' in out
         assert "<h2>Releases / Tagging</h2>" in out
+        assert "<h2>Releases / Tagging —" not in out
+        assert '<p class="summary">3 stale, 7 fresh</p>' in out
         assert '<a href="https://github.com/o/stale">stale</a>' in out
         assert "Ranked by combined staleness." in out
+
+    def test_renders_mutable_releases_with_summary(self) -> None:
+        org = _org("o", [], count=84)
+        org.mutable_releases = report.TableSection(
+            title="Mutable Releases",
+            columns=("Repository", "Releases"),
+            rows=[report.TableRow(repo=_repo("img"), cells=("v0.1.0 (latest)",))],
+            note="Recent releases in the repositories above are not immutable.",
+            summary="2 with findings, 82 clean",
+        )
+        out = html.render_org_html(org)
+        assert "<h2>Mutable Releases</h2>" in out
+        assert "<h2>Mutable Releases —" not in out
+        assert '<p class="summary">2 with findings, 82 clean</p>' in out
+        assert '<a href="https://github.com/o/img">img</a>' in out
+        assert "v0.1.0 (latest)" in out
+        assert (
+            '<p class="note">Recent releases in the repositories above are not '
+            "immutable.</p>" in out
+        )
+
+    def test_multi_sentence_note_splits_into_paragraphs(self) -> None:
+        # A two-sentence note renders as one italic paragraph per sentence, the
+        # same way the terminal surface breaks it.
+        org = _org("o", [], count=2)
+        org.releases = report.TableSection(
+            title="Releases / Tagging",
+            columns=("Repository", "Last release"),
+            rows=[report.TableRow(repo=_repo("stale"), cells=("never",))],
+            note="First sentence here. Second sentence here.",
+        )
+        out = html.render_org_html(org)
+        assert '<p class="note">First sentence here.</p>' in out
+        assert '<p class="note">Second sentence here.</p>' in out
 
     def test_renders_excluded_banner(self) -> None:
         org = _org("o", [], count=3)
@@ -101,6 +142,40 @@ class TestOrgHtml:
         assert "excluded-banner" in out
         assert "Excluded from analysis (1)" in out
         assert '<a href="https://github.com/o/opted-out">opted-out</a>' in out
+
+    def test_offender_table_has_totals_tfoot(self) -> None:
+        signals = [
+            RepoSignal(
+                _repo("a"),
+                SignalType.CODEQL,
+                RepoState.OFFENDER,
+                SeverityCounts(critical=1, high=2, medium=3, low=4),
+            ),
+            RepoSignal(
+                _repo("b"),
+                SignalType.CODEQL,
+                RepoState.OFFENDER,
+                SeverityCounts(critical=1, high=1, medium=1, low=1),
+            ),
+        ]
+        out = html.render_org_html(_org("o", signals, count=2))
+        # The totals render in a <tfoot> so DataTables treats them as a footer
+        # rather than paginating/sorting them as data.
+        assert "<tfoot>" in out
+        tfoot = out.split("<tfoot>", 1)[1].split("</tfoot>", 1)[0]
+        assert "<td>Total</td>" in tfoot
+        for value in ("2", "3", "4", "5", "14"):
+            assert f'<td class="num">{value}</td>' in tfoot
+
+    def test_secret_scanning_has_no_totals_tfoot(self) -> None:
+        sig = RepoSignal(
+            _repo("leaky"),
+            SignalType.SECRET_SCANNING,
+            RepoState.OFFENDER,
+            SeverityCounts(critical=4),
+        )
+        out = html.render_org_html(_org("o", [sig]))
+        assert "<tfoot>" not in out
 
 
 class TestIndexHtml:

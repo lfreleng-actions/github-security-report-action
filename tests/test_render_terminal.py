@@ -102,6 +102,23 @@ def test_dependabot_tables_and_releases_rendered() -> None:
     assert "stale" in out
 
 
+def test_mutable_releases_rendered_with_summary() -> None:
+    org = _org([], count=84)
+    org.mutable_releases = report.TableSection(
+        title="Mutable Releases",
+        columns=("Repository", "Releases"),
+        rows=[report.TableRow(repo=_repo("img"), cells=("v0.1.0 (latest)",))],
+        note="Recent releases in the repositories above are not immutable.",
+        summary="2 with findings, 82 clean",
+    )
+    out = _render(org)
+    # The heading is bare; the summary is relocated beneath the table.
+    assert "Mutable Releases" in out
+    assert "Mutable Releases — 2 with findings" not in out
+    assert "2 with findings, 82 clean" in out
+    assert "img" in out
+
+
 def test_excluded_repos_shown_under_each_section_with_count() -> None:
     signals = [RepoSignal(_repo("clean"), SignalType.CODEQL, RepoState.CLEAN)]
     org = _org(signals, count=5)
@@ -161,3 +178,67 @@ def test_top_n_limits_generic_table_and_name_lists() -> None:
     assert "(+2 more)" in out  # 4 excluded, 2 shown
     # The generic Releases table is limited to 2 rows + an "and N more" line.
     assert "… and 5 more" in out  # 7 rows, 2 shown
+
+
+def test_offender_table_has_totals_row() -> None:
+    signals = [
+        RepoSignal(
+            _repo("a"),
+            SignalType.CODEQL,
+            RepoState.OFFENDER,
+            SeverityCounts(critical=1, high=2, medium=3, low=4),
+        ),
+        RepoSignal(
+            _repo("b"),
+            SignalType.CODEQL,
+            RepoState.OFFENDER,
+            SeverityCounts(critical=1, high=1, medium=1, low=1),
+        ),
+    ]
+    out = _render(_org(signals, count=2))
+    # A trailing Total row sums each severity column plus the Total column.
+    total_line = next(
+        line for line in out.splitlines() if "Total" in line and "14" in line
+    )
+    # critical 2, high 3, medium 4, low 5, total 14.
+    for value in ("2", "3", "4", "5", "14"):
+        assert value in total_line
+
+
+def test_scorecard_totals_row_omits_score() -> None:
+    signals = [
+        RepoSignal(
+            _repo("a"),
+            SignalType.SCORECARD,
+            RepoState.OFFENDER,
+            SeverityCounts(high=2, medium=1),
+            score=6.5,
+        ),
+        RepoSignal(
+            _repo("b"),
+            SignalType.SCORECARD,
+            RepoState.OFFENDER,
+            SeverityCounts(high=1, low=1),
+            score=6.8,
+        ),
+    ]
+    out = _render(_org(signals, count=2))
+    total_line = next(line for line in out.splitlines() if "Total" in line)
+    # high 3, medium 1, low 1 are summed; the score column is left blank.
+    assert "3" in total_line
+    # No summed score (the individual scores 6.5/6.8 do not add up to 13.3).
+    assert "13.3" not in total_line
+
+
+def test_secret_scanning_has_no_totals_row() -> None:
+    signals = [
+        RepoSignal(
+            _repo("a"),
+            SignalType.SECRET_SCANNING,
+            RepoState.OFFENDER,
+            SeverityCounts(high=1),
+        ),
+    ]
+    out = _render(_org(signals, count=1))
+    secret_block = out.split(SignalType.SECRET_SCANNING.heading, 1)[1]
+    assert "Total" not in secret_block

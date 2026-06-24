@@ -10,33 +10,22 @@ sections 10-11.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 
 from rich.console import Console
 from rich.table import Table
 
 from github_security_report.models import Repo, RepoSignal, SignalType
+from github_security_report.render import markdown
 from github_security_report.report import (
     OrgReport,
     SignalSection,
     TableSection,
+    note_sentences,
     truncate,
 )
 
 _SEVERITY_STYLE = {"critical": "bold red", "high": "red", "medium": "yellow", "low": "dim"}
-
-
-def _split_sentences(text: str) -> list[str]:
-    """Split a footnote into one sentence per line for readable terminal output.
-
-    Splits on a sentence-ending period followed by whitespace, keeping the
-    period. A semicolon does not end a sentence, so a clause such as
-    "mandatory; any value passes." stays on one line. A single-sentence note is
-    returned unchanged as one line.
-    """
-    parts = re.split(r"(?<=\.)\s+", text.strip())
-    return [part for part in parts if part]
 
 
 def _add_columns(table: Table, signal: SignalType) -> None:
@@ -85,6 +74,14 @@ def render_section(
         _add_columns(table, section.signal)
         for sig in offenders:
             table.add_row(*_row(sig))
+        # A trailing totals row sums the additive severity columns across the
+        # rows shown above. Secret scanning has no such columns, so skip it.
+        if section.signal.uses_severity_columns:
+            table.add_section()
+            table.add_row(
+                *markdown.total_row_cells(section.signal, offenders),
+                style="bold",
+            )
         console.print(table)
         if hidden_offenders:
             console.print(f"  [dim]… and {hidden_offenders} more[/dim]")
@@ -118,8 +115,12 @@ def render_table_section(
 ) -> None:
     """Render a generic posture/freshness table to the terminal."""
     rows, hidden = truncate(section.rows, top_n)
+    # The title is always a bare heading line; the count summary is relocated
+    # beneath the table (after any guidance note) so every category presents
+    # its results in the same place rather than inline with the heading.
+    console.print(f"[bold]{section.title}[/bold]")
     if rows:
-        table = Table(title=section.title, title_justify="left", title_style="bold")
+        table = Table(title_justify="left", title_style="bold")
         for i, col in enumerate(section.columns):
             table.add_column(col, overflow="fold", justify="left" if i == 0 else "right")
         for row in rows:
@@ -130,12 +131,12 @@ def render_table_section(
         if section.note:
             # A long footnote reads better split one sentence per line. It only
             # describes a populated table, so it is omitted when empty.
-            for sentence in _split_sentences(section.note):
+            for sentence in note_sentences(section.note):
                 console.print(f"  [dim]{sentence}[/dim]")
-    else:
-        console.print(f"[bold]{section.title}[/bold]")
-        if section.empty_note:
-            console.print(f"  [green]✅ {section.empty_note}[/green]")
+    elif section.empty_note:
+        console.print(f"  [green]✅ {section.empty_note}[/green]")
+    if section.summary:
+        console.print(f"  {section.summary}")
     console.print()
 
 
@@ -154,6 +155,8 @@ def render_org(org: OrgReport, console: Console, *, top_n: int | None = None) ->
                 render_table_section(table, console, top_n=top_n)
     if org.releases is not None:
         render_table_section(org.releases, console, top_n=top_n)
+    if org.mutable_releases is not None:
+        render_table_section(org.mutable_releases, console, top_n=top_n)
 
 
 def render_orgs(

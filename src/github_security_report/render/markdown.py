@@ -10,12 +10,15 @@ report model. See ``docs/BRIEF.md`` sections 4-6, 11.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from github_security_report.models import Repo, RepoSignal, SignalType
 from github_security_report.report import (
     OrgReport,
     Report,
     SignalSection,
     TableSection,
+    offender_column_totals,
     truncate,
 )
 
@@ -49,6 +52,11 @@ def _table(section: SignalSection, top_n: int | None = None) -> list[str]:
     offenders, hidden = truncate(section.offenders, top_n)
     for sig in offenders:
         lines.append("| " + " | ".join(_row(sig)) + " |")
+    # Trailing column-totals row, for signals whose columns are additive
+    # severity counts (every offender table except secret scanning).
+    if section.signal.uses_severity_columns:
+        cells = total_row_cells(section.signal, offenders)
+        lines.append("| " + " | ".join(cells) + " |")
     if hidden:
         lines.append("")
         lines.append(f"_… and {hidden} more_")
@@ -65,6 +73,28 @@ def columns(signal: SignalType) -> list[str]:
 def row_cells(sig: RepoSignal) -> list[str]:
     """Cells for one offender row (the repository link is the first cell)."""
     return _row(sig)
+
+
+def total_row_cells(
+    signal: SignalType, offenders: Sequence[RepoSignal]
+) -> list[str]:
+    """Cells for a trailing "Total" row summing the severity columns.
+
+    Shared by the Markdown, HTML and terminal surfaces (their offender tables
+    have the same column shape). The first cell is the literal ``"Total"`` in
+    place of a repository. Scorecard's score is not additive, so that column is
+    left blank. Only meaningful for signals that use severity columns.
+    """
+    totals = offender_column_totals(offenders)
+    base = [
+        str(totals.critical),
+        str(totals.high),
+        str(totals.medium),
+        str(totals.low),
+    ]
+    if signal is SignalType.SCORECARD:
+        return ["Total", "", *base]
+    return ["Total", *base, str(totals.total)]
 
 
 def render_section(section: SignalSection, *, top_n: int | None = None) -> str:
@@ -105,6 +135,8 @@ def render_table_section(
 ) -> str:
     """Render a generic posture/freshness table at the given heading level."""
     heading = "#" * level
+    # The title is always a bare heading; the count summary is relocated beneath
+    # the table (after any note) so results are never inline with the heading.
     lines = [f"{heading} {section.title}", ""]
     rows, hidden = truncate(section.rows, top_n)
     if rows:
@@ -124,6 +156,9 @@ def render_table_section(
             lines.append("")
     elif section.empty_note:
         lines.append(f"✅ {section.empty_note}")
+        lines.append("")
+    if section.summary:
+        lines.append(section.summary)
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -162,6 +197,8 @@ def render_org(org: OrgReport, *, top_n: int | None = None) -> str:
             )
     if org.releases is not None:
         parts.append(render_table_section(org.releases, level=2, top_n=top_n))
+    if org.mutable_releases is not None:
+        parts.append(render_table_section(org.mutable_releases, level=2, top_n=top_n))
     return "\n".join(parts).rstrip() + "\n"
 
 

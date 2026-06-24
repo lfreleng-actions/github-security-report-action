@@ -15,6 +15,7 @@ from github_security_report.report import (
     OrgReport,
     SignalSection,
     TableSection,
+    offender_column_totals,
     truncate,
 )
 
@@ -25,10 +26,10 @@ _SLACK_MAX_BLOCKS = 50
 
 def _plain_columns(signal: SignalType) -> list[str]:
     if signal is SignalType.SECRET_SCANNING:
-        return ["repo", "open"]
+        return ["Repository", "Open"]
     if signal is SignalType.SCORECARD:
-        return ["repo", "score", "C", "H", "M", "L"]
-    return ["repo", "C", "H", "M", "L"]
+        return ["Repository", "Score", "C", "H", "M", "L"]
+    return ["Repository", "C", "H", "M", "L"]
 
 
 def _plain_row(sig: RepoSignal) -> list[str]:
@@ -41,10 +42,35 @@ def _plain_row(sig: RepoSignal) -> list[str]:
     return [sig.repo.name, str(c.critical), str(c.high), str(c.medium), str(c.low)]
 
 
+def _plain_total_row(
+    signal: SignalType, offenders: list[RepoSignal]
+) -> list[str]:
+    """Trailing "Total" row summing the severity columns for Slack tables.
+
+    Slack's fixed-width columns omit the Total column the other surfaces carry,
+    so this matches ``_plain_row``'s shape rather than reusing the shared
+    Markdown helper. Scorecard's score is not additive and is left blank.
+    """
+    totals = offender_column_totals(offenders)
+    base = [
+        str(totals.critical),
+        str(totals.high),
+        str(totals.medium),
+        str(totals.low),
+    ]
+    if signal is SignalType.SCORECARD:
+        return ["Total", "", *base]
+    return ["Total", *base]
+
+
 def _fixed_table(section: SignalSection, top_n: int) -> str:
     cols = _plain_columns(section.signal)
     shown, hidden = truncate(section.offenders, top_n)
     rows = [_plain_row(s) for s in shown]
+    # A trailing totals row sums the additive severity columns; secret scanning
+    # has no such columns, so skip it. Summed over the shown (truncated) rows.
+    if section.signal.uses_severity_columns and shown:
+        rows.append(_plain_total_row(section.signal, shown))
     widths = [len(c) for c in cols]
     for row in rows:
         for i, cell in enumerate(row):
@@ -105,9 +131,20 @@ def _table_block(section: TableSection, top_n: int) -> dict | None:
     table = _fixed_table_generic(section.columns, rows)
     if hidden:
         table += f"\n… and {hidden} more"
+    # The count summary is placed on its own line beneath the table rather than
+    # inline with the title, matching every other category.
+    text = f"*{section.title}*\n```\n{table}\n```"
+    # Surface the explanatory note outside the code fence, before the summary,
+    # so Slack users get the same guidance text as the Markdown/terminal/HTML
+    # renderers. The note only describes a populated table, which is always the
+    # case here (empty tables return None above).
+    if section.note:
+        text += f"\n{section.note}"
+    if section.summary:
+        text += f"\n{section.summary}"
     return {
         "type": "section",
-        "text": {"type": "mrkdwn", "text": f"*{section.title}*\n```\n{table}\n```"},
+        "text": {"type": "mrkdwn", "text": text},
     }
 
 
@@ -151,10 +188,13 @@ def render_org_blocks(org: OrgReport, *, top_n: int, pages_url: str | None) -> l
         )
     for section in org.sections:
         summary = _summary(section)
-        text = f"*{section.signal.heading}* — {summary}"
+        text = f"*{section.signal.heading}*"
         if section.offenders:
             table = _fixed_table(section, top_n)
             text += f"\n```\n{table}\n```"
+        # The count summary is placed on its own line beneath the table rather
+        # than inline with the heading, matching every other category.
+        text += f"\n{summary}"
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": text}})
         # Dependabot posture sub-tables follow the Dependabot signal block.
         if section.signal is SignalType.DEPENDABOT:
@@ -164,6 +204,10 @@ def render_org_blocks(org: OrgReport, *, top_n: int, pages_url: str | None) -> l
                     blocks.append(block)
     if org.releases is not None:
         block = _table_block(org.releases, top_n)
+        if block is not None:
+            blocks.append(block)
+    if org.mutable_releases is not None:
+        block = _table_block(org.mutable_releases, top_n)
         if block is not None:
             blocks.append(block)
     if pages_url:

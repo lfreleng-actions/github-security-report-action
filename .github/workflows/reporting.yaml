@@ -5,7 +5,7 @@
 # Scheduled security/quality report. Runs daily, refreshing GitHub Pages every
 # day; the Slack digest is posted only on the configured report_day (the tool
 # owns that decision via the should_notify output).
-name: "🔐 Security Report"
+name: "Security Report 🔐"
 
 # yamllint disable-line rule:truthy
 on:

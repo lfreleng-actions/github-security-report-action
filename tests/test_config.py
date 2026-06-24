@@ -84,16 +84,64 @@ class TestBuildConfig:
         assert org.report.top_n == 20
         assert org.exclude == ("x",)
 
-    def test_release_min_age_days_default_and_override(self) -> None:
-        assert config.build_config(MINIMAL).report.release_min_age_days == 28
+    def test_repo_min_age_days_default_and_override(self) -> None:
+        assert config.build_config(MINIMAL).report.repo_min_age_days == 28
         data = {
-            "report": {"release_min_age_days": 0},
+            "report": {"repo_min_age_days": 0},
             "organizations": [
-                {"name": "o", "report": {"release_min_age_days": 14}},
+                {"name": "o", "report": {"repo_min_age_days": 14}},
             ],
         }
         org = config.build_config(data).organizations[0]
-        assert org.report.release_min_age_days == 14
+        assert org.report.repo_min_age_days == 14
+
+    def test_release_min_age_days_is_deprecated_alias(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # The old key still maps to repo_min_age_days, emitting a warning.
+        data = {
+            "report": {"release_min_age_days": 14},
+            "organizations": [{"name": "o"}],
+        }
+        org = config.build_config(data).organizations[0]
+        assert org.report.repo_min_age_days == 14
+        assert any("deprecated" in r.message for r in caplog.records)
+
+    def test_release_min_age_days_warns_only_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # The legacy key in both the global block and an org override must warn
+        # exactly once, not once per block, so users are not alarmed.
+        data = {
+            "report": {"release_min_age_days": 30},
+            "organizations": [
+                {"name": "a", "report": {"release_min_age_days": 14}},
+                {"name": "b", "report": {"release_min_age_days": 7}},
+            ],
+        }
+        config.build_config(data)
+        warnings = [r for r in caplog.records if "deprecated" in r.message]
+        assert len(warnings) == 1
+
+    def test_repo_min_age_days_wins_over_legacy_alias(self) -> None:
+        # An explicit new key takes precedence over the deprecated alias.
+        data = {
+            "report": {"repo_min_age_days": 14, "release_min_age_days": 99},
+            "organizations": [{"name": "o"}],
+        }
+        org = config.build_config(data).organizations[0]
+        assert org.report.repo_min_age_days == 14
+
+    def test_release_max_age_days_default_and_override(self) -> None:
+        assert config.build_config(MINIMAL).report.release_max_age_days == 0
+        data = {
+            "report": {"release_max_age_days": 60},
+            "organizations": [
+                {"name": "o", "report": {"release_max_age_days": 90}},
+            ],
+        }
+        org = config.build_config(data).organizations[0]
+        assert org.report.release_max_age_days == 90
 
     def test_releases_exclude_parsed(self) -> None:
         data = {
@@ -104,11 +152,20 @@ class TestBuildConfig:
         org = config.build_config(data).organizations[0]
         assert org.releases_exclude == ("internal-a", "internal-b")
 
-    def test_rejects_negative_release_min_age_days(self) -> None:
+    def test_rejects_negative_repo_min_age_days(self) -> None:
         with pytest.raises(ConfigError):
             config.build_config(
                 {
-                    "report": {"release_min_age_days": -1},
+                    "report": {"repo_min_age_days": -1},
+                    "organizations": [{"name": "o"}],
+                }
+            )
+
+    def test_rejects_negative_release_max_age_days(self) -> None:
+        with pytest.raises(ConfigError):
+            config.build_config(
+                {
+                    "report": {"release_max_age_days": -1},
                     "organizations": [{"name": "o"}],
                 }
             )
@@ -155,23 +212,33 @@ class TestBuildConfig:
         assert rc.cli_top_n == 10
         assert rc.slack_top_n == 3
 
-    def test_rejects_zero_top_n_category(self) -> None:
-        with pytest.raises(ConfigError):
+    def test_zero_top_n_category_disables_limit(self) -> None:
+        rc = (
             config.build_config(
                 {
                     "report": {"top_n_cli": 0},
                     "organizations": [{"name": "o"}],
                 }
             )
+            .organizations[0]
+            .report
+        )
+        assert rc.cli_top_n == 0  # 0 = no limit (show every offender)
 
     def test_requires_organizations(self) -> None:
         with pytest.raises(ConfigError):
             config.build_config({"slack": {}})
 
-    def test_rejects_zero_top_n(self) -> None:
+    def test_zero_top_n_disables_limit(self) -> None:
+        rc = config.build_config(
+            {"organizations": [{"name": "o"}], "report": {"top_n": 0}}
+        ).report
+        assert rc.top_n == 0  # 0 = no limit (show every offender)
+
+    def test_rejects_negative_top_n(self) -> None:
         with pytest.raises(ConfigError):
             config.build_config(
-                {"organizations": [{"name": "o"}], "report": {"top_n": 0}}
+                {"organizations": [{"name": "o"}], "report": {"top_n": -1}}
             )
 
 
