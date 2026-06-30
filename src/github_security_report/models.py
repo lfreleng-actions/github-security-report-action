@@ -15,6 +15,7 @@ import datetime as dt
 from dataclasses import dataclass, field
 from enum import Enum
 
+from github_security_report.categories import CategoryKey, CategoryMeta, category_meta
 from github_security_report.severity import Severity
 
 
@@ -28,14 +29,29 @@ class SignalType(str, Enum):
     SECRET_SCANNING = "secret_scanning"
 
     @property
-    def heading(self) -> str:
+    def category_key(self) -> CategoryKey:
+        """The metadata-registry key for this signal's report category."""
         return {
-            SignalType.CODEQL: "CodeQL",
-            SignalType.SCORECARD: "OpenSSF Scorecard",
-            SignalType.ZIZMOR: "Zizmor Static Analysis",
-            SignalType.DEPENDABOT: "Dependabot: Security Alerts",
-            SignalType.SECRET_SCANNING: "Secret scanning",
+            SignalType.CODEQL: CategoryKey.CODEQL,
+            SignalType.SCORECARD: CategoryKey.SCORECARD,
+            SignalType.ZIZMOR: CategoryKey.ZIZMOR,
+            SignalType.DEPENDABOT: CategoryKey.DEPENDABOT_ALERTS,
+            SignalType.SECRET_SCANNING: CategoryKey.SECRET_SCANNING,
         }[self]
+
+    @property
+    def meta(self) -> CategoryMeta:
+        """Display/documentation metadata for this signal's category."""
+        return category_meta(self.category_key)
+
+    @property
+    def fail_severity(self) -> Severity:
+        """Default cutoff at/above which a finding marks this signal failing."""
+        return self.meta.fail_severity
+
+    @property
+    def heading(self) -> str:
+        return self.meta.title
 
     @property
     def uses_severity_columns(self) -> bool:
@@ -127,6 +143,7 @@ class SeverityCounts:
     high: int = 0
     medium: int = 0
     low: int = 0
+    informational: int = 0
 
     def add(self, severity: Severity, count: int = 1) -> None:
         if severity is Severity.CRITICAL:
@@ -135,30 +152,60 @@ class SeverityCounts:
             self.high += count
         elif severity is Severity.MEDIUM:
             self.medium += count
-        else:
+        elif severity is Severity.LOW:
             self.low += count
+        else:
+            self.informational += count
 
     @property
     def total(self) -> int:
-        return self.critical + self.high + self.medium + self.low
+        return (
+            self.critical + self.high + self.medium + self.low + self.informational
+        )
+
+    def at_or_above(self, cutoff: Severity) -> int:
+        """Count of findings whose severity is at least ``cutoff``.
+
+        The basis for the per-category pass/fail decision: a repository fails a
+        category only when it carries at least one finding at or above that
+        category's ``fail_severity`` cutoff. Findings below the cutoff (e.g.
+        informational-only) do not count towards a failure.
+        """
+        by_rung = {
+            Severity.CRITICAL: self.critical,
+            Severity.HIGH: self.high,
+            Severity.MEDIUM: self.medium,
+            Severity.LOW: self.low,
+            Severity.INFORMATIONAL: self.informational,
+        }
+        return sum(
+            count for rung, count in by_rung.items() if rung >= cutoff
+        )
 
     @property
     def weighted(self) -> int:
         """Severity-weighted score, so 1 critical outranks many low findings."""
         return (
-            self.critical * 1000
-            + self.high * 100
-            + self.medium * 10
-            + self.low
+            self.critical * 10000
+            + self.high * 1000
+            + self.medium * 100
+            + self.low * 10
+            + self.informational
         )
 
     @property
-    def sort_key(self) -> tuple[int, int, int, int]:
-        """Hierarchical key: critical, then high, then medium, then low.
+    def sort_key(self) -> tuple[int, int, int, int, int]:
+        """Hierarchical key: critical, high, medium, low, then informational.
 
         Use with ``reverse=True`` for worst-first ordering.
         """
-        return (self.critical, self.high, self.medium, self.low)
+        return (
+            self.critical,
+            self.high,
+            self.medium,
+            self.low,
+            self.informational,
+        )
 
 
 @dataclass

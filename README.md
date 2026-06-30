@@ -26,9 +26,16 @@ states and rendered worst-first:
 
 - **Offenders** — enabled with open findings (a ranked table row).
 - **Clean** — enabled with zero findings (a count beneath the table).
-- **Not enabled** — supported but switched off (a nag list prompting you to
-  enable it).
-- **Unknown** — indeterminate (insufficient permission), footnoted separately.
+- **Not enabled** — supported but switched off (a counted "disabled" footer
+  line, with the affected repositories named).
+- **Unknown** — indeterminate (insufficient permission), counted separately.
+
+Every category renders the same **standardised summary footer** beneath its
+table: remediation-first count lines (failures, disabled, unknown, then the
+healthy pass line, then excluded). The pass line reads **"All <state>"** when
+nothing needs attention, or **"N <state>"** otherwise. The terminal and Slack
+stay brevity-first; the explanatory per-category description and documentation
+link are shown only on the richer Markdown and HTML (GitHub Pages) outputs.
 
 The single GitHub code-scanning feed is partitioned by `tool.name` into CodeQL,
 Scorecard, and zizmor; Scorecard prefers the external aggregate score and falls
@@ -46,9 +53,10 @@ tables (org mode):
   release/tag staleness (repository age never affects ordering; a repository
   with no release or tag ranks highest). Repositories younger than
   `repo_min_age_days` (default 28; `0` includes all) and those in
-  `releases_exclude` are omitted. Set `release_max_age_days` to only flag
-  repositories whose newest release or tag is older than that many days
-  (default `0` = flag every eligible repository).
+  `releases_exclude` are omitted. A repository is flagged only when its newest
+  release or tag is older than `release_max_age_days` (default 60; `0` flags
+  every eligible repository), so a repository released or tagged within that
+  window counts as recently maintained and drops out of the table.
 
 ## Operating modes
 
@@ -178,7 +186,7 @@ environment-variable name, never embedded.
     "include_archived": false,
     "include_test": false,
     "repo_min_age_days": 28,
-    "release_max_age_days": 0
+    "release_max_age_days": 60
   },
   "organizations": [
     {
@@ -207,10 +215,10 @@ The Releases / Tagging section has two independent freshness levers:
   period that omits **brand-new repositories** — those *created* within that
   many days — before a release or tag is expected of them. CLI:
   `--repo-min-age-days`.
-- `report.release_max_age_days` (default `0` = flag everything) is the
+- `report.release_max_age_days` (default `60`; `0` = flag everything) is the
   release-staleness threshold: a repository is only flagged when its newest
   release **or** tag is older than that many days (a repository with neither is
-  always flagged). Raise it to match your release cadence so actively released
+  always flagged). Tune it to match your release cadence so actively released
   repositories drop out of the table. CLI: `--release-max-age-days`.
 
 The per-org `releases_exclude` (CLI `--releases-exclude`, repeatable) drops
@@ -224,6 +232,74 @@ named repositories from the section entirely.
 The per-org `exclude` list removes repositories from analysis entirely; they are
 reported as **excluded** (distinct from "not enabled"), so an intentional
 exclusion is visible rather than silently dropped.
+
+### Per-category render toggles
+
+Every reporting category can be switched on or off, globally and per output
+surface, under `report.categories`. Data is **always** collected; these toggles
+govern presentation only. Each category key takes an `enabled` switch (highest
+precedence — `false` hides it everywhere) and a lower-precedence `outputs` map
+for the four surfaces (`cli`, `slack`, `markdown`, `html`). Everything defaults
+to `true`, so an omitted category or key stays fully enabled. A category is
+rendered on a surface only when `enabled` **and** that surface's toggle are
+both true.
+
+```json
+{
+  "report": {
+    "categories": {
+      "zizmor": { "enabled": false },
+      "releases": { "outputs": { "cli": false, "slack": false } }
+    }
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
+
+The example above hides Zizmor on every surface, and keeps Releases / Tagging
+out of the terminal and Slack while still publishing it to the Markdown and HTML
+Pages output. The valid category keys are: `codeql`, `scorecard`, `zizmor`,
+`dependabot_alerts`, `secret_scanning`, `dependabot_alerts_enabled`,
+`dependabot_updates_enabled`, `dependabot_cooldown`, `releases`,
+`mutable_releases`. Like the other `report` settings, `categories` can be set
+globally and overridden per organisation (overrides merge key-by-key, so
+flipping one output leaves the rest untouched). The machine-readable
+`report.json` artifact always contains the complete dataset, regardless of these
+toggles.
+
+When several organisations share one Slack channel they render into a single
+combined digest, so the per-org Slack toggles are unioned for that channel: a
+category appears if **any** contributing org would show it on Slack. An org-level
+Slack disable therefore does not suppress a category in a shared-channel digest
+unless every org sharing that channel also disables it (this mirrors the
+most-generous `top_n` rule applied to the same grouping). The terminal, Markdown
+and HTML surfaces are per-org and are not affected by this union.
+
+### Pass/fail severity cutoff
+
+The severity-ranked signals (CodeQL, Scorecard, Zizmor, Dependabot alerts) use a
+`fail_severity` cutoff to decide when a repository counts as a failure. A
+repository is flagged as an offender only when it carries a finding **at or
+above** the cutoff; findings below it fold into the clean count. Severities run
+(lowest to highest) `informational`, `low`, `medium`, `high`, `critical` —
+`informational` being the new sub-low rung that SARIF `note`/`none` findings
+(the bulk of a tool like Zizmor) normalise to.
+
+The global default cutoff is `medium`, so `low` and `informational` findings
+pass. Zizmor defaults to `low` (only `informational` passes). Override the
+cutoff per category under `report.categories.<key>.fail_severity`:
+
+```json
+{
+  "report": {
+    "categories": {
+      "codeql": { "fail_severity": "low" },
+      "zizmor": { "fail_severity": "informational" }
+    }
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
 
 `slack.channel` is optional. The action's `slack_channel` input (wired to the
 `SLACK_CHANNEL_ID` variable in `reporting.yaml`) overrides it, so the channel

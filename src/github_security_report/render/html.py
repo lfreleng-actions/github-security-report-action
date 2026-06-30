@@ -4,22 +4,28 @@
 
 Renders each organisation to a single scrollable page with sortable/searchable
 tables (Simple-DataTables, version-pinned), and a card-grid index linking to
-every org -- the GitHub Pages layout. See ``docs/BRIEF.md`` section 11.
+every org -- the GitHub Pages layout. As a rich, scrollable surface, the HTML
+pages carry the per-category explanatory description and a documentation link
+alongside the standardised summary footer. See ``docs/BRIEF.md`` section 11.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Mapping, Sequence
 
 from jinja2 import Environment, PackageLoader, select_autoescape
 
-from github_security_report.models import RepoSignal, SignalType
+from github_security_report.categories import CategoryKey
+from github_security_report.models import Repo, RepoSignal, SignalType
 from github_security_report.render import markdown
 from github_security_report.report import (
+    SUMMARY_EMOJI,
     OrgReport,
     SignalSection,
+    SummaryLine,
     TableSection,
-    note_sentences,
+    build_summary,
     truncate,
 )
 
@@ -36,6 +42,9 @@ _env = Environment(
     loader=PackageLoader("github_security_report", "templates"),
     autoescape=select_autoescape(["html", "j2"]),
 )
+
+# Summary kinds whose repository names are listed beneath the count line.
+_NAME_LIST_LABEL = {"disabled": "Disabled", "excluded": "Excluded"}
 
 
 # Anything outside this set is replaced; this also strips path separators and
@@ -60,27 +69,83 @@ def _row_cells(sig: RepoSignal) -> list[str]:
     return markdown.row_cells(sig)[1:]
 
 
-def _table_context(section: TableSection, top_n: int | None = None) -> dict:
+def _summary_context(
+    lines: Sequence[SummaryLine],
+    name_to_repo: Mapping[str, Repo],
+    *,
+    top_n: int | None,
+) -> list[dict]:
+    """Template context for the standardised footer.
+
+    Each entry carries the glyph and text for its count line, plus -- for the
+    disabled and excluded kinds -- the repository name list (linked when a
+    :class:`Repo` is known). The template renders the count lines first, then
+    the name lists, mirroring the terminal and Markdown surfaces.
+    """
+    out: list[dict] = []
+    for line in lines:
+        names: list[dict] = []
+        hidden = 0
+        if line.kind in _NAME_LIST_LABEL and line.names:
+            shown, hidden = truncate(line.names, top_n)
+            names = [
+                {
+                    "name": name,
+                    "url": name_to_repo[name].html_url if name in name_to_repo else "",
+                }
+                for name in shown
+            ]
+        out.append(
+            {
+                "kind": line.kind,
+                "emoji": SUMMARY_EMOJI[line.kind],
+                "text": line.text,
+                "label": _NAME_LIST_LABEL.get(line.kind),
+                "names": names,
+                "names_hidden": hidden,
+            }
+        )
+    return out
+
+
+def _table_context(
+    section: TableSection,
+    *,
+    excluded: Sequence[Repo] = (),
+    top_n: int | None = None,
+) -> dict:
     """Context for a generic posture/freshness table (Dependabot, releases)."""
     rows, hidden = truncate(section.rows, top_n)
+    name_to_repo = {r.name: r for r in excluded}
     return {
         "title": section.title,
+        "url": section.category.url,
+        "description": section.resolved_description(),
+        # Posture/freshness columns are textual (ecosystem lists, release/tag
+        # strings), so they are left-aligned rather than the right-aligned
+        # tabular-nums treatment used for the severity-count tables.
+        "numeric": False,
         "columns": list(section.columns),
         "rows": [
             {"name": row.repo.name, "url": row.repo.html_url, "cells": list(row.cells)}
             for row in rows
         ],
         "hidden": hidden,
-        "empty_note": section.empty_note,
-        "note": section.note,
-        "note_lines": note_sentences(section.note),
-        "summary": section.summary,
+        "summary": _summary_context(
+            build_summary(section.summary_counts(excluded)),
+            name_to_repo,
+            top_n=top_n,
+        ),
     }
 
 
-def _section_context(section: SignalSection, top_n: int | None = None) -> dict:
+def _section_context(
+    section: SignalSection,
+    *,
+    excluded: Sequence[Repo] = (),
+    top_n: int | None = None,
+) -> dict:
     offenders, hidden = truncate(section.offenders, top_n)
-    nag, nag_hidden = truncate(section.nag_repos, top_n)
     # A trailing totals row sums the additive severity columns across the shown
     # rows; secret scanning has no such columns, so it gets none.
     total_cells = (
@@ -88,8 +153,15 @@ def _section_context(section: SignalSection, top_n: int | None = None) -> dict:
         if section.signal.uses_severity_columns and offenders
         else None
     )
+    meta = section.signal.meta
+    name_to_repo = {r.name: r for r in (*section.nag_repos, *excluded)}
     return {
-        "title": section.signal.heading,
+        "title": meta.title,
+        "url": meta.url,
+        "description": meta.description,
+        # Severity sections have numeric count columns after the leading
+        # repository column, so they are right-aligned with tabular figures.
+        "numeric": True,
         "columns": markdown.columns(section.signal),
         "rows": [
             {"name": s.repo.name, "url": s.repo.html_url, "cells": _row_cells(s)}
@@ -97,42 +169,66 @@ def _section_context(section: SignalSection, top_n: int | None = None) -> dict:
         ],
         "hidden": hidden,
         "total_cells": total_cells,
-        "clean_count": section.clean_count,
-        "nag": [{"name": r.name, "url": r.html_url} for r in nag],
-        "nag_hidden": nag_hidden,
-        "unknown_count": section.unknown_count,
+        "summary": _summary_context(
+            build_summary(section.summary_counts(excluded)),
+            name_to_repo,
+            top_n=top_n,
+        ),
     }
 
 
-def render_org_html(org: OrgReport, *, top_n: int | None = None) -> str:
+def render_org_html(
+    org: OrgReport,
+    *,
+    top_n: int | None = None,
+    show: Callable[[CategoryKey], bool] | None = None,
+) -> str:
+    visible = show or (lambda _key: True)
     template = _env.get_template("report.html.j2")
+    excluded = org.excluded_repos
     sections: list[dict] = []
     for section in org.sections:
-        ctx = _section_context(section, top_n)
-        # The Dependabot posture sub-tables render beneath the Dependabot
-        # Alerts section, inside the same card.
-        if section.signal is SignalType.DEPENDABOT:
-            ctx["extra_tables"] = [
-                _table_context(t, top_n) for t in org.dependabot_tables
-            ]
-        sections.append(ctx)
-    excluded_shown, excluded_hidden = truncate(org.excluded_repos, top_n)
+        parent_visible = visible(section.signal.category_key)
+        if parent_visible:
+            ctx = _section_context(section, excluded=excluded, top_n=top_n)
+            # When the parent Dependabot Alerts signal is shown, its posture
+            # sub-tables render beneath it inside the same card.
+            if section.signal is SignalType.DEPENDABOT:
+                ctx["extra_tables"] = [
+                    _table_context(t, excluded=excluded, top_n=top_n)
+                    for t in org.dependabot_tables
+                    if visible(t.category.key)
+                ]
+            sections.append(ctx)
+        elif section.signal is SignalType.DEPENDABOT:
+            # The parent Dependabot Alerts signal is hidden, but the posture
+            # tables are toggled independently: surface any enabled ones as
+            # their own top-level sections so per-category toggles for
+            # dependabot_alerts_enabled / _updates_enabled / _cooldown are
+            # honoured on the HTML surface too -- matching the terminal,
+            # Markdown and Slack renderers, which decouple them from the
+            # parent signal's visibility.
+            sections.extend(
+                _table_context(t, excluded=excluded, top_n=top_n)
+                for t in org.dependabot_tables
+                if visible(t.category.key)
+            )
     return str(
         template.render(
             org=org.org,
             repo_count=org.repo_count,
             generated_at=org.generated_at.strftime("%Y-%m-%d %H:%M UTC"),
             partial=org.partial,
-            excluded=[
-                {"name": r.name, "url": r.html_url} for r in excluded_shown
-            ],
-            excluded_total=len(org.excluded_repos),
-            excluded_hidden=excluded_hidden,
             sections=sections,
-            releases=_table_context(org.releases, top_n) if org.releases else None,
+            releases=(
+                _table_context(org.releases, excluded=excluded, top_n=top_n)
+                if org.releases and visible(org.releases.category.key)
+                else None
+            ),
             mutable_releases=(
-                _table_context(org.mutable_releases, top_n)
+                _table_context(org.mutable_releases, excluded=excluded, top_n=top_n)
                 if org.mutable_releases
+                and visible(org.mutable_releases.category.key)
                 else None
             ),
             datatables_version=DATATABLES_VERSION,

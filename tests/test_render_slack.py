@@ -7,6 +7,7 @@ from __future__ import annotations
 import datetime as dt
 
 from github_security_report import report
+from github_security_report.categories import CategoryKey, category_meta
 from github_security_report.models import (
     Repo,
     RepoSignal,
@@ -67,6 +68,18 @@ def test_offenders_are_code_fenced() -> None:
     assert "repo " not in codeql["text"]["text"]
 
 
+def test_all_offender_section_has_no_no_data_line() -> None:
+    # Every repo is an offender, so the footer buckets (clean/nag/unknown/
+    # excluded) are all zero. The table itself is the data, so the block must
+    # not claim "no data" beneath it.
+    sig = RepoSignal(
+        _repo("bad"), SignalType.CODEQL, RepoState.OFFENDER, SeverityCounts(critical=1)
+    )
+    blocks = slack.render_org_blocks(_org([sig]), top_n=10, pages_url=None)
+    codeql = next(b for b in blocks if "CodeQL" in b.get("text", {}).get("text", ""))
+    assert "no data" not in codeql["text"]["text"]
+
+
 def test_top_n_limits_code_fence_rows() -> None:
     signals = [
         RepoSignal(
@@ -105,60 +118,67 @@ def test_dependabot_and_releases_tables_rendered() -> None:
     org = _org([], count=2)
     org.dependabot_tables = [
         report.TableSection(
-            title="Feature Configuration",
-            columns=("Repository", "Dependabot alerts", "Security updates"),
-            rows=[report.TableRow(repo=_repo("bad"), cells=("❌", "❌"))],
+            category=category_meta(CategoryKey.DEPENDABOT_COOLDOWN),
+            columns=("Repository", "Ecosystems without cooldown"),
+            rows=[report.TableRow(repo=_repo("bad"), cells=("pip, npm",))],
+            fail_count=1,
         )
     ]
     org.releases = report.TableSection(
-        title="Releases / Tagging",
+        category=category_meta(CategoryKey.RELEASES),
         columns=("Repository", "Last release", "Last tag"),
         rows=[report.TableRow(repo=_repo("stale"), cells=("never", "never"))],
+        fail_count=1,
     )
     blocks = slack.render_org_blocks(org, top_n=10, pages_url=None)
     texts = [b.get("text", {}).get("text", "") for b in blocks]
-    feature = next(t for t in texts if "Feature Configuration" in t)
-    # Emoji glyphs are folded to ascii so the monospace columns stay aligned.
-    assert "❌" not in feature
-    assert "bad" in feature and "```" in feature
+    cooldown = next(t for t in texts if "Dependabot: Cooldown Settings" in t)
+    assert "bad" in cooldown and "```" in cooldown
+    # Slack is brevity-first: the explanatory description is not emitted.
+    assert "reference" not in cooldown
     assert any("Releases / Tagging" in t and "stale" in t for t in texts)
 
 
 def test_mutable_releases_block_shows_summary() -> None:
     org = _org([], count=84)
     org.mutable_releases = report.TableSection(
-        title="Mutable Releases",
+        category=category_meta(CategoryKey.MUTABLE_RELEASES),
         columns=("Repository", "Releases"),
         rows=[report.TableRow(repo=_repo("img"), cells=("v0.1.0 (latest)",))],
-        note="Recent releases in the repositories above are not immutable.",
-        summary="2 with findings, 82 clean",
+        pass_count=82,
+        fail_count=2,
     )
     blocks = slack.render_org_blocks(org, top_n=10, pages_url=None)
     texts = [b.get("text", {}).get("text", "") for b in blocks]
     block = next(t for t in texts if "Mutable Releases" in t)
-    # The heading is bare; the summary is on its own line beneath the table.
+    # The heading is bare; the standardised footer sits beneath the table.
     assert "*Mutable Releases*" in block
-    assert "*Mutable Releases —" not in block
-    assert "\n2 with findings, 82 clean" in block
+    assert "❌ 2 Mutable" in block
+    assert "✅ 82 Immutable" in block
     assert "img" in block and "v0.1.0 (latest)" in block
-    # The explanatory note is surfaced (outside the code fence) like the other
-    # renderers, before the summary line.
-    note = "Recent releases in the repositories above are not immutable."
-    assert note in block
-    assert block.index(note) < block.index("2 with findings, 82 clean")
+    # Failures sort above the pass line in the footer.
+    assert block.index("2 Mutable") < block.index("82 Immutable")
 
 
 def test_empty_extra_tables_are_skipped() -> None:
+    # A genuinely empty table (no rows, no countable state) is skipped to keep
+    # the brevity-first digest tight.
     org = _org([], count=1)
     org.dependabot_tables = [
-        report.TableSection(title="Enablement", columns=("Repository", "x"), rows=[])
+        report.TableSection(
+            category=category_meta(CategoryKey.DEPENDABOT_ALERTS_ENABLED),
+            columns=("Repository",),
+            rows=[],
+        )
     ]
     org.releases = report.TableSection(
-        title="Releases / Tagging", columns=("Repository",), rows=[]
+        category=category_meta(CategoryKey.RELEASES),
+        columns=("Repository",),
+        rows=[],
     )
     blocks = slack.render_org_blocks(org, top_n=10, pages_url=None)
     texts = [b.get("text", {}).get("text", "") for b in blocks]
-    assert not any("Enablement" in t for t in texts)
+    assert not any("Dependabot: Alerts Enabled" in t for t in texts)
     assert not any("Releases / Tagging" in t for t in texts)
 
 

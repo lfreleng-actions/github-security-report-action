@@ -24,7 +24,21 @@ from types import MappingProxyType
 
 import jsonschema
 
+from github_security_report.categories import CategoryKey, all_categories
+from github_security_report.models import SignalType
+from github_security_report.severity import Severity, from_name
+
 log = logging.getLogger(__name__)
+
+# The render surfaces a category can be toggled on or off for, independently of
+# whether the data is collected (collection is always exhaustive). ``cli`` is
+# the terminal, ``slack`` the digest, and ``markdown``/``html`` the two GitHub
+# Pages artifacts (treated separately so each can be tuned on its own).
+REPORT_OUTPUTS = ("cli", "slack", "markdown", "html")
+
+# Severity names accepted for a category's ``fail_severity`` cutoff, lowest to
+# highest. ``informational`` is the new sub-low rung.
+SEVERITY_NAMES = ("informational", "low", "medium", "high", "critical")
 
 WEEKDAYS = (
     "monday",
@@ -88,6 +102,39 @@ CONFIG_SCHEMA: dict = {
                     "type": "object",
                     "additionalProperties": {"type": "string"},
                 },
+                # Per-category render toggles. Each known category may set a
+                # global `enabled` switch (highest precedence: off hides the
+                # category on every surface) and, beneath it, a lower-precedence
+                # per-output map. A category is rendered on output X only when
+                # `enabled` is true AND `outputs.X` is true. Everything defaults
+                # to true, so an omitted category or key stays fully enabled.
+                # Data is always collected regardless of these toggles.
+                "categories": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        meta.key.value: {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "enabled": {"type": "boolean"},
+                                "outputs": {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "properties": {
+                                        output: {"type": "boolean"}
+                                        for output in REPORT_OUTPUTS
+                                    },
+                                },
+                                # The lowest finding severity that counts as a
+                                # failure for this category (severity signals
+                                # only). Overrides the category default.
+                                "fail_severity": {"enum": list(SEVERITY_NAMES)},
+                            },
+                        }
+                        for meta in all_categories()
+                    },
+                },
             },
         },
         "organizations": {
@@ -147,6 +194,41 @@ DEFAULT_RULESET_WORKFLOWS = {"zizmor": "zizmor"}
 
 
 @dataclass(frozen=True)
+class OutputToggles:
+    """Per-output render switches for a single category (all default on).
+
+    Lower precedence than :attr:`CategoryToggle.enabled`: an output toggle only
+    matters when the category is globally enabled.
+    """
+
+    cli: bool = True
+    slack: bool = True
+    markdown: bool = True
+    html: bool = True
+
+
+@dataclass(frozen=True)
+class CategoryToggle:
+    """Render switches and pass/fail tuning for one reporting category.
+
+    ``enabled`` is the highest-precedence switch: when false the category is
+    hidden on every surface. ``outputs`` is the lower-precedence per-surface
+    map, consulted only when the category is enabled. The data is always
+    collected regardless of these toggles; they govern presentation alone.
+    ``fail_severity`` overrides the category's default failure cutoff (severity
+    signals only); ``None`` keeps the category default.
+    """
+
+    enabled: bool = True
+    outputs: OutputToggles = field(default_factory=OutputToggles)
+    fail_severity: Severity | None = None
+
+    def shows_on(self, output: str) -> bool:
+        """Whether this category renders on ``output`` (cli/slack/markdown/html)."""
+        return self.enabled and getattr(self.outputs, output)
+
+
+@dataclass(frozen=True)
 class ReportConfig:
     # Shared default number of offenders shown per signal; per-output overrides
     # below take precedence when set. report = GitHub Pages (Markdown + HTML),
@@ -165,13 +247,39 @@ class ReportConfig:
     # A repository is flagged in the Releases/Tagging table only when its most
     # recent release or tag is older than this many days; a repository with
     # neither a release nor a tag is always flagged. 0 disables the threshold,
-    # so every eligible repository is listed (ranked by staleness).
-    release_max_age_days: int = 0
+    # so every eligible repository is listed (ranked by staleness). The default
+    # gives every repository a 60-day window: one tagged or released inside that
+    # window is treated as recently maintained and omitted from the table.
+    release_max_age_days: int = 60
     # Read-only mapping (frozen dataclasses do not deep-freeze a plain dict, so a
     # MappingProxyType prevents in-place mutation of a shared config).
     ruleset_workflows: Mapping[str, str] = field(
         default_factory=lambda: MappingProxyType(dict(DEFAULT_RULESET_WORKFLOWS))
     )
+    # Per-category render toggles, keyed by category-key value. Absent keys fall
+    # back to a fully-enabled default, so the empty default shows everything.
+    categories: Mapping[str, CategoryToggle] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+
+    def shows_category(self, key: CategoryKey, output: str) -> bool:
+        """Whether category ``key`` renders on ``output`` under this config.
+
+        Defaults to visible: an unconfigured category (or one with no override
+        for this output) is shown. The global ``enabled`` switch takes
+        precedence over the per-output toggle.
+        """
+        toggle = self.categories.get(key.value)
+        return toggle.shows_on(output) if toggle is not None else True
+
+    def fail_severity_for(self, key: CategoryKey) -> Severity | None:
+        """The configured fail-severity override for ``key``, or ``None``.
+
+        ``None`` means "use the category's own default cutoff"; the classifier
+        resolves that fallback, so the config only carries explicit overrides.
+        """
+        toggle = self.categories.get(key.value)
+        return toggle.fail_severity if toggle is not None else None
 
     @property
     def report_top_n(self) -> int:
@@ -275,7 +383,53 @@ def _report_from(data: dict, base: ReportConfig) -> ReportConfig:
         # Merge so the built-in defaults (e.g. zizmor) survive unless overridden.
         merged = {**base.ruleset_workflows, **data["ruleset_workflows"]}
         result = replace(result, ruleset_workflows=MappingProxyType(merged))
+    if "categories" in data:
+        result = replace(
+            result,
+            categories=_categories_from(data["categories"], base.categories),
+        )
     return result
+
+
+def _categories_from(
+    data: dict, base: Mapping[str, CategoryToggle]
+) -> Mapping[str, CategoryToggle]:
+    """Merge a ``categories`` block over the inherited toggles.
+
+    Each category is merged independently and key-by-key, so an org override
+    that flips a single output leaves the inherited ``enabled`` switch and the
+    other outputs untouched.
+    """
+    merged: dict[str, CategoryToggle] = dict(base)
+    for key, raw in data.items():
+        current = merged.get(key, CategoryToggle())
+        outputs = current.outputs
+        if "outputs" in raw:
+            outputs = replace(
+                outputs,
+                **{
+                    output: value
+                    for output, value in raw["outputs"].items()
+                    if output in REPORT_OUTPUTS
+                },
+            )
+        fail_severity = current.fail_severity
+        if "fail_severity" in raw:
+            # The schema constrains the value to a known severity name, so
+            # from_name resolves it; informational is handled explicitly as it
+            # is below the security-severity scale from_name covers.
+            name = raw["fail_severity"]
+            fail_severity = (
+                Severity.INFORMATIONAL
+                if name == "informational"
+                else from_name(name)
+            )
+        merged[key] = CategoryToggle(
+            enabled=raw.get("enabled", current.enabled),
+            outputs=outputs,
+            fail_severity=fail_severity,
+        )
+    return MappingProxyType(merged)
 
 
 def build_config(data: dict) -> Config:
@@ -294,6 +448,30 @@ def build_config(data: dict) -> Config:
         log.warning(
             "config key 'release_min_age_days' is deprecated; use "
             "'repo_min_age_days' (the repository-age grace period) instead"
+        )
+
+    # `fail_severity` only governs the severity-ranked signals (their classifier
+    # is the sole reader, via fail_severity_for); setting it on a binary
+    # category (enablement, cooldown, releases, mutability) silently does
+    # nothing. Warn so the dead override is not a quiet footgun.
+    signal_keys = {signal.category_key.value for signal in SignalType}
+    misplaced = sorted(
+        {
+            key
+            for block in report_blocks
+            for key, raw in block.get("categories", {}).items()
+            if isinstance(raw, dict)
+            and "fail_severity" in raw
+            and key not in signal_keys
+        }
+    )
+    if misplaced:
+        log.warning(
+            "config 'fail_severity' has no effect on the non-severity "
+            "categories %s; it applies only to the severity-ranked signals "
+            "(%s)",
+            ", ".join(misplaced),
+            ", ".join(sorted(signal_keys)),
         )
 
     global_slack = _slack_from(data.get("slack", {}), SlackConfig())

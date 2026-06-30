@@ -47,8 +47,12 @@ load-bearing architecture:
    signal. Its scrubbed captures become the golden test fixtures.
 2. **Hybrid REST + GraphQL transport.** GraphQL-only is not viable; secret
    scanning and code scanning are REST. Prefer **org-bulk endpoints first**,
-   per-repo fallback, with bounded async concurrency and backoff honouring
-   `Retry-After`/secondary limits.
+   per-repo fallback, with bounded async concurrency and a single shared
+   retry/backoff policy (exponential backoff, capped retries and a cumulative
+   wait ceiling) honouring `Retry-After`/secondary limits. A GitHub transport
+   failure that outlives the budget **hard-fails the run** (network error)
+   rather than degrading; only the third-party Scorecard endpoint degrades on
+   transport failure.
 3. **v1 scope = five ranked tables** (CodeQL, OpenSSF Scorecard, zizmor,
    Dependabot, secret scanning) plus a boolean posture/coverage section. The
    single code-scanning sweep multiplexes CodeQL, Scorecard and zizmor, so it is

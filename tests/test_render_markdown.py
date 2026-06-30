@@ -7,6 +7,7 @@ from __future__ import annotations
 import datetime as dt
 
 from github_security_report import report
+from github_security_report.categories import CategoryKey, category_meta
 from github_security_report.models import (
     Repo,
     RepoSignal,
@@ -79,10 +80,11 @@ class TestSection:
             RepoSignal(_repo("dunno"), SignalType.CODEQL, RepoState.UNKNOWN),
         ]
         out = markdown.render_section(_org(signals, count=3).sections[0])
-        assert "✅ 1 repositories clean" in out
-        assert "**Not enabled**" in out
-        assert "- [nagme](https://github.com/o/nagme)" in out
-        assert "unknown status" in out
+        # Standardised footer: disabled (with name list), unknown, then pass.
+        assert "❌ 1 Disabled" in out
+        assert "**Disabled:** [nagme](https://github.com/o/nagme)" in out
+        assert "❓ 1 Unknown" in out
+        assert "✅ 1 Clean" in out
 
     def test_empty_section(self) -> None:
         out = markdown.render_section(_org([]).sections[0])
@@ -189,66 +191,103 @@ class TestOrgAndReport:
 class TestExtraTables:
     def _table(self) -> report.TableSection:
         return report.TableSection(
-            title="Update Cooldown",
+            category=category_meta(CategoryKey.DEPENDABOT_COOLDOWN),
             columns=("Repository", "Ecosystems without cooldown"),
             rows=[report.TableRow(repo=_repo("a"), cells=("pip, npm",))],
-            note="A cooldown is mandatory.",
+            pass_count=3,
+            fail_count=1,
         )
 
-    def test_render_table_section_renders_rows_and_note(self) -> None:
+    def test_render_table_section_renders_rows_and_description(self) -> None:
         out = markdown.render_table_section(self._table(), level=3)
-        assert out.startswith("### Update Cooldown")
+        assert out.startswith("### Dependabot: Cooldown Settings")
         assert "| Repository | Ecosystems without cooldown |" in out
         assert "| [a](https://github.com/o/a) | pip, npm |" in out
-        assert "_A cooldown is mandatory._" in out
+        # Markdown is a rich surface: the category description is shown.
+        assert "cooldown" in out.lower()
+        # Standardised footer with the category's fail/pass labels.
+        assert "❌ 1 Without cooldown" in out
+        assert "✅ 3 Enabled" in out
 
-    def test_render_table_section_empty_note(self) -> None:
+    def test_render_table_section_all_pass_collapses(self) -> None:
         empty = report.TableSection(
-            title="Enablement",
-            columns=("Repository", "Dependabot alerts"),
+            category=category_meta(CategoryKey.DEPENDABOT_ALERTS_ENABLED),
+            columns=("Repository",),
             rows=[],
-            empty_note="All enabled.",
+            pass_count=4,
         )
         out = markdown.render_table_section(empty, level=3)
-        assert "✅ All enabled." in out
+        assert "✅ All Enabled" in out
+
+    def test_render_table_section_no_data_falls_back(self) -> None:
+        # No rows and every footer bucket zero: the section must say so rather
+        # than render only a bare heading.
+        empty = report.TableSection(
+            category=category_meta(CategoryKey.DEPENDABOT_ALERTS_ENABLED),
+            columns=("Repository",),
+            rows=[],
+        )
+        out = markdown.render_table_section(empty, level=3)
+        assert "_No data available._" in out
 
     def test_org_nests_dependabot_tables_and_releases(self) -> None:
         org = _org([], count=2)
         org.dependabot_tables = [self._table()]
         org.releases = report.TableSection(
-            title="Releases / Tagging",
+            category=category_meta(CategoryKey.RELEASES),
             columns=("Repository", "Last release", "Last tag"),
             rows=[report.TableRow(repo=_repo("z"), cells=("never", "never"))],
+            fail_count=1,
         )
         out = markdown.render_org(org)
         # Dependabot sub-table nested under (after) the Dependabot signal heading.
         assert out.index("## Dependabot: Security Alerts") < out.index(
-            "### Update Cooldown"
+            "### Dependabot: Cooldown Settings"
         )
         # Releases section rendered at the top level after all signals.
         assert "## Releases / Tagging" in out
         assert "| [z](https://github.com/o/z) | never | never |" in out
 
+    def test_posture_tables_promoted_to_level2_when_parent_hidden(self) -> None:
+        # When the parent Dependabot Alerts signal is hidden, its posture
+        # sub-tables must not be left as orphaned ### headings beneath the
+        # previous ## section; they are promoted to top-level ## sections,
+        # consistent with the HTML surface.
+        org = _org([], count=2)
+        org.dependabot_tables = [self._table()]
+
+        def show(key: CategoryKey) -> bool:
+            return key is not CategoryKey.DEPENDABOT_ALERTS
+
+        out = markdown.render_org(org, show=show)
+        # Parent signal hidden, posture table promoted to a level-2 heading.
+        assert "## Dependabot: Security Alerts" not in out
+        assert "## Dependabot: Cooldown Settings" in out
+        assert "### Dependabot: Cooldown Settings" not in out
+
     def test_org_renders_mutable_releases_with_summary(self) -> None:
         org = _org([], count=84)
         org.mutable_releases = report.TableSection(
-            title="Mutable Releases",
+            category=category_meta(CategoryKey.MUTABLE_RELEASES),
             columns=("Repository", "Releases"),
             rows=[report.TableRow(repo=_repo("img"), cells=("v0.1.0 (latest)",))],
-            note="Recent releases in the repositories above are not immutable.",
-            summary="2 with findings, 82 clean",
+            pass_count=82,
+            fail_count=2,
         )
         out = markdown.render_org(org)
         # The heading is bare; the count summary is rendered beneath the table.
         assert "## Mutable Releases\n" in out
         assert "## Mutable Releases —" not in out
-        assert "\n2 with findings, 82 clean\n" in out
+        # Failures-first footer with the Mutable/Immutable labels.
+        assert "❌ 2 Mutable" in out
+        assert "✅ 82 Immutable" in out
         assert "| [img](https://github.com/o/img) | v0.1.0 (latest) |" in out
-        assert "_Recent releases in the repositories above are not immutable._" in out
 
-    def test_org_shows_excluded_repos(self) -> None:
+    def test_org_shows_excluded_repos_per_category(self) -> None:
+        # The org-level excluded banner is gone; exclusions now appear in each
+        # category's standardised footer.
         org = _org([], count=2)
         org.excluded_repos = [_repo("opted-out")]
         out = markdown.render_org(org)
-        assert "Excluded from analysis (1)" in out
-        assert "`opted-out`" in out
+        assert "⏩ 1 Excluded" in out
+        assert "**Excluded:** [opted-out](https://github.com/o/opted-out)" in out

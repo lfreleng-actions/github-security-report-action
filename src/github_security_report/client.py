@@ -14,7 +14,9 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import socket
 from dataclasses import replace
+from email.utils import parsedate_to_datetime
 from typing import cast
 
 import httpx
@@ -33,6 +35,81 @@ BULK_KINDS = {
     "dependabot": "dependabot/alerts",
     "secret-scanning": "secret-scanning/alerts",
 }
+
+# --------------------------------------------------------------------------- #
+# Shared retry / backoff policy
+# --------------------------------------------------------------------------- #
+# Every API call (GitHub REST + GraphQL, and the external Scorecard endpoint)
+# funnels through ``GitHubClient._request``, which applies the single policy
+# defined by the constants below -- so retry behaviour is identical everywhere
+# and tuning it is a one-line change here.
+
+# Retries attempted after the initial request (total attempts == 1 + this).
+API_MAX_RETRIES = 3
+# Backoff before the first retry, in seconds; grows by ``API_BACKOFF_FACTOR``
+# each subsequent retry to give an exponential 1s, 2s, 4s, ... schedule.
+API_BACKOFF_INITIAL_SECONDS = 1.0
+# Exponential growth factor applied to the backoff on each successive retry.
+API_BACKOFF_FACTOR = 2.0
+# Hard ceiling on cumulative time spent sleeping between retries for a single
+# request. Once the next backoff would exceed this, retries stop: a GitHub
+# transport failure then hard-fails (NetworkError) and a rate-limit gives up
+# and degrades. Bounds the worst-case wait one request can add to a run.
+API_MAX_TOTAL_WAIT_SECONDS = 60.0
+# Upper bound on the best-effort DNS lookup used only to enrich a network-error
+# message. Kept short so a slow or failing resolver cannot delay the abort: if
+# resolution does not complete within this window the address is reported as
+# ``ip=unresolved (timed out)``.
+API_DIAGNOSTIC_DNS_TIMEOUT_SECONDS = 2.0
+
+
+class NetworkError(RuntimeError):
+    """The GitHub API was unreachable after exhausting the retry budget.
+
+    Raised for transport-level failures (DNS, connection, TLS, or read
+    timeout) against the GitHub API that persist across every retry within
+    ``API_MAX_TOTAL_WAIT_SECONDS``. The run aborts rather than rendering a
+    report from missing data: when the API itself cannot be reached, an empty
+    or "all clean / all unknown" report is actively misleading. Transport
+    failures against the third-party Scorecard endpoint do not raise this --
+    they degrade that one signal instead.
+    """
+
+
+async def _endpoint_diagnostics(url: str) -> str:
+    """A ``host=... ip=... port=...`` line describing a failed endpoint.
+
+    Best-effort and never raises: it re-resolves the URL's host so an operator
+    can tell a DNS failure (no address) from a host that resolves but will not
+    connect. Appended to the network-error message on its own dedicated line.
+
+    The lookup runs on the event loop's resolver under a short timeout
+    (``API_DIAGNOSTIC_DNS_TIMEOUT_SECONDS``) rather than calling the blocking
+    ``socket.getaddrinfo`` directly: this routine fires exactly when the network
+    is already failing (often DNS itself), so a synchronous resolve could stall
+    the event loop and delay the abort. If resolution does not complete promptly
+    the address falls back to ``unresolved (...)``.
+    """
+    try:
+        parsed = httpx.URL(url)
+        host = parsed.host or "?"
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except Exception:  # pragma: no cover - defensive URL parsing
+        return f"host=? ip=? port=? ({url})"
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await asyncio.wait_for(
+            loop.getaddrinfo(host, port, type=socket.SOCK_STREAM),
+            timeout=API_DIAGNOSTIC_DNS_TIMEOUT_SECONDS,
+        )
+        ips = sorted({str(info[4][0]) for info in infos})
+        addr = ", ".join(ips) if ips else "no addresses"
+    except asyncio.TimeoutError:
+        addr = "unresolved (timed out)"
+    except OSError as exc:
+        detail = exc.strerror or str(exc) or "resolution failed"
+        addr = f"unresolved ({detail})"
+    return f"host={host} ip={addr} port={port}"
 
 _DEPENDABOT_ENABLED_QUERY = """
 query($owner: String!, $name: String!) {
@@ -92,6 +169,33 @@ def _parse_iso(value: object) -> dt.datetime | None:
         return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """Seconds to wait from a ``Retry-After`` header, or ``None`` if absent/bad.
+
+    Per RFC 7231 ``Retry-After`` is either delta-seconds (an integer) or an
+    HTTP-date. GitHub normally sends delta-seconds, but a proxy or future change
+    may send a date, so both forms are parsed: a bare ``float(value)`` would
+    raise ``ValueError`` on a date and crash rate-limit handling. A past or
+    unparsable date clamps to ``0.0`` / returns ``None`` rather than raising.
+    """
+    if not value:
+        return None
+    value = value.strip()
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=dt.timezone.utc)
+    return max(0.0, (when - dt.datetime.now(dt.timezone.utc)).total_seconds())
 
 
 def _tag_committed_date(tags: dict | None) -> dt.datetime | None:
@@ -211,7 +315,7 @@ class GitHubClient:
         graphql_url: str = GRAPHQL_API,
         scorecard_url: str = SCORECARD_API,
         concurrency: int = 6,
-        max_retries: int = 4,
+        max_retries: int = API_MAX_RETRIES,
         timeout: float = 30.0,
     ) -> None:
         self._api_url = api_url.rstrip("/")
@@ -247,6 +351,16 @@ class GitHubClient:
     # ------------------------------------------------------------------ #
     # Low-level request with backoff
     # ------------------------------------------------------------------ #
+    def _backoff_delay(self, attempt: int) -> float:
+        """Exponential backoff (seconds) before retry ``attempt`` (0-based).
+
+        ``API_BACKOFF_INITIAL_SECONDS`` grown by ``API_BACKOFF_FACTOR`` each
+        attempt (1s, 2s, 4s, ...), capped so a single sleep never exceeds the
+        cumulative wait budget.
+        """
+        delay = API_BACKOFF_INITIAL_SECONDS * (API_BACKOFF_FACTOR**attempt)
+        return min(delay, API_MAX_TOTAL_WAIT_SECONDS)
+
     async def _request(
         self,
         method: str,
@@ -255,39 +369,109 @@ class GitHubClient:
         client: httpx.AsyncClient | None = None,
         **kwargs: object,
     ) -> httpx.Response:
-        """Issue a request, retrying on rate-limit responses with backoff.
+        """Issue a request under the shared retry/backoff policy.
 
         ``client`` selects the transport (default: the authenticated GitHub
         client). External calls pass the unauthenticated client so the GitHub
         token is never leaked to third parties.
+
+        Retries follow the shared retry/backoff policy: exponential backoff,
+        at most ``max_retries`` retries (the constructor argument, defaulting to
+        ``API_MAX_RETRIES``), and at most
+        ``API_MAX_TOTAL_WAIT_SECONDS`` of cumulative waiting. A transport
+        failure (DNS/TLS/connect or read timeout) to the GitHub API that
+        outlives the whole budget raises :class:`NetworkError` to abort the run
+        -- a report built without live data would be misleading. The same
+        failure against the third-party Scorecard endpoint instead degrades to
+        an indeterminate 503, so one flaky external API never aborts the report.
+        Rate-limit responses (403/429) back off on the same schedule and, once
+        exhausted, return the throttled response for per-signal degradation.
         """
         http = client or self._client
+        is_external = http is self._ext_client
         attempt = 0
+        waited = 0.0
         while True:
             try:
                 async with self._sem:
                     resp = await http.request(method, url, **kwargs)  # type: ignore[arg-type]
             except httpx.HTTPError as exc:
-                # Transport failure (DNS/TLS/connect or read timeout). Signals
-                # degrade independently, so convert this into an indeterminate
-                # 503 response rather than aborting the whole run; callers treat
-                # any non-200 as not-clean/unknown.
-                log.warning("request to %s failed: %s", url, exc)
-                return httpx.Response(503, request=httpx.Request(method, url))
+                # Transport failure: the endpoint could not be reached at all
+                # (DNS, connection, TLS, or read timeout).
+                delay = self._backoff_delay(attempt)
+                exhausted = (
+                    attempt >= self._max_retries
+                    or waited + delay > API_MAX_TOTAL_WAIT_SECONDS
+                )
+                if exhausted:
+                    if is_external:
+                        # Third-party (Scorecard) endpoint: degrade this one
+                        # signal rather than aborting the whole GitHub report.
+                        log.warning(
+                            "external request to %s failed after %d attempt(s): "
+                            "%s; signal degraded to unknown",
+                            url, attempt + 1, exc,
+                        )
+                        return httpx.Response(
+                            503, request=httpx.Request(method, url)
+                        )
+                    diagnostics = await _endpoint_diagnostics(url)
+                    raise NetworkError(
+                        "Network error: the GitHub API is unreachable after "
+                        f"{attempt + 1} attempt(s) within "
+                        f"{API_MAX_TOTAL_WAIT_SECONDS:.0f}s; aborting because a "
+                        "security report cannot be produced without live API "
+                        "data.\n  "
+                        f"endpoint={method} {url} {diagnostics} "
+                        f"cause={exc!s}"
+                    ) from exc
+                log.warning(
+                    "request to %s failed: %s; retrying in %.0fs "
+                    "(retry %d of %d)",
+                    url, exc, delay, attempt + 1, self._max_retries,
+                )
+                await asyncio.sleep(delay)
+                waited += delay
+                attempt += 1
+                continue
             if resp.status_code not in (403, 429):
                 return resp
-            # Distinguish secondary/primary rate limiting from a genuine 403.
+            # Reachable but possibly rate limited: distinguish secondary/primary
+            # rate limiting from a genuine 403, then back off on the shared
+            # schedule (honouring Retry-After) within the wait budget.
             retry_after = resp.headers.get("retry-after")
             remaining = resp.headers.get("x-ratelimit-remaining")
-            rate_limited = retry_after is not None or remaining == "0"
-            if not rate_limited or attempt >= self._max_retries:
+            retry_after_secs = _parse_retry_after(retry_after)
+            # A 429 is by definition "Too Many Requests", so always back off on
+            # it even when GitHub (or an intermediary) omits Retry-After and the
+            # x-ratelimit-remaining header; falling through would return the 429
+            # un-retried. A 403 is a rate limit only when one of those headers
+            # says so (otherwise it is a genuine permission error); the mere
+            # *presence* of Retry-After counts, so a malformed/unparsable value
+            # still triggers a backoff (falling back to the exponential schedule
+            # below) rather than being mistaken for a permission error.
+            rate_limited = (
+                resp.status_code == 429
+                or retry_after is not None
+                or remaining == "0"
+            )
+            delay = (
+                retry_after_secs
+                if retry_after_secs is not None
+                else self._backoff_delay(attempt)
+            )
+            if (
+                not rate_limited
+                or attempt >= self._max_retries
+                or waited + delay > API_MAX_TOTAL_WAIT_SECONDS
+            ):
                 return resp
-            delay = float(retry_after) if retry_after else min(2**attempt, 60)
             log.warning("rate limited on %s; backing off %.0fs", url, delay)
             # The discarded response must be closed; we are retrying and will
             # not read its body, so leaving it open would leak a pool connection.
             await resp.aclose()
             await asyncio.sleep(delay)
+            waited += delay
             attempt += 1
 
     async def _get_list(self, url: str, **params: object) -> tuple[int, list[dict]]:

@@ -9,6 +9,7 @@ import datetime as dt
 from rich.console import Console
 
 from github_security_report import report
+from github_security_report.categories import CategoryKey, category_meta
 from github_security_report.models import (
     Repo,
     RepoSignal,
@@ -85,18 +86,20 @@ def test_dependabot_tables_and_releases_rendered() -> None:
     org = _org([], count=2)
     org.dependabot_tables = [
         report.TableSection(
-            title="Enablement",
-            columns=("Repository", "Dependabot alerts"),
-            rows=[report.TableRow(repo=_repo("off"), cells=("❌ not enabled",))],
+            category=category_meta(CategoryKey.DEPENDABOT_ALERTS_ENABLED),
+            columns=("Repository",),
+            rows=[report.TableRow(repo=_repo("off"), cells=())],
+            fail_count=1,
         )
     ]
     org.releases = report.TableSection(
-        title="Releases / Tagging",
+        category=category_meta(CategoryKey.RELEASES),
         columns=("Repository", "Last release", "Last tag"),
         rows=[report.TableRow(repo=_repo("stale"), cells=("never", "never"))],
+        fail_count=1,
     )
     out = _render(org)
-    assert "Enablement" in out
+    assert "Dependabot: Alerts Enabled" in out
     assert "off" in out
     assert "Releases / Tagging" in out
     assert "stale" in out
@@ -105,17 +108,17 @@ def test_dependabot_tables_and_releases_rendered() -> None:
 def test_mutable_releases_rendered_with_summary() -> None:
     org = _org([], count=84)
     org.mutable_releases = report.TableSection(
-        title="Mutable Releases",
+        category=category_meta(CategoryKey.MUTABLE_RELEASES),
         columns=("Repository", "Releases"),
         rows=[report.TableRow(repo=_repo("img"), cells=("v0.1.0 (latest)",))],
-        note="Recent releases in the repositories above are not immutable.",
-        summary="2 with findings, 82 clean",
+        pass_count=82,
+        fail_count=2,
     )
     out = _render(org)
-    # The heading is bare; the summary is relocated beneath the table.
+    # The heading is bare; the standardised summary is beneath the table.
     assert "Mutable Releases" in out
-    assert "Mutable Releases — 2 with findings" not in out
-    assert "2 with findings, 82 clean" in out
+    assert "2 Mutable" in out
+    assert "82 Immutable" in out
     assert "img" in out
 
 
@@ -129,19 +132,18 @@ def test_excluded_repos_shown_under_each_section_with_count() -> None:
     assert "Excluded: opted-out" in out
 
 
-def test_table_note_split_one_sentence_per_line() -> None:
+def test_terminal_omits_category_description() -> None:
+    # The terminal is a brevity-first surface: the explanatory description is
+    # reserved for the Markdown/HTML outputs and must not appear here.
     org = _org([], count=1)
     org.releases = report.TableSection(
-        title="Releases / Tagging",
+        category=category_meta(CategoryKey.RELEASES),
         columns=("Repository", "Last release", "Last tag"),
         rows=[report.TableRow(repo=_repo("r"), cells=("never", "never"))],
-        note="First sentence here. Second sentence here. Third one.",
+        fail_count=1,
     )
     out = _render(org)
-    # Each sentence on its own line (no two sentences joined on one line).
-    assert "First sentence here.\n" in out
-    assert "Second sentence here." in out
-    assert "Third one." in out
+    assert "ranks highest" not in out
 
 
 def test_disabled_total_and_names_on_separate_lines() -> None:
@@ -161,12 +163,13 @@ def test_top_n_limits_generic_table_and_name_lists() -> None:
     org = _org(signals, count=10)
     org.excluded_repos = [_repo(f"ex{i}") for i in range(4)]
     org.releases = report.TableSection(
-        title="Releases / Tagging",
+        category=category_meta(CategoryKey.RELEASES),
         columns=("Repository", "Last release", "Last tag"),
         rows=[
             report.TableRow(repo=_repo(f"r{i}"), cells=("never", "never"))
             for i in range(7)
         ],
+        fail_count=7,
     )
     console = Console(record=True, width=200, no_color=True)
     terminal.render_org(org, console, top_n=2)
@@ -242,3 +245,29 @@ def test_secret_scanning_has_no_totals_row() -> None:
     out = _render(_org(signals, count=1))
     secret_block = out.split(SignalType.SECRET_SCANNING.heading, 1)[1]
     assert "Total" not in secret_block
+
+
+def test_show_predicate_hides_disabled_categories() -> None:
+    # A category whose visibility predicate returns False is omitted entirely,
+    # including its heading -- the data is still present on the report object.
+    sig = RepoSignal(
+        _repo("bad"), SignalType.CODEQL, RepoState.OFFENDER, SeverityCounts(high=1)
+    )
+    org = _org([sig], count=1)
+    org.mutable_releases = report.TableSection(
+        category=category_meta(CategoryKey.MUTABLE_RELEASES),
+        columns=("Repository", "Releases"),
+        rows=[report.TableRow(repo=_repo("img"), cells=("v1 (latest)",))],
+        fail_count=1,
+    )
+    console = Console(record=True, width=120, no_color=True)
+    terminal.render_org(
+        org,
+        console,
+        show=lambda key: key not in {CategoryKey.CODEQL, CategoryKey.MUTABLE_RELEASES},
+    )
+    out = console.export_text()
+    assert "CodeQL" not in out
+    assert "Mutable Releases" not in out
+    # A category left enabled by the predicate still renders.
+    assert "Secret scanning" in out

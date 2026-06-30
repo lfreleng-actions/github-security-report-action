@@ -12,7 +12,9 @@ from pathlib import Path
 import pytest
 
 from github_security_report import config
+from github_security_report.categories import CategoryKey
 from github_security_report.config import ConfigError
+from github_security_report.severity import Severity
 
 TUESDAY = dt.date(2026, 6, 16)
 WEDNESDAY = dt.date(2026, 6, 17)
@@ -133,7 +135,7 @@ class TestBuildConfig:
         assert org.report.repo_min_age_days == 14
 
     def test_release_max_age_days_default_and_override(self) -> None:
-        assert config.build_config(MINIMAL).report.release_max_age_days == 0
+        assert config.build_config(MINIMAL).report.release_max_age_days == 60
         data = {
             "report": {"release_max_age_days": 60},
             "organizations": [
@@ -240,6 +242,156 @@ class TestBuildConfig:
             config.build_config(
                 {"organizations": [{"name": "o"}], "report": {"top_n": -1}}
             )
+
+
+class TestCategoryToggles:
+    def test_default_shows_every_category_on_every_output(self) -> None:
+        rc = config.build_config(MINIMAL).report
+        for output in config.REPORT_OUTPUTS:
+            assert rc.shows_category(CategoryKey.CODEQL, output)
+            assert rc.shows_category(CategoryKey.MUTABLE_RELEASES, output)
+
+    def test_global_enabled_false_hides_on_all_outputs(self) -> None:
+        data = {
+            "report": {"categories": {"zizmor": {"enabled": False}}},
+            "organizations": [{"name": "o"}],
+        }
+        rc = config.build_config(data).organizations[0].report
+        for output in config.REPORT_OUTPUTS:
+            assert not rc.shows_category(CategoryKey.ZIZMOR, output)
+        # Other categories are untouched.
+        assert rc.shows_category(CategoryKey.CODEQL, "cli")
+
+    def test_per_output_toggle_is_lower_precedence(self) -> None:
+        data = {
+            "report": {
+                "categories": {"releases": {"outputs": {"cli": False, "slack": False}}}
+            },
+            "organizations": [{"name": "o"}],
+        }
+        rc = config.build_config(data).organizations[0].report
+        assert not rc.shows_category(CategoryKey.RELEASES, "cli")
+        assert not rc.shows_category(CategoryKey.RELEASES, "slack")
+        # Outputs left unset stay enabled.
+        assert rc.shows_category(CategoryKey.RELEASES, "markdown")
+        assert rc.shows_category(CategoryKey.RELEASES, "html")
+
+    def test_global_enabled_overrides_per_output(self) -> None:
+        # enabled=false wins even when an output is explicitly true.
+        data = {
+            "report": {
+                "categories": {"codeql": {"enabled": False, "outputs": {"html": True}}}
+            },
+            "organizations": [{"name": "o"}],
+        }
+        rc = config.build_config(data).organizations[0].report
+        assert not rc.shows_category(CategoryKey.CODEQL, "html")
+
+    def test_org_override_merges_per_output(self) -> None:
+        # An org override that flips one output leaves the inherited enabled
+        # switch and the other outputs intact.
+        data = {
+            "report": {"categories": {"secret_scanning": {"outputs": {"cli": False}}}},
+            "organizations": [
+                {
+                    "name": "o",
+                    "report": {
+                        "categories": {"secret_scanning": {"outputs": {"slack": False}}}
+                    },
+                }
+            ],
+        }
+        rc = config.build_config(data).organizations[0].report
+        assert not rc.shows_category(CategoryKey.SECRET_SCANNING, "cli")
+        assert not rc.shows_category(CategoryKey.SECRET_SCANNING, "slack")
+        assert rc.shows_category(CategoryKey.SECRET_SCANNING, "markdown")
+
+    def test_rejects_unknown_category_key(self) -> None:
+        with pytest.raises(ConfigError):
+            config.build_config(
+                {
+                    "report": {"categories": {"bogus": {"enabled": False}}},
+                    "organizations": [{"name": "o"}],
+                }
+            )
+
+    def test_rejects_unknown_output_key(self) -> None:
+        with pytest.raises(ConfigError):
+            config.build_config(
+                {
+                    "report": {"categories": {"codeql": {"outputs": {"email": False}}}},
+                    "organizations": [{"name": "o"}],
+                }
+            )
+
+    def test_fail_severity_default_is_none_override(self) -> None:
+        # With no override the resolver returns None (classifier uses the
+        # category default).
+        rc = config.build_config(MINIMAL).report
+        assert rc.fail_severity_for(CategoryKey.CODEQL) is None
+
+    def test_fail_severity_override_parsed(self) -> None:
+        data = {
+            "report": {
+                "categories": {
+                    "codeql": {"fail_severity": "low"},
+                    "zizmor": {"fail_severity": "informational"},
+                }
+            },
+            "organizations": [{"name": "o"}],
+        }
+        rc = config.build_config(data).organizations[0].report
+        assert rc.fail_severity_for(CategoryKey.CODEQL) is Severity.LOW
+        assert rc.fail_severity_for(CategoryKey.ZIZMOR) is Severity.INFORMATIONAL
+
+    def test_fail_severity_merges_with_other_category_keys(self) -> None:
+        # Setting fail_severity does not disturb a separately-set toggle.
+        data = {
+            "report": {
+                "categories": {"zizmor": {"enabled": False, "fail_severity": "medium"}}
+            },
+            "organizations": [{"name": "o"}],
+        }
+        rc = config.build_config(data).organizations[0].report
+        assert rc.fail_severity_for(CategoryKey.ZIZMOR) is Severity.MEDIUM
+        assert not rc.shows_category(CategoryKey.ZIZMOR, "cli")
+
+    def test_rejects_unknown_fail_severity(self) -> None:
+        with pytest.raises(ConfigError):
+            config.build_config(
+                {
+                    "report": {"categories": {"codeql": {"fail_severity": "bogus"}}},
+                    "organizations": [{"name": "o"}],
+                }
+            )
+
+    def test_fail_severity_on_non_signal_category_warns(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # `fail_severity` only governs the severity-ranked signals; on a binary
+        # category (here releases) it is silently ignored, so the build warns
+        # rather than letting the dead override pass unnoticed.
+        data = {
+            "report": {"categories": {"releases": {"fail_severity": "low"}}},
+            "organizations": [{"name": "o"}],
+        }
+        with caplog.at_level("WARNING"):
+            config.build_config(data)
+        assert any(
+            "fail_severity" in r.message and "releases" in r.message
+            for r in caplog.records
+        )
+
+    def test_fail_severity_on_signal_category_does_not_warn(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        data = {
+            "report": {"categories": {"codeql": {"fail_severity": "low"}}},
+            "organizations": [{"name": "o"}],
+        }
+        with caplog.at_level("WARNING"):
+            config.build_config(data)
+        assert not any("fail_severity" in r.message for r in caplog.records)
 
 
 class TestLoads:

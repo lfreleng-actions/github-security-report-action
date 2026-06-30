@@ -4,13 +4,21 @@
 
 from __future__ import annotations
 
+import socket
 from collections.abc import AsyncIterator
 
 import httpx
 import pytest
 import respx
 
-from github_security_report.client import GitHubClient
+from github_security_report import client as client_mod
+from github_security_report.client import (
+    API_MAX_RETRIES,
+    GitHubClient,
+    NetworkError,
+    _endpoint_diagnostics,
+    _parse_retry_after,
+)
 
 API = "https://api.github.com"
 SCORECARD = "https://api.securityscorecards.dev"
@@ -218,6 +226,53 @@ async def test_backoff_retries_then_succeeds(
 
 
 @respx.mock
+async def test_429_without_headers_is_retried(
+    client: GitHubClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A 429 carries no Retry-After and no x-ratelimit-remaining header. It still
+    # means "Too Many Requests", so the client must back off on the shared
+    # schedule rather than returning the un-retried 429.
+    slept: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        slept.append(delay)
+
+    monkeypatch.setattr("github_security_report.client.asyncio.sleep", _fake_sleep)
+    route = respx.get(f"{API}/repos/o/r/secret-scanning/alerts")
+    route.side_effect = [
+        httpx.Response(429),
+        httpx.Response(200, json=[]),
+    ]
+    status = await client.secret_scanning_status("o", "r")
+    assert status == 200
+    # Backed off once on the default schedule (no Retry-After to honour).
+    assert len(slept) == 1 and slept[0] > 0.0
+
+
+@respx.mock
+async def test_403_with_malformed_retry_after_is_retried(
+    client: GitHubClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A 403 carrying a Retry-After header is secondary rate limiting even when
+    # the value is unparsable. Its mere presence must trigger a backoff on the
+    # exponential schedule rather than being mistaken for a permission error.
+    slept: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        slept.append(delay)
+
+    monkeypatch.setattr("github_security_report.client.asyncio.sleep", _fake_sleep)
+    route = respx.get(f"{API}/repos/o/r/secret-scanning/alerts")
+    route.side_effect = [
+        httpx.Response(403, headers={"retry-after": "not-a-number"}),
+        httpx.Response(200, json=[]),
+    ]
+    status = await client.secret_scanning_status("o", "r")
+    assert status == 200
+    assert len(slept) == 1 and slept[0] > 0.0
+
+
+@respx.mock
 async def test_genuine_403_not_retried(client: GitHubClient) -> None:
     # A 403 with rate-limit budget remaining is a real permission error.
     respx.get(f"{API}/repos/o/r/code-scanning/analyses").mock(
@@ -228,14 +283,107 @@ async def test_genuine_403_not_retried(client: GitHubClient) -> None:
 
 
 @respx.mock
-async def test_transport_error_becomes_indeterminate(client: GitHubClient) -> None:
-    # A transport failure (DNS/TLS/connect/read) must not abort the run; it is
-    # converted into an indeterminate non-200 status so signals degrade.
-    respx.get(f"{API}/repos/o/r/secret-scanning/alerts").mock(
+async def test_github_transport_failure_raises_network_error(
+    client: GitHubClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A transport failure (DNS/TLS/connect/read) to the GitHub API that
+    # survives every retry must hard-fail with NetworkError rather than
+    # fabricating a degraded result: a report built without live data is
+    # actively misleading (e.g. empty tables rendered as "all clean").
+    slept: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        slept.append(delay)
+
+    monkeypatch.setattr("github_security_report.client.asyncio.sleep", _fake_sleep)
+    route = respx.get(f"{API}/repos/o/r/secret-scanning/alerts")
+    route.mock(side_effect=httpx.ConnectError("boom"))
+
+    with pytest.raises(NetworkError) as excinfo:
+        await client.secret_scanning_status("o", "r")
+
+    # The initial attempt plus API_MAX_RETRIES retries were made, with
+    # exponential backoff (1s, 2s, 4s) between them.
+    assert route.call_count == API_MAX_RETRIES + 1
+    assert slept == [1.0, 2.0, 4.0]
+    # The message carries the friendly line plus a dedicated host/port line.
+    msg = str(excinfo.value)
+    assert "GitHub API is unreachable" in msg
+    assert "host=api.github.com" in msg
+    assert "port=443" in msg
+
+
+async def test_endpoint_diagnostics_reports_resolved_addresses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The diagnostics line carries the host, the resolved IP(s) and the port so
+    # an operator can tell a DNS failure from a host that resolves but will not
+    # connect. The resolver runs through the event loop (not blocking
+    # socket.getaddrinfo); patch the bounded wait_for to return a fixed answer.
+    async def _fake_wait_for(awaitable: object, timeout: float) -> object:
+        awaitable.close()  # type: ignore[attr-defined]
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("140.82.112.3", 443))]
+
+    monkeypatch.setattr(client_mod.asyncio, "wait_for", _fake_wait_for)
+    line = await _endpoint_diagnostics("https://api.github.com/repos/o/r")
+    assert line == "host=api.github.com ip=140.82.112.3 port=443"
+
+
+async def test_endpoint_diagnostics_dns_timeout_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A slow or hanging resolver must not stall the event loop while the run is
+    # already aborting: the bounded wait_for gives up and the address falls back
+    # to "unresolved (timed out)" rather than blocking on socket.getaddrinfo.
+    async def _timeout(awaitable: object, timeout: float) -> object:
+        awaitable.close()  # type: ignore[attr-defined]
+        # asyncio.wait_for raises asyncio.TimeoutError on every supported Python
+        # version; on 3.10 it is distinct from the builtin TimeoutError (an
+        # OSError subclass), so raise the exact type wait_for would raise.
+        raise client_mod.asyncio.TimeoutError
+
+    monkeypatch.setattr(client_mod.asyncio, "wait_for", _timeout)
+    line = await _endpoint_diagnostics("https://api.github.com/repos/o/r")
+    assert line == "host=api.github.com ip=unresolved (timed out) port=443"
+
+
+def test_parse_retry_after_delta_seconds() -> None:
+    # The common GitHub form: an integer number of seconds.
+    assert _parse_retry_after("30") == 30.0
+    assert _parse_retry_after(" 5 ") == 5.0
+    # Absent or empty yields None (not rate limited via this header).
+    assert _parse_retry_after(None) is None
+    assert _parse_retry_after("") is None
+
+
+def test_parse_retry_after_http_date_does_not_raise() -> None:
+    # RFC 7231 permits an HTTP-date; float() would raise ValueError on it and
+    # crash rate-limit handling. A future date yields a positive wait; a past
+    # date clamps to 0.0; an unparsable value yields None.
+    future = "Wed, 21 Oct 2099 07:28:00 GMT"
+    secs = _parse_retry_after(future)
+    assert secs is not None and secs > 0.0
+    assert _parse_retry_after("Wed, 21 Oct 1999 07:28:00 GMT") == 0.0
+    assert _parse_retry_after("not-a-date") is None
+
+
+@respx.mock
+async def test_external_transport_failure_degrades_not_raises(
+    client: GitHubClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A transport failure to the third-party Scorecard API must NOT abort the
+    # whole run; it degrades that one signal to an indeterminate 503 so a
+    # flaky external dependency never blocks the GitHub report.
+    async def _fake_sleep(delay: float) -> None:
+        return None
+
+    monkeypatch.setattr("github_security_report.client.asyncio.sleep", _fake_sleep)
+    respx.get(url__startswith=f"{SCORECARD}/projects/github.com/o/r").mock(
         side_effect=httpx.ConnectError("boom")
     )
-    status = await client.secret_scanning_status("o", "r")
+    status, score = await client.scorecard_score("o", "r")
     assert status == 503
+    assert score is None
 
 
 @respx.mock

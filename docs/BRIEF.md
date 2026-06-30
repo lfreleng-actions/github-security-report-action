@@ -83,8 +83,12 @@ Posture booleans (no ranking, feed coverage/nag): Security policy, Private
 vulnerability reporting, Security advisories, etc.
 
 **Resilience:** every section is **best-effort and independently degradable** —
-an unavailable signal/API renders "no data available" and **never fails the
-whole run**.
+an unavailable individual signal renders "no data available" and **never fails
+the whole run**. The one exception is a **transport failure to the GitHub API
+itself** (DNS/connect/TLS/read timeout that outlives the shared retry budget):
+the run **hard-fails** with a network error, because a report built without any
+live GitHub data would read as falsely reassuring. A transport failure to the
+third-party Scorecard endpoint still degrades that one signal only.
 
 ### Deferred
 
@@ -104,14 +108,14 @@ plain tables (no offender/clean/nag/unknown classification).
 **Dependabot** (sub-tables nested beneath the "Dependabot: Security Alerts"
 signal heading):
 
-- **Dependabot: Security Alerts** (enablement) — repositories where Dependabot
+- **Dependabot: Alerts Enabled** (enablement) — repositories where Dependabot
   vulnerability alerts are *not* switched on (the GraphQL
   `hasVulnerabilityAlertsEnabled` read). This replaces the Dependabot signal's
-  nag list so the same repositories are not listed twice. Its empty/all-enabled
-  note is feature-agnostic ("this feature"), shared with the Security Updates
-  table below.
-- **Dependabot: Security Updates** — a single "Repositories NOT Enabled" column
-  listing repositories where Dependabot security updates
+  nag list so the same repositories are not listed twice. Its title is
+  deliberately distinct from the **Dependabot: Security Alerts** signal heading
+  (open alerts) above it.
+- **Dependabot: Security Updates** — a single **Repository** column listing
+  repositories where Dependabot security updates
   (`GET /repos/{o}/{r}/automated-security-fixes`) are *not* switched on.
 - **Dependabot: Cooldown Settings** — repositories/ecosystems whose
   `.github/dependabot.yml` declares an `updates` entry with **no `cooldown`**. A
@@ -133,10 +137,11 @@ reported in **two separate columns** as a human "last release / last tag" age.
   (default **28**, CLI `--repo-min-age-days`) are excluded; **0** disables
   the hold so every repository is included. (`release_min_age_days` /
   `--release-min-age-days` are deprecated aliases of this control.)
-- **Release-staleness threshold:** `report.release_max_age_days` (default **0**,
-  CLI `--release-max-age-days`) flags a repository only when its newest release
-  **or** tag is older than that many days; a repository with neither is always
-  flagged. **0** disables the threshold, so every eligible repository is listed.
+- **Release-staleness threshold:** `report.release_max_age_days` (default
+  **60**, CLI `--release-max-age-days`) flags a repository only when its newest
+  release **or** tag is older than that many days; a repository with neither is
+  always flagged. **0** disables the threshold, so every eligible repository is
+  listed.
 - **On-demand exclusions:** `releases_exclude` (per org; CLI `--releases-exclude`,
   repeatable) drops repositories that are never released / not consumed
   externally.
@@ -159,6 +164,16 @@ reported in **two separate columns** as a human "last release / last tag" age.
 - **Per-report-type metric definitions** — no single universal "issue count".
   Each report declares `(value, sort_direction)`.
 - **Severity-weighted where available; fall back to flat count** otherwise.
+- **Severity scale (lowest to highest):** informational → low → medium → high →
+  critical. `informational` is the sub-low rung that SARIF `note`/`none`
+  findings (the bulk of a tool like zizmor) normalise to, so a category can
+  treat them as non-actionable.
+- **Pass/fail cutoff (`fail_severity`):** each severity-ranked signal carries a
+  cutoff in its category metadata. A repository is an offender only when it has
+  a finding **at or above** the cutoff; sub-threshold findings fold into the
+  clean count. The global default is **medium** (low and informational pass);
+  **zizmor** lowers it to **low** (only informational passes). The cutoff is
+  overridable per category via `report.categories.<key>.fail_severity`.
 - When severity data exists, show **separate columns** (critical / high /
   medium / low).
 - **Row sort:** hierarchical, worst-first — critical desc → high desc →
@@ -170,14 +185,28 @@ reported in **two separate columns** as a human "last release / last tag" age.
 Each in-scope repo falls into exactly one bucket **per report type** (not
 global):
 
-1. **Enabled + has open findings** → table row (sorted worst-first).
-2. **Enabled + zero findings** → omitted from table; counted in a
-   "✅ N repositories clean" summary beneath the table.
-3. **Supported but NOT enabled** → bulleted **nag list** beneath the table
-   (excludes archived/test repos).
+1. **Enabled + has a finding at/above the cutoff** → table row (sorted
+   worst-first). The `fail_severity` cutoff (§5) decides "actionable": a repo
+   whose findings are all below the cutoff is treated as clean, not an offender.
+2. **Enabled + zero failing findings** → omitted from table; counted in the
+   standardised summary footer beneath the table (the "✅ N <pass>" /
+   "✅ All <pass>" line).
+3. **Supported but NOT enabled** → counted as a **disabled** footer line with a
+   named repository breakdown (excludes archived/test repos).
 4. **Unknown / insufficient permission** (indeterminate probe: missing scope,
-   GHAS not licensed, ambiguous 403/404) → **footnoted count**; never merged
-   into clean or nag.
+   GHAS not licensed, ambiguous 403/404) → **unknown** footer line; never merged
+   into clean or disabled.
+
+**Standardised summary footer.** Every category — the five ranked signals and
+every posture/freshness table — renders the same metadata-driven footer beneath
+its table, built once in `report.build_summary()` and reused by all surfaces
+(terminal, Slack, Markdown, HTML). Lines are ordered remediation-first
+(failures, disabled, unknown, then the healthy pass line, then excluded). The
+pass line collapses to **"All <pass_label>"** (no number) only when nothing else
+needs attention; otherwise every present bucket shows its count. Each category's
+pass/fail vocabulary, documentation URL and explanatory description live in the
+`categories` registry (`CategoryMeta`). The description is shown only on the rich
+surfaces (Markdown and HTML); the terminal and Slack stay brevity-first.
 
 **Enabled-probe contract** (each signal declares its own probe; Phase 0 locks
 exact rules):
@@ -258,7 +287,7 @@ Sketch:
     "include_archived": false,
     "include_test": false,
     "repo_min_age_days": 28,
-    "release_max_age_days": 0
+    "release_max_age_days": 60
   },
   "organizations": [
     {
@@ -272,9 +301,9 @@ Sketch:
 ```
 
 - `report.repo_min_age_days` (default `28`, `0` = include all) is the
-  repository-age grace period and `report.release_max_age_days` (default `0` =
-  flag every eligible repo) is the release-staleness threshold; together with
-  the per-org `releases_exclude` they control the Releases / Tagging section
+  repository-age grace period and `report.release_max_age_days` (default `60`;
+  `0` = flag every eligible repo) is the release-staleness threshold; together
+  with the per-org `releases_exclude` they control the Releases / Tagging section
   (§4). All three can be overridden at the CLI with `--repo-min-age-days`,
   `--release-max-age-days`, and the repeatable `--releases-exclude`. The former
   `release_min_age_days` key (and `--release-min-age-days` flag) is a deprecated
@@ -286,6 +315,14 @@ Sketch:
   mode instead of erroring; the action never reads it (configuration is passed
   explicitly). Secrets stay out of the file — the token is referenced by
   `token_env`, and the Slack bot token is a workflow-only secret.
+- **Per-category render toggles:** `report.categories.<key>` switches a category
+  on or off without affecting data collection (collection is always
+  exhaustive). Each key carries a global `enabled` switch (highest precedence)
+  and a lower-precedence `outputs` map for the four surfaces (`cli`, `slack`,
+  `markdown`, `html`); a category renders on a surface only when `enabled` **and**
+  that surface's toggle are both true. Everything defaults to true. The keys are
+  the `categories` registry keys (§6); they merge per-org like the rest of the
+  `report` block. The `report.json` artifact is always complete regardless.
 
 ## 9. Credentials and operating modes
 

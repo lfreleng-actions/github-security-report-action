@@ -10,22 +10,37 @@ sections 10-11.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from rich.console import Console
 from rich.table import Table
 
+from github_security_report.categories import CategoryKey
 from github_security_report.models import Repo, RepoSignal, SignalType
 from github_security_report.render import markdown
 from github_security_report.report import (
+    SUMMARY_EMOJI,
     OrgReport,
     SignalSection,
+    SummaryLine,
     TableSection,
-    note_sentences,
+    build_summary,
     truncate,
 )
 
 _SEVERITY_STYLE = {"critical": "bold red", "high": "red", "medium": "yellow", "low": "dim"}
+
+# Rich style per summary-footer kind, shared by signal and table sections.
+_SUMMARY_STYLE = {
+    "fail": "red",
+    "disabled": "yellow",
+    "unknown": "dim",
+    "pass": "green",
+    "excluded": "blue",
+}
+
+# Label prefixing the repository-name list printed beneath a summary line.
+_NAME_LIST_LABEL = {"disabled": "Disabled", "excluded": "Excluded"}
 
 
 def _add_columns(table: Table, signal: SignalType) -> None:
@@ -52,13 +67,36 @@ def _row(sig: RepoSignal) -> list[str]:
     return [sig.repo.name, *base, str(c.total)]
 
 
-def _names(repos: Sequence[Repo], top_n: int | None) -> str:
-    """Comma-joined repo names limited to ``top_n`` with a '(+N more)' tail."""
-    shown, hidden = truncate(repos, top_n)
-    text = ", ".join(r.name for r in shown)
+def _truncated_names(names: Sequence[str], top_n: int | None) -> str:
+    """Comma-joined names limited to ``top_n`` with a '(+N more)' tail."""
+    shown, hidden = truncate(names, top_n)
+    text = ", ".join(shown)
     if hidden:
-        text += f" … (+{hidden} more)"
+        text += f" \u2026 (+{hidden} more)"
     return text
+
+
+def _render_summary(
+    console: Console, lines: Sequence[SummaryLine], *, top_n: int | None
+) -> None:
+    """Print the standardised footer: count lines, then any name lists.
+
+    Counts come first (failures and not-enabled at the top, the healthy pass
+    line lower down), then the repository-name breakdowns for the disabled and
+    excluded kinds -- numbers and names are never mixed on one line, and the
+    name lists honour the same offender limit as the tables.
+    """
+    for line in lines:
+        style = _SUMMARY_STYLE[line.kind]
+        console.print(f"  [{style}]{SUMMARY_EMOJI[line.kind]} {line.text}[/{style}]")
+    for line in lines:
+        label = _NAME_LIST_LABEL.get(line.kind)
+        if label and line.names:
+            style = _SUMMARY_STYLE[line.kind]
+            console.print(
+                f"  [{style}]{label}:[/{style}] "
+                f"{_truncated_names(line.names, top_n)}"
+            )
 
 
 def render_section(
@@ -84,40 +122,31 @@ def render_section(
             )
         console.print(table)
         if hidden_offenders:
-            console.print(f"  [dim]… and {hidden_offenders} more[/dim]")
+            console.print(f"  [dim]\u2026 and {hidden_offenders} more[/dim]")
     else:
         console.print(f"[bold]{section.signal.heading}[/bold]")
-    # Numerical totals first (each on its own line, always the true total), then
-    # the repository-name breakdowns -- numbers and names are never mixed on one
-    # line, and the name lists honour the same offender limit as the tables.
-    totals: list[str] = []
-    if section.clean_count:
-        totals.append(f"[green]✅ {section.clean_count} Clean[/green]")
-    if section.nag_repos:
-        totals.append(f"[yellow]❌ {len(section.nag_repos)} Disabled[/yellow]")
-    if excluded:
-        totals.append(f"[blue]⏩ {len(excluded)} Excluded[/blue]")
-    if section.unknown_count:
-        totals.append(f"[dim]❓ {section.unknown_count} Unknown[/dim]")
-    if not (offenders or totals):
-        totals.append("[dim]No data[/dim]")
-    for line in totals:
-        console.print("  " + line)
-    if section.nag_repos:
-        console.print(f"  [yellow]Disabled:[/yellow] {_names(section.nag_repos, top_n)}")
-    if excluded:
-        console.print(f"  [blue]Excluded:[/blue] {_names(excluded, top_n)}")
+    lines = build_summary(section.summary_counts(excluded))
+    if lines:
+        _render_summary(console, lines, top_n=top_n)
+    elif not offenders:
+        console.print("  [dim]No data[/dim]")
     console.print()
 
 
 def render_table_section(
-    section: TableSection, console: Console, *, top_n: int | None = None
+    section: TableSection,
+    console: Console,
+    *,
+    excluded: Sequence[Repo] = (),
+    top_n: int | None = None,
 ) -> None:
-    """Render a generic posture/freshness table to the terminal."""
+    """Render a generic posture/freshness table to the terminal.
+
+    The explanatory description is deliberately omitted here: the terminal is a
+    brevity-first surface, so the guidance text is reserved for the Markdown and
+    HTML (GitHub Pages) outputs.
+    """
     rows, hidden = truncate(section.rows, top_n)
-    # The title is always a bare heading line; the count summary is relocated
-    # beneath the table (after any guidance note) so every category presents
-    # its results in the same place rather than inline with the heading.
     console.print(f"[bold]{section.title}[/bold]")
     if rows:
         table = Table(title_justify="left", title_style="bold")
@@ -127,36 +156,51 @@ def render_table_section(
             table.add_row(row.repo.name, *row.cells)
         console.print(table)
         if hidden:
-            console.print(f"  [dim]… and {hidden} more[/dim]")
-        if section.note:
-            # A long footnote reads better split one sentence per line. It only
-            # describes a populated table, so it is omitted when empty.
-            for sentence in note_sentences(section.note):
-                console.print(f"  [dim]{sentence}[/dim]")
-    elif section.empty_note:
-        console.print(f"  [green]✅ {section.empty_note}[/green]")
-    if section.summary:
-        console.print(f"  {section.summary}")
+            console.print(f"  [dim]\u2026 and {hidden} more[/dim]")
+    lines = build_summary(section.summary_counts(excluded))
+    if lines:
+        _render_summary(console, lines, top_n=top_n)
+    elif not rows:
+        console.print("  [dim]No data[/dim]")
     console.print()
 
 
-def render_org(org: OrgReport, console: Console, *, top_n: int | None = None) -> None:
+def render_org(
+    org: OrgReport,
+    console: Console,
+    *,
+    top_n: int | None = None,
+    show: Callable[[CategoryKey], bool] | None = None,
+) -> None:
+    visible = show or (lambda _key: True)
     console.rule(f"[bold]Security report: {org.org}[/bold]")
     console.print(f"[dim]{org.repo_count} repositories analysed[/dim]\n")
     if org.partial:
         console.print(
-            "[yellow]⚠ Incomplete: the repository listing could not be fully "
+            "[yellow]\u26a0 Incomplete: the repository listing could not be fully "
             "read; some repositories may be missing.[/yellow]\n"
         )
     for section in org.sections:
-        render_section(section, console, excluded=org.excluded_repos, top_n=top_n)
+        if visible(section.signal.category_key):
+            render_section(
+                section, console, excluded=org.excluded_repos, top_n=top_n
+            )
         if section.signal is SignalType.DEPENDABOT:
             for table in org.dependabot_tables:
-                render_table_section(table, console, top_n=top_n)
-    if org.releases is not None:
-        render_table_section(org.releases, console, top_n=top_n)
-    if org.mutable_releases is not None:
-        render_table_section(org.mutable_releases, console, top_n=top_n)
+                if visible(table.category.key):
+                    render_table_section(
+                        table, console, excluded=org.excluded_repos, top_n=top_n
+                    )
+    if org.releases is not None and visible(org.releases.category.key):
+        render_table_section(
+            org.releases, console, excluded=org.excluded_repos, top_n=top_n
+        )
+    if org.mutable_releases is not None and visible(
+        org.mutable_releases.category.key
+    ):
+        render_table_section(
+            org.mutable_releases, console, excluded=org.excluded_repos, top_n=top_n
+        )
 
 
 def render_orgs(

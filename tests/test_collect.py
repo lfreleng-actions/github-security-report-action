@@ -374,7 +374,7 @@ async def test_collect_org_attaches_dependabot_tables_and_releases() -> None:
     )
     titles = [t.title for t in report.dependabot_tables]
     assert titles == [
-        "Dependabot: Security Alerts",
+        "Dependabot: Alerts Enabled",
         "Dependabot: Security Updates",
         "Dependabot: Cooldown Settings",
     ]

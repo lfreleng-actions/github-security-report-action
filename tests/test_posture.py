@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from github_security_report import posture
+from github_security_report import posture, report
 from github_security_report.models import ReleaseRef, Repo
 
 NOW = dt.datetime(2026, 6, 18, 12, 0, tzinfo=dt.timezone.utc)
@@ -81,23 +81,23 @@ def test_alerts_table_lists_disabled_sorted() -> None:
         posture.RepoPosture(repo=_repo("dunno"), dependabot_alerts=None),
     ]
     table = posture.build_alerts_table(postures)
-    assert table.title == "Dependabot: Security Alerts"
+    # The enablement table title is disambiguated from the alert signal.
+    assert table.title == "Dependabot: Alerts Enabled"
     assert table.columns == ("Repository",)
     assert [r.repo.name for r in table.rows] == ["alpha", "zeta"]
     # The indeterminate (None) repo counts towards neither side of the summary.
-    assert table.summary == "2 not enabled, 1 enabled"
-    assert table.note
+    assert (table.fail_count, table.pass_count, table.unknown_count) == (2, 1, 1)
 
 
-def test_alerts_table_empty_has_note_only() -> None:
+def test_alerts_table_empty_is_all_enabled() -> None:
     table = posture.build_alerts_table(
         [posture.RepoPosture(repo=_repo("on"), dependabot_alerts=True)]
     )
     assert table.rows == []
-    # With nothing disabled the summary drops the zero negative count and the
-    # note reads positively.
-    assert table.summary == "1 enabled"
-    assert table.empty_note == ("All in-scope repositories have this feature enabled.")
+    # With nothing disabled, only the pass count is non-zero -> "All Enabled".
+    assert (table.fail_count, table.pass_count, table.unknown_count) == (0, 1, 0)
+    lines = report.build_summary(table.summary_counts())
+    assert [(line.kind, line.text) for line in lines] == [("pass", "All Enabled")]
 
 
 def test_alerts_table_empty_with_indeterminate_is_not_assertive() -> None:
@@ -110,16 +110,19 @@ def test_alerts_table_empty_with_indeterminate_is_not_assertive() -> None:
         ]
     )
     assert table.rows == []
-    assert table.summary == "1 enabled"
-    assert table.empty_note == (
-        "No in-scope repository has this feature confirmed disabled."
-    )
+    assert (table.fail_count, table.pass_count, table.unknown_count) == (0, 1, 1)
+    # The unknown count keeps the pass line from collapsing to "All".
+    lines = report.build_summary(table.summary_counts())
+    assert [(line.kind, line.text) for line in lines] == [
+        ("unknown", "1 Unknown"),
+        ("pass", "1 Enabled"),
+    ]
 
 
-def test_alerts_table_all_indeterminate_has_no_summary() -> None:
-    # Every repo is indeterminate (None), so neither the negative nor the
-    # positive count has data. The summary must be empty so renderers omit it
-    # rather than printing a misleading "0 enabled".
+def test_alerts_table_all_indeterminate_is_unknown() -> None:
+    # Every repo is indeterminate (None): with no confirmed-enabled or
+    # disabled repository, the footer reports them honestly as unknown rather
+    # than printing a misleading "0 enabled".
     table = posture.build_alerts_table(
         [
             posture.RepoPosture(repo=_repo("dunno"), dependabot_alerts=None),
@@ -127,7 +130,10 @@ def test_alerts_table_all_indeterminate_has_no_summary() -> None:
         ]
     )
     assert table.rows == []
-    assert table.summary == ""
+    assert (table.fail_count, table.pass_count, table.unknown_count) == (0, 0, 2)
+    # Two genuinely-indeterminate repositories surface as the unknown count.
+    lines = report.build_summary(table.summary_counts())
+    assert [(line.kind, line.text) for line in lines] == [("unknown", "2 Unknown")]
 
 
 def test_security_updates_table_lists_disabled_sorted() -> None:
@@ -138,10 +144,9 @@ def test_security_updates_table_lists_disabled_sorted() -> None:
     ]
     table = posture.build_security_updates_table(postures)
     assert table.title == "Dependabot: Security Updates"
-    assert table.columns == ("Repositories NOT Enabled",)
+    assert table.columns == ("Repository",)
     assert [r.repo.name for r in table.rows] == ["a", "b"]
-    assert table.summary == "2 not enabled, 1 enabled"
-    assert table.note
+    assert (table.fail_count, table.pass_count, table.unknown_count) == (2, 1, 0)
 
 
 def test_security_updates_table_all_enabled_summary() -> None:
@@ -152,8 +157,9 @@ def test_security_updates_table_all_enabled_summary() -> None:
         ]
     )
     assert table.rows == []
-    assert table.summary == "2 enabled"
-    assert table.empty_note == ("All in-scope repositories have this feature enabled.")
+    assert (table.fail_count, table.pass_count, table.unknown_count) == (0, 2, 0)
+    lines = report.build_summary(table.summary_counts())
+    assert [(line.kind, line.text) for line in lines] == [("pass", "All Enabled")]
 
 
 def test_security_updates_table_empty_with_indeterminate() -> None:
@@ -166,10 +172,7 @@ def test_security_updates_table_empty_with_indeterminate() -> None:
         ]
     )
     assert table.rows == []
-    assert table.summary == "1 enabled"
-    assert table.empty_note == (
-        "No in-scope repository has this feature confirmed disabled."
-    )
+    assert (table.fail_count, table.pass_count, table.unknown_count) == (0, 1, 1)
 
 
 def test_cooldown_table_lists_repos_missing_cooldown() -> None:
@@ -184,7 +187,7 @@ def test_cooldown_table_lists_repos_missing_cooldown() -> None:
     table = posture.build_cooldown_table(postures)
     assert [r.repo.name for r in table.rows] == ["a"]
     assert table.rows[0].cells == ("pip, npm",)
-    assert table.summary == "1 without cooldown, 1 with cooldown"
+    assert (table.fail_count, table.pass_count) == (1, 1)
 
 
 def test_cooldown_table_all_with_cooldown_summary() -> None:
@@ -199,8 +202,9 @@ def test_cooldown_table_all_with_cooldown_summary() -> None:
     ]
     table = posture.build_cooldown_table(postures)
     assert table.rows == []
-    assert table.summary == "2 with cooldown"
-    assert table.empty_note
+    assert (table.fail_count, table.pass_count) == (0, 2)
+    lines = report.build_summary(table.summary_counts())
+    assert [(line.kind, line.text) for line in lines] == [("pass", "All Enabled")]
 
 
 def test_dependabot_tables_order_and_titles() -> None:
@@ -214,7 +218,7 @@ def test_dependabot_tables_order_and_titles() -> None:
     ]
     tables = posture.build_dependabot_tables(postures)
     assert [t.title for t in tables] == [
-        "Dependabot: Security Alerts",
+        "Dependabot: Alerts Enabled",
         "Dependabot: Security Updates",
         "Dependabot: Cooldown Settings",
     ]
@@ -378,7 +382,7 @@ def test_releases_table_release_max_age_omits_current_repos() -> None:
         exclude=(),
     )
     assert sorted(r.repo.name for r in table.rows) == ["never", "stale"]
-    assert "older than 60 day(s)" in table.note
+    assert "older than 60 day(s)" in table.resolved_description()
 
 
 def test_releases_table_release_max_age_boundary_is_inclusive() -> None:
@@ -415,7 +419,7 @@ def test_releases_table_release_max_age_zero_keeps_all_eligible() -> None:
         exclude=(),
     )
     assert [r.repo.name for r in table.rows] == ["fresh"]
-    assert "older than" not in table.note
+    assert "older than" not in table.resolved_description()
 
 
 # --------------------------------------------------------------------------- #
@@ -452,8 +456,7 @@ def test_mutable_releases_flags_mutable_latest() -> None:
     assert [r.repo.name for r in table.rows] == ["docker-save-images-action"]
     # The duplicate tag is collapsed and annotated with the latest badge.
     assert table.rows[0].cells == ("v0.1.0 (latest)",)
-    assert table.summary == "1 with findings, 0 clean"
-    assert table.note == "Recent releases in the repositories above are not immutable."
+    assert (table.fail_count, table.pass_count) == (1, 0)
 
 
 def test_mutable_releases_lists_newer_prerelease_first() -> None:
@@ -472,7 +475,7 @@ def test_mutable_releases_lists_newer_prerelease_first() -> None:
     ]
     table = posture.build_mutable_releases_table(postures)
     assert table.rows[0].cells == ("v1.0.0-alpha1, v0.9.0 (latest)",)
-    assert table.summary == "1 with findings, 0 clean"
+    assert (table.fail_count, table.pass_count) == (1, 0)
 
 
 def test_mutable_releases_immutable_latest_is_clean() -> None:
@@ -487,11 +490,10 @@ def test_mutable_releases_immutable_latest_is_clean() -> None:
     ]
     table = posture.build_mutable_releases_table(postures)
     assert table.rows == []
-    assert table.summary == "1 clean"
-    # With no indeterminate repositories the assertive empty note is accurate.
-    assert table.empty_note == (
-        "Every checked repository's latest and last-published releases are immutable."
-    )
+    assert (table.fail_count, table.pass_count) == (0, 1)
+    # With no indeterminate repositories the pass line collapses to "All".
+    lines = report.build_summary(table.summary_counts())
+    assert [(line.kind, line.text) for line in lines] == [("pass", "All Immutable")]
 
 
 def test_mutable_releases_flags_only_mutable_of_the_pair() -> None:
@@ -510,7 +512,7 @@ def test_mutable_releases_flags_only_mutable_of_the_pair() -> None:
     ]
     table = posture.build_mutable_releases_table(postures)
     assert table.rows[0].cells == ("v1.1.0-rc1",)
-    assert table.summary == "1 with findings, 0 clean"
+    assert (table.fail_count, table.pass_count) == (1, 0)
 
 
 def test_mutable_releases_repo_without_releases_is_neither() -> None:
@@ -524,7 +526,7 @@ def test_mutable_releases_repo_without_releases_is_neither() -> None:
     ]
     table = posture.build_mutable_releases_table(postures)
     assert [r.repo.name for r in table.rows] == ["flagged"]
-    assert table.summary == "1 with findings, 0 clean"
+    assert (table.fail_count, table.pass_count) == (1, 0)
 
 
 def test_mutable_releases_rows_sorted_by_repo_name() -> None:
@@ -540,7 +542,7 @@ def test_mutable_releases_rows_sorted_by_repo_name() -> None:
     ]
     table = posture.build_mutable_releases_table(postures)
     assert [r.repo.name for r in table.rows] == ["alpha", "zeta"]
-    assert table.summary == "2 with findings, 0 clean"
+    assert (table.fail_count, table.pass_count) == (2, 0)
 
 
 def test_mutable_releases_indeterminate_immutable_is_neither() -> None:
@@ -554,14 +556,11 @@ def test_mutable_releases_indeterminate_immutable_is_neither() -> None:
     ]
     table = posture.build_mutable_releases_table(postures)
     assert table.rows == []
-    # Neither a finding nor clean -> both counts zero -> no summary rendered.
-    assert table.summary == ""
-    # The empty note must not over-claim immutability when a checked repo's
-    # state is indeterminate; it is softened to a non-assertive statement.
-    assert table.empty_note == (
-        "No checked repository has a confirmed-mutable latest or "
-        "last-published release."
-    )
+    # Neither a finding nor clean -> the only non-zero bucket is the unknown
+    # count, so the footer shows just that.
+    assert (table.fail_count, table.pass_count, table.unknown_count) == (0, 0, 1)
+    lines = report.build_summary(table.summary_counts())
+    assert [(line.kind, line.text) for line in lines] == [("unknown", "1 Unknown")]
 
 
 def test_mutable_releases_confirmed_mutable_alongside_unknown_is_flagged() -> None:
@@ -578,4 +577,4 @@ def test_mutable_releases_confirmed_mutable_alongside_unknown_is_flagged() -> No
     assert [r.repo.name for r in table.rows] == ["mixed"]
     # Only the confirmed-mutable tag is listed; the unknown one is not.
     assert table.rows[0].cells == ("v2 (latest)",)
-    assert table.summary == "1 with findings, 0 clean"
+    assert (table.fail_count, table.pass_count) == (1, 0)

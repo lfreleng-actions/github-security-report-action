@@ -12,8 +12,10 @@ in the code-scanning feed:
 
 To present a single, uniform set of severity columns across every table (as the
 design requires), the SARIF level is normalised onto the security scale when no
-security severity is present: error -> high, warning -> medium, note -> low.
-Dependabot's ``security_advisory.severity`` maps directly.
+security severity is present: error -> high, warning -> medium, and note/none ->
+informational (the sub-low rung, so a category's ``fail_severity`` cutoff can
+treat these advisory findings as non-actionable). Dependabot's
+``security_advisory.severity`` maps directly.
 """
 
 from __future__ import annotations
@@ -22,8 +24,14 @@ from enum import IntEnum
 
 
 class Severity(IntEnum):
-    """Ordered severity. Higher value == more severe (worst-first sorting)."""
+    """Ordered severity. Higher value == more severe (worst-first sorting).
 
+    ``INFORMATIONAL`` is the lowest rung (below ``LOW``): SARIF ``note``/``none``
+    findings -- the bulk of a tool like zizmor -- normalise here, so a category
+    can choose to treat them as non-actionable via its ``fail_severity`` cutoff.
+    """
+
+    INFORMATIONAL = 0
     LOW = 1
     MEDIUM = 2
     HIGH = 3
@@ -43,12 +51,15 @@ _SECURITY_NAMES: dict[str, Severity] = {
     "low": Severity.LOW,
 }
 
-# SARIF level -> security scale, used only as a fallback (zizmor).
+# SARIF level -> security scale, used only as a fallback (zizmor). The SARIF
+# vocabulary has no distinct "low": ``note`` (and the rare ``none``) carry the
+# advisory, non-actionable findings, so they normalise to INFORMATIONAL -- below
+# LOW -- letting a category's fail_severity cutoff exclude them.
 _SARIF_LEVEL_NAMES: dict[str, Severity] = {
     "error": Severity.HIGH,
     "warning": Severity.MEDIUM,
-    "note": Severity.LOW,
-    "none": Severity.LOW,
+    "note": Severity.INFORMATIONAL,
+    "none": Severity.INFORMATIONAL,
 }
 
 
@@ -73,11 +84,12 @@ def from_code_scanning(
     """Resolve a code-scanning alert's severity.
 
     Prefers ``security_severity_level``; falls back to the SARIF ``severity``
-    (the zizmor case). Defaults to ``LOW`` when neither is recognised so a
-    finding is never silently dropped from ranking.
+    (the zizmor case). Defaults to ``INFORMATIONAL`` when neither is recognised
+    so an unclassifiable finding is never silently dropped from ranking, yet is
+    not over-stated as a low-or-higher concern.
     """
-    return (
-        from_name(security_severity_level)
-        or from_sarif_level(sarif_severity)
-        or Severity.LOW
-    )
+    sarif = from_sarif_level(sarif_severity)
+    resolved = from_name(security_severity_level)
+    if resolved is None:
+        resolved = sarif
+    return resolved if resolved is not None else Severity.INFORMATIONAL

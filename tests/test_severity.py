@@ -37,7 +37,9 @@ class TestSarifFallback:
     def test_sarif_levels(self) -> None:
         assert severity.from_sarif_level("error") is Severity.HIGH
         assert severity.from_sarif_level("warning") is Severity.MEDIUM
-        assert severity.from_sarif_level("note") is Severity.LOW
+        # SARIF has no distinct "low"; note/none are advisory -> informational.
+        assert severity.from_sarif_level("note") is Severity.INFORMATIONAL
+        assert severity.from_sarif_level("none") is Severity.INFORMATIONAL
 
     def test_unknown(self) -> None:
         assert severity.from_sarif_level("bogus") is None
@@ -51,6 +53,8 @@ class TestFromCodeScanning:
         # CodeQL/Scorecard-style: security_severity_level wins over severity
         assert severity.from_code_scanning("critical", "warning") is Severity.CRITICAL
 
-    def test_defaults_to_low_when_unrecognised(self) -> None:
-        assert severity.from_code_scanning(None, None) is Severity.LOW
-        assert severity.from_code_scanning("bogus", "bogus") is Severity.LOW
+    def test_defaults_to_informational_when_unrecognised(self) -> None:
+        # An unclassifiable finding is kept (never dropped) but not over-stated
+        # as low-or-higher: it lands at the informational rung.
+        assert severity.from_code_scanning(None, None) is Severity.INFORMATIONAL
+        assert severity.from_code_scanning("bogus", "bogus") is Severity.INFORMATIONAL

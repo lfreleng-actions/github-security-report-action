@@ -17,16 +17,18 @@ import logging
 import os
 import re
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
+from typing import NoReturn
 
 import typer
 from rich.console import Console
 
 from github_security_report import __version__, collect, config, gitctx, runner
-from github_security_report.client import GitHubClient
-from github_security_report.config import Config, OrgConfig
+from github_security_report.categories import CategoryKey
+from github_security_report.client import GitHubClient, NetworkError
+from github_security_report.config import Config, OrgConfig, ReportConfig
 from github_security_report.models import RepoSignal
 from github_security_report.render import html as html_render
 from github_security_report.render import markdown as md_render
@@ -71,6 +73,7 @@ def main(
 def _table_to_dict(section: TableSection) -> dict:
     """Serialise a generic posture/freshness table for JSON consumers."""
     return {
+        "category": section.category.key.value,
         "title": section.title,
         "columns": list(section.columns),
         "rows": [
@@ -81,8 +84,11 @@ def _table_to_dict(section: TableSection) -> dict:
             }
             for row in section.rows
         ],
-        "empty_note": section.empty_note,
-        "note": section.note,
+        # Normalised footer counts shared by every render surface.
+        "pass_count": section.pass_count,
+        "fail_count": section.fail_count,
+        "unknown_count": section.unknown_count,
+        "description": section.resolved_description(),
     }
 
 
@@ -123,6 +129,9 @@ def _org_to_dict(org: OrgReport) -> dict:
         # Extra reporting categories outside the four-state per-signal model.
         "dependabot_tables": [_table_to_dict(t) for t in org.dependabot_tables],
         "releases": _table_to_dict(org.releases) if org.releases else None,
+        "mutable_releases": (
+            _table_to_dict(org.mutable_releases) if org.mutable_releases else None
+        ),
     }
 
 
@@ -140,18 +149,49 @@ def _safe_component(value: str) -> str:
     return safe or "channel"
 
 
+def _show(report_cfg: ReportConfig, output: str) -> Callable[[CategoryKey], bool]:
+    """A per-output category-visibility predicate for the render surfaces."""
+    return lambda key: report_cfg.shows_category(key, output)
+
+
+def _slack_show(
+    items: list[tuple[OrgConfig, OrgReport]],
+) -> Callable[[CategoryKey], bool]:
+    """Slack visibility for a channel: show a category if any org would.
+
+    Orgs sharing a Slack channel render into one digest, so a category appears
+    when any contributing org would show it on Slack -- mirroring the
+    most-generous ``top_n`` rule for the same grouping.
+    """
+    return lambda key: any(
+        oc.report.shows_category(key, "slack") for oc, _ in items
+    )
+
+
 def _write_org_files(
-    org: OrgReport, output_dir: Path, *, top_n: int | None = None
+    org: OrgReport,
+    output_dir: Path,
+    *,
+    top_n: int | None = None,
+    report_cfg: ReportConfig,
 ) -> None:
     slug = html_render.slugify(org.org)
     org_dir = output_dir / slug
     org_dir.mkdir(parents=True, exist_ok=True)
     (org_dir / "report.md").write_text(
-        md_render.render_org(org, top_n=top_n), encoding="utf-8"
+        md_render.render_org(
+            org, top_n=top_n, show=_show(report_cfg, "markdown")
+        ),
+        encoding="utf-8",
     )
     (org_dir / "report.html").write_text(
-        html_render.render_org_html(org, top_n=top_n), encoding="utf-8"
+        html_render.render_org_html(
+            org, top_n=top_n, show=_show(report_cfg, "html")
+        ),
+        encoding="utf-8",
     )
+    # report.json is the complete machine-readable dataset, so the per-output
+    # render toggles deliberately do not filter it.
     (org_dir / "report.json").write_text(
         json.dumps(_org_to_dict(org), indent=2) + "\n", encoding="utf-8"
     )
@@ -189,6 +229,19 @@ def _load_config(
 # --------------------------------------------------------------------------- #
 # Modes
 # --------------------------------------------------------------------------- #
+def _abort_network(console: Console, exc: NetworkError) -> NoReturn:
+    """Abort the run on an unrecoverable network failure.
+
+    Prints the multi-line network diagnostics in red and exits with code 3
+    (distinct from 2, used for usage/config errors) so callers can tell a
+    connectivity failure from a misconfiguration. ``markup=False`` keeps
+    bracketed text in the diagnostics (e.g. an ``[Errno 8]`` cause) literal
+    rather than letting Rich parse it as markup.
+    """
+    console.print(str(exc), style="red", markup=False)
+    raise typer.Exit(3)
+
+
 async def _run_org(cfg: Config, *, console: Console, output_dir: Path | None,
                    pages_url: str | None, top_n: int | None, force_notify: bool,
                    slack_channel: str | None = None,
@@ -242,7 +295,10 @@ async def _run_org(cfg: Config, *, console: Console, output_dir: Path | None,
 
     for org_cfg, org_report in pairs:
         term_render.render_org(
-            org_report, console, top_n=_limit(org_cfg, top_n_cli, "cli_top_n")
+            org_report,
+            console,
+            top_n=_limit(org_cfg, top_n_cli, "cli_top_n"),
+            show=_show(org_cfg.report, "cli"),
         )
 
     if output_dir:
@@ -251,6 +307,7 @@ async def _run_org(cfg: Config, *, console: Console, output_dir: Path | None,
                 org_report,
                 output_dir,
                 top_n=_limit(org_cfg, top_n_report, "report_top_n"),
+                report_cfg=org_cfg.report,
             )
         (output_dir / "index.html").write_text(
             html_render.render_index_html(org_reports), encoding="utf-8"
@@ -294,6 +351,9 @@ async def _run_org(cfg: Config, *, console: Console, output_dir: Path | None,
                 [_limit(oc, top_n_slack, "slack_top_n") for oc, _ in items]
             ),
             pages_url=pages_url,
+            # A category shows in the channel digest when any contributing org
+            # would show it on Slack (mirrors the most-generous top_n rule).
+            show=_slack_show(items),
         )
         for channel, items in by_channel.items()
     ]
@@ -311,7 +371,9 @@ async def _run_org(cfg: Config, *, console: Console, output_dir: Path | None,
     summary = (
         "\n\n".join(
             md_render.render_org(
-                org_report, top_n=_limit(org_cfg, top_n_report, "report_top_n")
+                org_report,
+                top_n=_limit(org_cfg, top_n_report, "report_top_n"),
+                show=_show(org_cfg.report, "markdown"),
             )
             for org_cfg, org_report in pairs
         ).rstrip()
@@ -379,7 +441,7 @@ def report(
     fail_threshold: str = typer.Option("none", "--fail-threshold", help="none|low|medium|high|critical|any (repo mode)."),
     force_notify: bool = typer.Option(False, "--force-notify", help="Post to Slack regardless of report_day."),
     repo_min_age_days: int | None = typer.Option(None, "--repo-min-age-days", "--release-min-age-days", help="Exclude repos created within N days from Releases/Tagging (0 = include all; default: config, else 28). --release-min-age-days is a deprecated alias."),
-    release_max_age_days: int | None = typer.Option(None, "--release-max-age-days", help="Flag a repo in Releases/Tagging only when its newest release or tag is older than N days (0 = flag every eligible repo; default: config, else 0)."),
+    release_max_age_days: int | None = typer.Option(None, "--release-max-age-days", help="Flag a repo in Releases/Tagging only when its newest release or tag is older than N days (0 = flag every eligible repo; default: config, else 60)."),
     releases_exclude: list[str] | None = typer.Option(None, "--releases-exclude", help="Repository name to omit from the Releases/Tagging table (repeatable; overrides config)."),
     no_color: bool = typer.Option(False, "--no-color", help="Disable coloured output."),
 ) -> None:
@@ -433,33 +495,39 @@ def report(
 
     if mode is runner.Mode.ORG:
         assert cfg is not None
-        code = asyncio.run(
-            _run_org(
-                cfg, console=console,
-                output_dir=Path(output_dir) if output_dir else None,
-                pages_url=pages_url, top_n=top_n, force_notify=force_notify,
-                slack_channel=slack_channel or None,
-                repo_min_age_days=repo_min_age_days,
-                release_max_age_days=release_max_age_days,
-                releases_exclude=tuple(releases_exclude) if releases_exclude else None,
-                top_n_report=top_n_report,
-                top_n_cli=top_n_cli,
-                top_n_slack=top_n_slack,
+        try:
+            code = asyncio.run(
+                _run_org(
+                    cfg, console=console,
+                    output_dir=Path(output_dir) if output_dir else None,
+                    pages_url=pages_url, top_n=top_n, force_notify=force_notify,
+                    slack_channel=slack_channel or None,
+                    repo_min_age_days=repo_min_age_days,
+                    release_max_age_days=release_max_age_days,
+                    releases_exclude=tuple(releases_exclude) if releases_exclude else None,
+                    top_n_report=top_n_report,
+                    top_n_cli=top_n_cli,
+                    top_n_slack=top_n_slack,
+                )
             )
-        )
+        except NetworkError as exc:
+            _abort_network(console, exc)
     else:
         assert detected is not None
         # In repo mode there is no per-org config; honour report.ruleset_workflows
         # from a supplied config (e.g. --scope repo with --config) so keyword
         # customisation applies, falling back to the built-in default otherwise.
         rw = cfg.report.ruleset_workflows if cfg is not None else None
-        code = asyncio.run(
-            _run_repo(
-                detected[0], detected[1], token_env=token_env,
-                console=console, fail_threshold=fail_threshold,
-                ruleset_workflows=rw,
+        try:
+            code = asyncio.run(
+                _run_repo(
+                    detected[0], detected[1], token_env=token_env,
+                    console=console, fail_threshold=fail_threshold,
+                    ruleset_workflows=rw,
+                )
             )
-        )
+        except NetworkError as exc:
+            _abort_network(console, exc)
     raise typer.Exit(code)
 
 
