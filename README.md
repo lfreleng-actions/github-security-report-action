@@ -26,9 +26,16 @@ states and rendered worst-first:
 
 - **Offenders** — enabled with open findings (a ranked table row).
 - **Clean** — enabled with zero findings (a count beneath the table).
-- **Not enabled** — supported but switched off (a nag list prompting you to
-  enable it).
-- **Unknown** — indeterminate (insufficient permission), footnoted separately.
+- **Not enabled** — supported but switched off (a counted "disabled" footer
+  line, with the affected repositories named).
+- **Unknown** — indeterminate (insufficient permission), counted separately.
+
+Every category renders the same **standardised summary footer** beneath its
+table: remediation-first count lines (failures, disabled, unknown, then the
+healthy pass line, then excluded). The pass line reads **"All <state>"** when
+nothing needs attention, or **"N <state>"** otherwise. The terminal and Slack
+stay brevity-first; the explanatory per-category description and documentation
+link are shown only on the richer Markdown and HTML (GitHub Pages) outputs.
 
 The single GitHub code-scanning feed is partitioned by `tool.name` into CodeQL,
 Scorecard, and zizmor; Scorecard prefers the external aggregate score and falls

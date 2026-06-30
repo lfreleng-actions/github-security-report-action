@@ -15,6 +15,7 @@ import datetime as dt
 from dataclasses import dataclass, field
 from enum import Enum
 
+from github_security_report.categories import CategoryKey, CategoryMeta, category_meta
 from github_security_report.severity import Severity
 
 
@@ -28,14 +29,24 @@ class SignalType(str, Enum):
     SECRET_SCANNING = "secret_scanning"
 
     @property
-    def heading(self) -> str:
+    def category_key(self) -> CategoryKey:
+        """The metadata-registry key for this signal's report category."""
         return {
-            SignalType.CODEQL: "CodeQL",
-            SignalType.SCORECARD: "OpenSSF Scorecard",
-            SignalType.ZIZMOR: "Zizmor Static Analysis",
-            SignalType.DEPENDABOT: "Dependabot: Security Alerts",
-            SignalType.SECRET_SCANNING: "Secret scanning",
+            SignalType.CODEQL: CategoryKey.CODEQL,
+            SignalType.SCORECARD: CategoryKey.SCORECARD,
+            SignalType.ZIZMOR: CategoryKey.ZIZMOR,
+            SignalType.DEPENDABOT: CategoryKey.DEPENDABOT_ALERTS,
+            SignalType.SECRET_SCANNING: CategoryKey.SECRET_SCANNING,
         }[self]
+
+    @property
+    def meta(self) -> CategoryMeta:
+        """Display/documentation metadata for this signal's category."""
+        return category_meta(self.category_key)
+
+    @property
+    def heading(self) -> str:
+        return self.meta.title
 
     @property
     def uses_severity_columns(self) -> bool:

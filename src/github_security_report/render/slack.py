@@ -5,16 +5,23 @@
 Slack mrkdwn cannot render Markdown tables, so the digest uses fixed-width
 code-fenced blocks (the only way to align columns) showing the worst N
 offenders per signal, plus a prominent link to the full GitHub Pages report.
+Like the terminal, Slack is a brevity-first surface: it carries the
+standardised summary footer but omits the per-category explanatory description.
 Produces a ``chat.postMessage`` payload. See ``docs/BRIEF.md`` section 11.
 """
 
 from __future__ import annotations
 
-from github_security_report.models import RepoSignal, SignalType
+from collections.abc import Sequence
+
+from github_security_report.models import Repo, RepoSignal, SignalType
 from github_security_report.report import (
+    SUMMARY_EMOJI,
     OrgReport,
     SignalSection,
+    SummaryLine,
     TableSection,
+    build_summary,
     offender_column_totals,
     truncate,
 )
@@ -22,6 +29,9 @@ from github_security_report.report import (
 # Slack rejects a chat.postMessage with more than 50 blocks, so a digest
 # spanning many orgs must be capped or the whole message fails to deliver.
 _SLACK_MAX_BLOCKS = 50
+
+# Summary kinds whose repository names are listed beneath the count line.
+_NAME_LIST_LABEL = {"disabled": "Disabled", "excluded": "Excluded"}
 
 
 def _plain_columns(signal: SignalType) -> list[str]:
@@ -88,17 +98,26 @@ def _fixed_table(section: SignalSection, top_n: int) -> str:
     return "\n".join(lines)
 
 
-def _summary(section: SignalSection) -> str:
-    bits = []
-    if section.offenders:
-        bits.append(f"{len(section.offenders)} with findings")
-    if section.clean_count:
-        bits.append(f"{section.clean_count} clean")
-    if section.nag_repos:
-        bits.append(f"{len(section.nag_repos)} not enabled")
-    if section.unknown_count:
-        bits.append(f"{section.unknown_count} unknown")
-    return ", ".join(bits) or "no data"
+def _summary_text(lines: Sequence[SummaryLine], *, top_n: int) -> str:
+    """The standardised footer as Slack mrkdwn: count lines then name lists.
+
+    One line per count (failures first), each prefixed with its shared glyph,
+    followed by the disabled/excluded repository name lists. Brevity-first, so
+    no per-category description is emitted.
+    """
+    out: list[str] = []
+    for line in lines:
+        out.append(f"{SUMMARY_EMOJI[line.kind]} {line.text}")
+    for line in lines:
+        label = _NAME_LIST_LABEL.get(line.kind)
+        if not (label and line.names):
+            continue
+        shown, hidden = truncate(line.names, top_n)
+        names = ", ".join(shown)
+        if hidden:
+            names += f" … (+{hidden} more)"
+        out.append(f"{label}: {names}")
+    return "\n".join(out)
 
 
 def _fixed_table_generic(columns: tuple[str, ...], rows: list[list[str]]) -> str:
@@ -115,33 +134,32 @@ def _fixed_table_generic(columns: tuple[str, ...], rows: list[list[str]]) -> str
     return "\n".join(lines)
 
 
-def _table_block(section: TableSection, top_n: int) -> dict | None:
+def _table_block(
+    section: TableSection, top_n: int, *, excluded: Sequence[Repo]
+) -> dict | None:
     """A Slack section block for a posture/freshness table (None when empty).
 
-    Emoji cell glyphs are dropped from the fixed-width rendering so columns stay
-    aligned in Slack's monospace block; only the worst ``top_n`` rows are shown.
+    The block is emitted whenever there is something to say -- offender rows or a
+    non-empty standardised summary footer -- so a clean category still surfaces
+    its "All <pass>" line. A table with neither rows nor any countable state
+    (genuinely no data) is skipped, keeping the brevity-first digest tight. The
+    explanatory description is omitted: Slack is a brevity-first surface.
     """
-    if not section.rows:
-        return None
     shown, hidden = truncate(section.rows, top_n)
-    rows = [
-        [row.repo.name, *(cell.replace("✅", "y").replace("❌", "n").replace("❓", "?") for cell in row.cells)]
-        for row in shown
-    ]
-    table = _fixed_table_generic(section.columns, rows)
-    if hidden:
-        table += f"\n… and {hidden} more"
-    # The count summary is placed on its own line beneath the table rather than
-    # inline with the title, matching every other category.
-    text = f"*{section.title}*\n```\n{table}\n```"
-    # Surface the explanatory note outside the code fence, before the summary,
-    # so Slack users get the same guidance text as the Markdown/terminal/HTML
-    # renderers. The note only describes a populated table, which is always the
-    # case here (empty tables return None above).
-    if section.note:
-        text += f"\n{section.note}"
-    if section.summary:
-        text += f"\n{section.summary}"
+    summary = _summary_text(
+        build_summary(section.summary_counts(excluded)), top_n=top_n
+    )
+    if not shown and not summary:
+        return None
+    text = f"*{section.title}*"
+    if shown:
+        rows = [[row.repo.name, *row.cells] for row in shown]
+        table = _fixed_table_generic(section.columns, rows)
+        if hidden:
+            table += f"\n… and {hidden} more"
+        text += f"\n```\n{table}\n```"
+    if summary:
+        text += f"\n{summary}"
     return {
         "type": "section",
         "text": {"type": "mrkdwn", "text": text},
@@ -169,45 +187,29 @@ def render_org_blocks(org: OrgReport, *, top_n: int, pages_url: str | None) -> l
                 ],
             }
         )
-    if org.excluded_repos:
-        shown, hidden = truncate(org.excluded_repos, top_n)
-        names = ", ".join(r.name for r in shown)
-        if hidden:
-            names += f" … (+{hidden} more)"
-        blocks.append(
-            {
-                "type": "context",
-                "elements": [
-                    {
-                        "type": "mrkdwn",
-                        "text": f"⏩ Excluded from analysis "
-                        f"({len(org.excluded_repos)}): {names}",
-                    }
-                ],
-            }
-        )
+    excluded = org.excluded_repos
     for section in org.sections:
-        summary = _summary(section)
         text = f"*{section.signal.heading}*"
         if section.offenders:
             table = _fixed_table(section, top_n)
             text += f"\n```\n{table}\n```"
-        # The count summary is placed on its own line beneath the table rather
-        # than inline with the heading, matching every other category.
-        text += f"\n{summary}"
+        summary = _summary_text(
+            build_summary(section.summary_counts(excluded)), top_n=top_n
+        )
+        text += f"\n{summary}" if summary else "\nno data"
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": text}})
         # Dependabot posture sub-tables follow the Dependabot signal block.
         if section.signal is SignalType.DEPENDABOT:
             for table_section in org.dependabot_tables:
-                block = _table_block(table_section, top_n)
+                block = _table_block(table_section, top_n, excluded=excluded)
                 if block is not None:
                     blocks.append(block)
     if org.releases is not None:
-        block = _table_block(org.releases, top_n)
+        block = _table_block(org.releases, top_n, excluded=excluded)
         if block is not None:
             blocks.append(block)
     if org.mutable_releases is not None:
-        block = _table_block(org.mutable_releases, top_n)
+        block = _table_block(org.mutable_releases, top_n, excluded=excluded)
         if block is not None:
             blocks.append(block)
     if pages_url:

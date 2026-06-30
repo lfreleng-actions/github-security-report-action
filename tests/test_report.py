@@ -32,26 +32,52 @@ def _sections(org: report.OrgReport) -> dict[SignalType, report.SignalSection]:
     return {s.signal: s for s in org.sections}
 
 
-class TestNoteSentences:
-    def test_single_sentence_is_one_line(self) -> None:
-        assert report.note_sentences("Just the one.") == ["Just the one."]
+class TestBuildSummary:
+    def test_all_pass_collapses_to_all_label(self) -> None:
+        # When nothing else needs attention the pass line drops its number.
+        lines = report.build_summary([report.SummaryCount("pass", 86, "Clean")])
+        assert [(line.kind, line.text) for line in lines] == [("pass", "All Clean")]
 
-    def test_splits_on_sentence_boundary(self) -> None:
-        assert report.note_sentences("First here. Second here.") == [
-            "First here.",
-            "Second here.",
+    def test_pass_keeps_number_when_excluded_present(self) -> None:
+        lines = report.build_summary(
+            [
+                report.SummaryCount("pass", 85, "Clean"),
+                report.SummaryCount("excluded", 1, "Excluded", ("art",)),
+            ]
+        )
+        assert [(line.kind, line.text) for line in lines] == [
+            ("pass", "85 Clean"),
+            ("excluded", "1 Excluded"),
         ]
 
-    def test_semicolon_does_not_split(self) -> None:
-        # A semicolon clause stays on one line; only a period followed by
-        # whitespace breaks.
-        assert report.note_sentences("Mandatory; any value passes.") == [
-            "Mandatory; any value passes."
+    def test_failures_sort_first(self) -> None:
+        # Footer order is remediation-first: fail, disabled, unknown, pass,
+        # excluded -- regardless of input order.
+        lines = report.build_summary(
+            [
+                report.SummaryCount("pass", 5, "Clean"),
+                report.SummaryCount("excluded", 1, "Excluded", ("x",)),
+                report.SummaryCount("fail", 2, "Mutable"),
+                report.SummaryCount("unknown", 3, "Unknown"),
+                report.SummaryCount("disabled", 4, "Disabled", ("y",)),
+            ]
+        )
+        assert [line.kind for line in lines] == [
+            "fail",
+            "disabled",
+            "unknown",
+            "pass",
+            "excluded",
         ]
 
-    def test_empty_note_has_no_lines(self) -> None:
-        assert report.note_sentences("") == []
-        assert report.note_sentences("   ") == []
+    def test_zero_counts_dropped(self) -> None:
+        lines = report.build_summary(
+            [
+                report.SummaryCount("fail", 0, "Mutable"),
+                report.SummaryCount("pass", 3, "Immutable"),
+            ]
+        )
+        assert [line.text for line in lines] == ["All Immutable"]
 
 
 class TestBuildOrgReport:

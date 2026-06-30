@@ -2,25 +2,33 @@
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 """Canonical Markdown rendering.
 
-One heading per signal, immediately followed by a table of offenders
-(worst-first), then a clean count, a nag list, and an unknown-status footnote.
-This is the canonical artifact; Slack and the job summary derive from the same
-report model. See ``docs/BRIEF.md`` sections 4-6, 11.
+One heading per category, immediately followed by its table, the explanatory
+description (Markdown is a rich surface, so it keeps the guidance text), and the
+standardised summary footer shared by every render surface. This is the
+canonical artifact; Slack, the terminal and the HTML pages derive from the same
+report model and the same :func:`build_summary` footer. See ``docs/BRIEF.md``
+sections 4-6, 11.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from github_security_report.models import Repo, RepoSignal, SignalType
 from github_security_report.report import (
+    SUMMARY_EMOJI,
     OrgReport,
     Report,
     SignalSection,
+    SummaryLine,
     TableSection,
+    build_summary,
     offender_column_totals,
     truncate,
 )
+
+# Summary kinds whose repository names are listed beneath the count line.
+_NAME_LIST_LABEL = {"disabled": "Disabled", "excluded": "Excluded"}
 
 
 def _link(repo: Repo) -> str:
@@ -97,47 +105,82 @@ def total_row_cells(
     return ["Total", *base, str(totals.total)]
 
 
-def render_section(section: SignalSection, *, top_n: int | None = None) -> str:
-    lines = [f"## {section.signal.heading}", ""]
+def _summary_lines(
+    lines: Sequence[SummaryLine],
+    name_to_repo: Mapping[str, Repo],
+    *,
+    top_n: int | None,
+) -> list[str]:
+    """Markdown for the standardised footer: count lines, then any name lists.
+
+    Each count line is its own paragraph so it stands alone regardless of the
+    consuming Markdown flavour. The disabled and excluded kinds additionally
+    list their repositories (as links when a :class:`Repo` is known), honouring
+    the same offender limit the tables use.
+    """
+    out: list[str] = []
+    for line in lines:
+        out.append(f"{SUMMARY_EMOJI[line.kind]} {line.text}")
+        out.append("")
+    for line in lines:
+        label = _NAME_LIST_LABEL.get(line.kind)
+        if not (label and line.names):
+            continue
+        shown, hidden = truncate(line.names, top_n)
+        linked = ", ".join(
+            _link(name_to_repo[name]) if name in name_to_repo else f"`{name}`"
+            for name in shown
+        )
+        if hidden:
+            linked += f" … (+{hidden} more)"
+        out.append(f"**{label}:** {linked}")
+        out.append("")
+    return out
+
+
+def _description_lines(description: str, url: str) -> list[str]:
+    """Italic description paragraph plus a reference link (rich surface only)."""
+    if not description:
+        return []
+    text = f"_{description}_"
+    if url:
+        text += f" — [reference]({url})"
+    return [text, ""]
+
+
+def render_section(
+    section: SignalSection,
+    *,
+    excluded: Sequence[Repo] = (),
+    top_n: int | None = None,
+) -> str:
+    meta = section.signal.meta
+    lines = [f"## {meta.title}", ""]
     if section.offenders:
         lines.extend(_table(section, top_n))
         lines.append("")
-    if section.clean_count:
-        lines.append(f"✅ {section.clean_count} repositories clean")
-        lines.append("")
-    if section.nag_repos:
-        nag, hidden = truncate(section.nag_repos, top_n)
-        lines.append("**Not enabled** — enable to appear in future reports:")
-        lines.append("")
-        lines.extend(f"- {_link(r)}" for r in nag)
-        if hidden:
-            lines.append(f"- _… and {hidden} more_")
-        lines.append("")
-    if section.unknown_count:
-        lines.append(
-            f"ℹ️ {section.unknown_count} repositories with unknown status "
-            "(insufficient permission or a transient read failure)"
-        )
-        lines.append("")
-    if not (
-        section.offenders
-        or section.clean_count
-        or section.nag_repos
-        or section.unknown_count
-    ):
+    summary = build_summary(section.summary_counts(excluded))
+    if not (section.offenders or summary):
         lines.append("_No data available._")
         lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+    lines.extend(_description_lines(meta.description, meta.url))
+    name_to_repo = {r.name: r for r in (*section.nag_repos, *excluded)}
+    lines.extend(_summary_lines(summary, name_to_repo, top_n=top_n))
     return "\n".join(lines).rstrip() + "\n"
 
 
 def render_table_section(
-    section: TableSection, *, level: int = 3, top_n: int | None = None
+    section: TableSection,
+    *,
+    level: int = 3,
+    excluded: Sequence[Repo] = (),
+    top_n: int | None = None,
 ) -> str:
     """Render a generic posture/freshness table at the given heading level."""
     heading = "#" * level
-    # The title is always a bare heading; the count summary is relocated beneath
-    # the table (after any note) so results are never inline with the heading.
-    lines = [f"{heading} {section.title}", ""]
+    meta = section.category
+    lines = [f"{heading} {meta.title}", ""]
     rows, hidden = truncate(section.rows, top_n)
     if rows:
         aligns = ["---"] * len(section.columns)
@@ -150,20 +193,21 @@ def render_table_section(
         if hidden:
             lines.append(f"_… and {hidden} more_")
             lines.append("")
-        if section.note:
-            # The note describes a populated table; omit it when empty.
-            lines.append(f"_{section.note}_")
-            lines.append("")
-    elif section.empty_note:
-        lines.append(f"✅ {section.empty_note}")
-        lines.append("")
-    if section.summary:
-        lines.append(section.summary)
-        lines.append("")
+    lines.extend(_description_lines(section.resolved_description(), meta.url))
+    name_to_repo = {r.name: r for r in excluded}
+    lines.extend(
+        _summary_lines(
+            build_summary(section.summary_counts(excluded)),
+            name_to_repo,
+            top_n=top_n,
+        )
+    )
     return "\n".join(lines).rstrip() + "\n"
 
 
-def render_org(org: OrgReport, *, top_n: int | None = None) -> str:
+def render_org(
+    org: OrgReport, *, top_n: int | None = None
+) -> str:
     when = org.generated_at.strftime("%Y-%m-%d %H:%M UTC")
     parts = [
         f"# Security report: {org.org}",
@@ -177,28 +221,30 @@ def render_org(org: OrgReport, *, top_n: int | None = None) -> str:
             "read, so some repositories may be missing from this report."
         )
         parts.append("")
-    if org.excluded_repos:
-        shown, hidden = truncate(org.excluded_repos, top_n)
-        names = ", ".join(f"`{r.name}`" for r in shown)
-        if hidden:
-            names += f" … (+{hidden} more)"
-        parts.append(
-            f"⏩ **Excluded from analysis ({len(org.excluded_repos)}):** {names}"
-        )
-        parts.append("")
+    excluded = org.excluded_repos
     for section in org.sections:
-        parts.append(render_section(section, top_n=top_n))
+        parts.append(render_section(section, excluded=excluded, top_n=top_n))
         # The Dependabot configuration-posture sub-tables nest beneath the
         # Dependabot signal heading.
         if section.signal is SignalType.DEPENDABOT:
             parts.extend(
-                render_table_section(table, level=3, top_n=top_n)
+                render_table_section(
+                    table, level=3, excluded=excluded, top_n=top_n
+                )
                 for table in org.dependabot_tables
             )
     if org.releases is not None:
-        parts.append(render_table_section(org.releases, level=2, top_n=top_n))
+        parts.append(
+            render_table_section(
+                org.releases, level=2, excluded=excluded, top_n=top_n
+            )
+        )
     if org.mutable_releases is not None:
-        parts.append(render_table_section(org.mutable_releases, level=2, top_n=top_n))
+        parts.append(
+            render_table_section(
+                org.mutable_releases, level=2, excluded=excluded, top_n=top_n
+            )
+        )
     return "\n".join(parts).rstrip() + "\n"
 
 

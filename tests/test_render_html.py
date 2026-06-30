@@ -7,6 +7,7 @@ from __future__ import annotations
 import datetime as dt
 
 from github_security_report import report
+from github_security_report.categories import CategoryKey, category_meta
 from github_security_report.models import (
     Repo,
     RepoSignal,
@@ -44,8 +45,10 @@ class TestOrgHtml:
         assert 'aria-hidden="true"' in out
         assert "CodeQL" in out
         assert '<a href="https://github.com/o/bad">bad</a>' in out
-        assert "Not enabled" in out
-        assert "nagme" in out
+        # The not-enabled repository surfaces in the standardised footer's
+        # "Disabled" name list, as a link.
+        assert "Disabled" in out
+        assert '<a href="https://github.com/o/nagme">nagme</a>' in out
 
     def test_datatables_pinned_not_latest(self) -> None:
         out = html.render_org_html(_org("o", []))
@@ -76,71 +79,78 @@ class TestOrgHtml:
         org = _org("o", [], count=2)
         org.dependabot_tables = [
             report.TableSection(
-                title="Enablement",
-                columns=("Repository", "Dependabot alerts"),
-                rows=[report.TableRow(repo=_repo("off"), cells=("❌ not enabled",))],
-                summary="1 not enabled, 5 enabled",
+                category=category_meta(CategoryKey.DEPENDABOT_ALERTS_ENABLED),
+                columns=("Repository",),
+                rows=[report.TableRow(repo=_repo("off"), cells=())],
+                pass_count=5,
+                fail_count=1,
             )
         ]
         org.releases = report.TableSection(
-            title="Releases / Tagging",
+            category=category_meta(CategoryKey.RELEASES),
             columns=("Repository", "Last release", "Last tag"),
             rows=[report.TableRow(repo=_repo("stale"), cells=("never", "never"))],
-            note="Ranked by combined staleness.",
-            summary="3 stale, 7 fresh",
+            pass_count=7,
+            fail_count=3,
+            description="Ranked by combined staleness.",
         )
         out = html.render_org_html(org)
-        # Headings are bare; the count summary renders in its own paragraph below.
-        assert "<h3>Enablement</h3>" in out
-        assert "<h3>Enablement —" not in out
-        assert '<p class="summary">1 not enabled, 5 enabled</p>' in out
+        # Headings are bare; the standardised footer renders as a list below.
+        assert "<h3>Dependabot: Alerts Enabled</h3>" in out
+        assert "1 Not enabled" in out
+        assert "5 Enabled" in out
+        assert "kind-fail" in out and "kind-pass" in out
         assert '<a href="https://github.com/o/off">off</a>' in out
         assert "<h2>Releases / Tagging</h2>" in out
-        assert "<h2>Releases / Tagging —" not in out
-        assert '<p class="summary">3 stale, 7 fresh</p>' in out
+        assert "3 Overdue" in out
+        assert "7 Current" in out
         assert '<a href="https://github.com/o/stale">stale</a>' in out
+        # HTML is a rich surface: the description renders with a reference link.
         assert "Ranked by combined staleness." in out
+        assert 'class="desc"' in out
 
     def test_renders_mutable_releases_with_summary(self) -> None:
         org = _org("o", [], count=84)
         org.mutable_releases = report.TableSection(
-            title="Mutable Releases",
+            category=category_meta(CategoryKey.MUTABLE_RELEASES),
             columns=("Repository", "Releases"),
             rows=[report.TableRow(repo=_repo("img"), cells=("v0.1.0 (latest)",))],
-            note="Recent releases in the repositories above are not immutable.",
-            summary="2 with findings, 82 clean",
+            pass_count=82,
+            fail_count=2,
         )
         out = html.render_org_html(org)
         assert "<h2>Mutable Releases</h2>" in out
-        assert "<h2>Mutable Releases —" not in out
-        assert '<p class="summary">2 with findings, 82 clean</p>' in out
+        assert "2 Mutable" in out
+        assert "82 Immutable" in out
+        assert "kind-fail" in out and "kind-pass" in out
         assert '<a href="https://github.com/o/img">img</a>' in out
         assert "v0.1.0 (latest)" in out
-        assert (
-            '<p class="note">Recent releases in the repositories above are not '
-            "immutable.</p>" in out
-        )
 
-    def test_multi_sentence_note_splits_into_paragraphs(self) -> None:
-        # A two-sentence note renders as one italic paragraph per sentence, the
-        # same way the terminal surface breaks it.
+    def test_renders_category_description_with_reference_link(self) -> None:
+        # HTML shows the per-category description and links to the documentation
+        # reference; the description is a single paragraph (not sentence-split).
         org = _org("o", [], count=2)
         org.releases = report.TableSection(
-            title="Releases / Tagging",
+            category=category_meta(CategoryKey.RELEASES),
             columns=("Repository", "Last release"),
             rows=[report.TableRow(repo=_repo("stale"), cells=("never",))],
-            note="First sentence here. Second sentence here.",
+            fail_count=1,
+            description="First sentence here. Second sentence here.",
         )
         out = html.render_org_html(org)
-        assert '<p class="note">First sentence here.</p>' in out
-        assert '<p class="note">Second sentence here.</p>' in out
+        assert '<p class="desc">First sentence here. Second sentence here.' in out
+        meta = category_meta(CategoryKey.RELEASES)
+        assert f'href="{meta.url}"' in out
 
-    def test_renders_excluded_banner(self) -> None:
+    def test_excluded_repos_in_per_category_footer(self) -> None:
+        # The org-level excluded banner is gone; exclusions appear in each
+        # category's standardised footer instead.
         org = _org("o", [], count=3)
         org.excluded_repos = [_repo("opted-out")]
         out = html.render_org_html(org)
-        assert "excluded-banner" in out
-        assert "Excluded from analysis (1)" in out
+        assert "excluded-banner" not in out
+        assert "1 Excluded" in out
+        assert "kind-excluded" in out
         assert '<a href="https://github.com/o/opted-out">opted-out</a>' in out
 
     def test_offender_table_has_totals_tfoot(self) -> None:

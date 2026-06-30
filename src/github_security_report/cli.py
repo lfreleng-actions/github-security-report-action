@@ -72,6 +72,7 @@ def main(
 def _table_to_dict(section: TableSection) -> dict:
     """Serialise a generic posture/freshness table for JSON consumers."""
     return {
+        "category": section.category.key.value,
         "title": section.title,
         "columns": list(section.columns),
         "rows": [
@@ -82,8 +83,11 @@ def _table_to_dict(section: TableSection) -> dict:
             }
             for row in section.rows
         ],
-        "empty_note": section.empty_note,
-        "note": section.note,
+        # Normalised footer counts shared by every render surface.
+        "pass_count": section.pass_count,
+        "fail_count": section.fail_count,
+        "unknown_count": section.unknown_count,
+        "description": section.resolved_description(),
     }
 
 
@@ -124,6 +128,9 @@ def _org_to_dict(org: OrgReport) -> dict:
         # Extra reporting categories outside the four-state per-signal model.
         "dependabot_tables": [_table_to_dict(t) for t in org.dependabot_tables],
         "releases": _table_to_dict(org.releases) if org.releases else None,
+        "mutable_releases": (
+            _table_to_dict(org.mutable_releases) if org.mutable_releases else None
+        ),
     }
 
 

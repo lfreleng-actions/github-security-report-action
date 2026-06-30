@@ -108,14 +108,14 @@ plain tables (no offender/clean/nag/unknown classification).
 **Dependabot** (sub-tables nested beneath the "Dependabot: Security Alerts"
 signal heading):
 
-- **Dependabot: Security Alerts** (enablement) — repositories where Dependabot
+- **Dependabot: Alerts Enabled** (enablement) — repositories where Dependabot
   vulnerability alerts are *not* switched on (the GraphQL
   `hasVulnerabilityAlertsEnabled` read). This replaces the Dependabot signal's
-  nag list so the same repositories are not listed twice. Its empty/all-enabled
-  note is feature-agnostic ("this feature"), shared with the Security Updates
-  table below.
-- **Dependabot: Security Updates** — a single "Repositories NOT Enabled" column
-  listing repositories where Dependabot security updates
+  nag list so the same repositories are not listed twice. Its title is
+  deliberately distinct from the **Dependabot: Security Alerts** signal heading
+  (open alerts) above it.
+- **Dependabot: Security Updates** — a single **Repository** column listing
+  repositories where Dependabot security updates
   (`GET /repos/{o}/{r}/automated-security-fixes`) are *not* switched on.
 - **Dependabot: Cooldown Settings** — repositories/ecosystems whose
   `.github/dependabot.yml` declares an `updates` entry with **no `cooldown`**. A
@@ -176,13 +176,24 @@ Each in-scope repo falls into exactly one bucket **per report type** (not
 global):
 
 1. **Enabled + has open findings** → table row (sorted worst-first).
-2. **Enabled + zero findings** → omitted from table; counted in a
-   "✅ N repositories clean" summary beneath the table.
-3. **Supported but NOT enabled** → bulleted **nag list** beneath the table
-   (excludes archived/test repos).
+2. **Enabled + zero findings** → omitted from table; counted in the standardised
+   summary footer beneath the table (the "✅ N <pass>" / "✅ All <pass>" line).
+3. **Supported but NOT enabled** → counted as a **disabled** footer line with a
+   named repository breakdown (excludes archived/test repos).
 4. **Unknown / insufficient permission** (indeterminate probe: missing scope,
-   GHAS not licensed, ambiguous 403/404) → **footnoted count**; never merged
-   into clean or nag.
+   GHAS not licensed, ambiguous 403/404) → **unknown** footer line; never merged
+   into clean or disabled.
+
+**Standardised summary footer.** Every category — the five ranked signals and
+every posture/freshness table — renders the same metadata-driven footer beneath
+its table, built once in `report.build_summary()` and reused by all surfaces
+(terminal, Slack, Markdown, HTML). Lines are ordered remediation-first
+(failures, disabled, unknown, then the healthy pass line, then excluded). The
+pass line collapses to **"All <pass_label>"** (no number) only when nothing else
+needs attention; otherwise every present bucket shows its count. Each category's
+pass/fail vocabulary, documentation URL and explanatory description live in the
+`categories` registry (`CategoryMeta`). The description is shown only on the rich
+surfaces (Markdown and HTML); the terminal and Slack stay brevity-first.
 
 **Enabled-probe contract** (each signal declares its own probe; Phase 0 locks
 exact rules):
