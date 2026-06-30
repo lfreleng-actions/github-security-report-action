@@ -18,6 +18,7 @@ Pure, transport-free logic encoding every Phase 0 finding
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from github_security_report import severity
@@ -28,6 +29,20 @@ from github_security_report.models import (
     SeverityCounts,
     SignalType,
 )
+from github_security_report.severity import Severity
+
+# A resolved per-signal fail-severity cutoff. When a signal is absent the
+# classifier falls back to the signal's own default (its category metadata).
+FailSeverities = Mapping[SignalType, Severity]
+
+
+def _cutoff(
+    signal: SignalType, fail_severities: FailSeverities | None
+) -> Severity:
+    """The fail-severity cutoff for ``signal`` (config override or default)."""
+    if fail_severities is not None and signal in fail_severities:
+        return fail_severities[signal]
+    return signal.fail_severity
 
 
 @dataclass
@@ -88,7 +103,10 @@ def count_dependabot(alerts: list[dict]) -> SeverityCounts:
 # Per-signal classification
 # --------------------------------------------------------------------------- #
 def _code_scanning_tool_signal(
-    facts: RepoFacts, signal: SignalType, tool_name: str
+    facts: RepoFacts,
+    signal: SignalType,
+    tool_name: str,
+    fail_severities: FailSeverities | None = None,
 ) -> RepoSignal:
     """Shared four-state logic for the code-scanning-derived signals.
 
@@ -119,33 +137,52 @@ def _code_scanning_tool_signal(
     # an unreadable sweep (e.g. org-bulk 403/5xx) must not masquerade as clean.
     if counts.total == 0 and facts.code_scanning_alerts_status != 200:
         return RepoSignal(repo, signal, RepoState.UNKNOWN, detail="alert data unavailable")
-    state = RepoState.OFFENDER if counts.total else RepoState.CLEAN
+    # Only findings at or above the category's fail-severity cutoff make the
+    # repo an offender; sub-threshold findings (e.g. informational) fold into
+    # the clean count.
+    failing = counts.at_or_above(_cutoff(signal, fail_severities))
+    state = RepoState.OFFENDER if failing else RepoState.CLEAN
     return RepoSignal(repo, signal, state, counts=counts)
 
 
-def classify_codeql(facts: RepoFacts) -> RepoSignal:
-    return _code_scanning_tool_signal(facts, SignalType.CODEQL, "CodeQL")
+def classify_codeql(
+    facts: RepoFacts, fail_severities: FailSeverities | None = None
+) -> RepoSignal:
+    return _code_scanning_tool_signal(
+        facts, SignalType.CODEQL, "CodeQL", fail_severities
+    )
 
 
-def classify_zizmor(facts: RepoFacts) -> RepoSignal:
-    return _code_scanning_tool_signal(facts, SignalType.ZIZMOR, "zizmor")
+def classify_zizmor(
+    facts: RepoFacts, fail_severities: FailSeverities | None = None
+) -> RepoSignal:
+    return _code_scanning_tool_signal(
+        facts, SignalType.ZIZMOR, "zizmor", fail_severities
+    )
 
 
-def classify_scorecard(facts: RepoFacts) -> RepoSignal:
+def classify_scorecard(
+    facts: RepoFacts, fail_severities: FailSeverities | None = None
+) -> RepoSignal:
     """Scorecard: prefer the external aggregate score, else code-scanning findings."""
     repo = facts.repo
     counts = count_code_scanning(facts.code_scanning_alerts, "Scorecard")
     has_cs = "Scorecard" in facts.code_scanning_tools and facts.code_scanning_status == 200
+    cutoff = _cutoff(SignalType.SCORECARD, fail_severities)
 
     if facts.scorecard_status == 200 and facts.scorecard_score is not None:
         # A perfect 10 with no findings is clean; anything else is an offender.
+        # The score itself is the failure axis here, so an imperfect score is an
+        # offender regardless of finding severity.
         clean = facts.scorecard_score >= 10.0 and counts.total == 0
         state = RepoState.CLEAN if clean else RepoState.OFFENDER
         return RepoSignal(repo, SignalType.SCORECARD, state, counts=counts, score=facts.scorecard_score)
     if has_cs:
         if counts.total == 0 and facts.code_scanning_alerts_status != 200:
             return RepoSignal(repo, SignalType.SCORECARD, RepoState.UNKNOWN, detail="alert data unavailable")
-        state = RepoState.OFFENDER if counts.total else RepoState.CLEAN
+        state = (
+            RepoState.OFFENDER if counts.at_or_above(cutoff) else RepoState.CLEAN
+        )
         return RepoSignal(repo, SignalType.SCORECARD, state, counts=counts)
     # An indeterminate external request (a 403 forbidden/blocked, a 5xx
     # including the synthetic 503 a transport failure produces, or a forbidden
@@ -156,7 +193,9 @@ def classify_scorecard(facts: RepoFacts) -> RepoSignal:
     return RepoSignal(repo, SignalType.SCORECARD, RepoState.NAG, detail="no Scorecard results")
 
 
-def classify_secret_scanning(facts: RepoFacts) -> RepoSignal:
+def classify_secret_scanning(
+    facts: RepoFacts, fail_severities: FailSeverities | None = None
+) -> RepoSignal:
     repo = facts.repo
     if facts.secret_scanning_status == 403:
         return RepoSignal(repo, SignalType.SECRET_SCANNING, RepoState.UNKNOWN, detail="insufficient permission")
@@ -180,7 +219,9 @@ def classify_secret_scanning(facts: RepoFacts) -> RepoSignal:
     return RepoSignal(repo, SignalType.SECRET_SCANNING, RepoState.CLEAN, counts=counts)
 
 
-def classify_dependabot(facts: RepoFacts) -> RepoSignal:
+def classify_dependabot(
+    facts: RepoFacts, fail_severities: FailSeverities | None = None
+) -> RepoSignal:
     repo = facts.repo
     if facts.dependabot_enabled is None:
         return RepoSignal(repo, SignalType.DEPENDABOT, RepoState.UNKNOWN, detail="indeterminate")
@@ -190,7 +231,8 @@ def classify_dependabot(facts: RepoFacts) -> RepoSignal:
     # Enabled with no alerts is only "clean" when the alert read succeeded.
     if counts.total == 0 and facts.dependabot_alerts_status != 200:
         return RepoSignal(repo, SignalType.DEPENDABOT, RepoState.UNKNOWN, detail="alert data unavailable")
-    state = RepoState.OFFENDER if counts.total else RepoState.CLEAN
+    failing = counts.at_or_above(_cutoff(SignalType.DEPENDABOT, fail_severities))
+    state = RepoState.OFFENDER if failing else RepoState.CLEAN
     return RepoSignal(repo, SignalType.DEPENDABOT, state, counts=counts)
 
 
@@ -203,6 +245,13 @@ _CLASSIFIERS = (
 )
 
 
-def classify_repo(facts: RepoFacts) -> list[RepoSignal]:
-    """Classify a repository across all five signals."""
-    return [classifier(facts) for classifier in _CLASSIFIERS]
+def classify_repo(
+    facts: RepoFacts, fail_severities: FailSeverities | None = None
+) -> list[RepoSignal]:
+    """Classify a repository across all five signals.
+
+    ``fail_severities`` optionally overrides the per-signal fail-severity cutoff
+    (otherwise each signal uses its category default); it governs which findings
+    are severe enough to mark a repository as an offender.
+    """
+    return [classifier(facts, fail_severities) for classifier in _CLASSIFIERS]

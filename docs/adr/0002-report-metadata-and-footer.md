@@ -59,6 +59,16 @@ them to drift.
    than a single org-level banner, so the exclusion is visible in the context of
    every category it affects.
 
+6. **Pass/fail cutoff in the metadata.** `CategoryMeta` carries a
+   `fail_severity` cutoff for the severity-ranked signals, and severity gains an
+   `informational` rung below `low` (where SARIF `note`/`none` findings
+   normalise). A repository is an offender only when it has a finding at or
+   above the cutoff; sub-threshold findings fold into the clean count. The
+   global default is `medium`; Zizmor lowers it to `low`. The cutoff is
+   overridable per category via `report.categories.<key>.fail_severity`, so the
+   "what counts as a failure" decision lives in the same metadata-driven place
+   as the labels and descriptions.
+
 ## Consequences
 
 - A wording, label, URL or ordering change is made once in the registry or

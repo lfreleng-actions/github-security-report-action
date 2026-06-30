@@ -25,6 +25,7 @@ from types import MappingProxyType
 import jsonschema
 
 from github_security_report.categories import CategoryKey, all_categories
+from github_security_report.severity import Severity, from_name
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +34,10 @@ log = logging.getLogger(__name__)
 # the terminal, ``slack`` the digest, and ``markdown``/``html`` the two GitHub
 # Pages artifacts (treated separately so each can be tuned on its own).
 REPORT_OUTPUTS = ("cli", "slack", "markdown", "html")
+
+# Severity names accepted for a category's ``fail_severity`` cutoff, lowest to
+# highest. ``informational`` is the new sub-low rung.
+SEVERITY_NAMES = ("informational", "low", "medium", "high", "critical")
 
 WEEKDAYS = (
     "monday",
@@ -120,6 +125,10 @@ CONFIG_SCHEMA: dict = {
                                         for output in REPORT_OUTPUTS
                                     },
                                 },
+                                # The lowest finding severity that counts as a
+                                # failure for this category (severity signals
+                                # only). Overrides the category default.
+                                "fail_severity": {"enum": list(SEVERITY_NAMES)},
                             },
                         }
                         for meta in all_categories()
@@ -199,16 +208,19 @@ class OutputToggles:
 
 @dataclass(frozen=True)
 class CategoryToggle:
-    """Render switches for one reporting category.
+    """Render switches and pass/fail tuning for one reporting category.
 
     ``enabled`` is the highest-precedence switch: when false the category is
     hidden on every surface. ``outputs`` is the lower-precedence per-surface
     map, consulted only when the category is enabled. The data is always
     collected regardless of these toggles; they govern presentation alone.
+    ``fail_severity`` overrides the category's default failure cutoff (severity
+    signals only); ``None`` keeps the category default.
     """
 
     enabled: bool = True
     outputs: OutputToggles = field(default_factory=OutputToggles)
+    fail_severity: Severity | None = None
 
     def shows_on(self, output: str) -> bool:
         """Whether this category renders on ``output`` (cli/slack/markdown/html)."""
@@ -258,6 +270,15 @@ class ReportConfig:
         """
         toggle = self.categories.get(key.value)
         return toggle.shows_on(output) if toggle is not None else True
+
+    def fail_severity_for(self, key: CategoryKey) -> Severity | None:
+        """The configured fail-severity override for ``key``, or ``None``.
+
+        ``None`` means "use the category's own default cutoff"; the classifier
+        resolves that fallback, so the config only carries explicit overrides.
+        """
+        toggle = self.categories.get(key.value)
+        return toggle.fail_severity if toggle is not None else None
 
     @property
     def report_top_n(self) -> int:
@@ -391,9 +412,21 @@ def _categories_from(
                     if output in REPORT_OUTPUTS
                 },
             )
+        fail_severity = current.fail_severity
+        if "fail_severity" in raw:
+            # The schema constrains the value to a known severity name, so
+            # from_name resolves it; informational is handled explicitly as it
+            # is below the security-severity scale from_name covers.
+            name = raw["fail_severity"]
+            fail_severity = (
+                Severity.INFORMATIONAL
+                if name == "informational"
+                else from_name(name)
+            )
         merged[key] = CategoryToggle(
             enabled=raw.get("enabled", current.enabled),
             outputs=outputs,
+            fail_severity=fail_severity,
         )
     return MappingProxyType(merged)
 

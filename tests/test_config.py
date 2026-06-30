@@ -14,6 +14,7 @@ import pytest
 from github_security_report import config
 from github_security_report.categories import CategoryKey
 from github_security_report.config import ConfigError
+from github_security_report.severity import Severity
 
 TUESDAY = dt.date(2026, 6, 16)
 WEDNESDAY = dt.date(2026, 6, 17)
@@ -319,6 +320,47 @@ class TestCategoryToggles:
             config.build_config(
                 {
                     "report": {"categories": {"codeql": {"outputs": {"email": False}}}},
+                    "organizations": [{"name": "o"}],
+                }
+            )
+
+    def test_fail_severity_default_is_none_override(self) -> None:
+        # With no override the resolver returns None (classifier uses the
+        # category default).
+        rc = config.build_config(MINIMAL).report
+        assert rc.fail_severity_for(CategoryKey.CODEQL) is None
+
+    def test_fail_severity_override_parsed(self) -> None:
+        data = {
+            "report": {
+                "categories": {
+                    "codeql": {"fail_severity": "low"},
+                    "zizmor": {"fail_severity": "informational"},
+                }
+            },
+            "organizations": [{"name": "o"}],
+        }
+        rc = config.build_config(data).organizations[0].report
+        assert rc.fail_severity_for(CategoryKey.CODEQL) is Severity.LOW
+        assert rc.fail_severity_for(CategoryKey.ZIZMOR) is Severity.INFORMATIONAL
+
+    def test_fail_severity_merges_with_other_category_keys(self) -> None:
+        # Setting fail_severity does not disturb a separately-set toggle.
+        data = {
+            "report": {
+                "categories": {"zizmor": {"enabled": False, "fail_severity": "medium"}}
+            },
+            "organizations": [{"name": "o"}],
+        }
+        rc = config.build_config(data).organizations[0].report
+        assert rc.fail_severity_for(CategoryKey.ZIZMOR) is Severity.MEDIUM
+        assert not rc.shows_category(CategoryKey.ZIZMOR, "cli")
+
+    def test_rejects_unknown_fail_severity(self) -> None:
+        with pytest.raises(ConfigError):
+            config.build_config(
+                {
+                    "report": {"categories": {"codeql": {"fail_severity": "bogus"}}},
                     "organizations": [{"name": "o"}],
                 }
             )

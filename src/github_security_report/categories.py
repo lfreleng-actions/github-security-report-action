@@ -21,6 +21,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from github_security_report.severity import Severity
+
 
 class CategoryKey(str, Enum):
     """Stable identifier for one reporting category (also the config key)."""
@@ -58,6 +60,14 @@ class CategoryMeta:
     fail_label: str | None
     url: str
     description: str = ""
+    # The lowest finding severity that counts as a failure for this category.
+    # A repository fails (appears as an offender) only when it carries a finding
+    # at or above this rung; findings below it fold into the clean count. The
+    # global default is MEDIUM, so Low and Informational findings pass; a
+    # category may lower it (Zizmor uses LOW, so only Informational passes).
+    # Meaningful only for the severity-ranked signals; binary categories ignore
+    # it. Overridable per category via the JSON config.
+    fail_severity: Severity = Severity.MEDIUM
 
 
 _CATEGORIES: dict[CategoryKey, CategoryMeta] = {
@@ -93,6 +103,9 @@ _CATEGORIES: dict[CategoryKey, CategoryMeta] = {
             "Zizmor static analysis of GitHub Actions workflows, ranked "
             "worst-first by severity."
         ),
+        # Zizmor's advisory "note" findings normalise to informational; only
+        # those pass. A low-or-higher zizmor finding is treated as a failure.
+        fail_severity=Severity.LOW,
     ),
     CategoryKey.DEPENDABOT_ALERTS: CategoryMeta(
         key=CategoryKey.DEPENDABOT_ALERTS,

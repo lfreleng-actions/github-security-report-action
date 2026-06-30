@@ -7,6 +7,7 @@ from __future__ import annotations
 from github_security_report import classify
 from github_security_report.classify import RepoFacts
 from github_security_report.models import Repo, RepoState, SignalType
+from github_security_report.severity import Severity
 
 
 def _repo(name: str = "r") -> Repo:
@@ -342,3 +343,71 @@ class TestIndeterminateProbeStatus:
     def test_secret_scanning_5xx_is_unknown(self) -> None:
         facts = RepoFacts(repo=_repo(), secret_scanning_status=503)
         assert _by_signal(facts)[SignalType.SECRET_SCANNING].state is RepoState.UNKNOWN
+
+
+class TestFailSeverityCutoff:
+    """Sub-threshold findings fold into clean; at/above the cutoff offend."""
+
+    def test_low_only_codeql_is_clean_under_default_cutoff(self) -> None:
+        # The global default cutoff is MEDIUM, so a low-only repository passes.
+        facts = RepoFacts(
+            repo=_repo(),
+            code_scanning_status=200,
+            code_scanning_tools={"CodeQL"},
+            code_scanning_alerts=[_cs_alert("CodeQL", "low")],
+        )
+        sig = _by_signal(facts)[SignalType.CODEQL]
+        assert sig.state is RepoState.CLEAN
+        # The finding is still counted (just not failure-worthy).
+        assert sig.counts.low == 1
+
+    def test_medium_codeql_is_offender_under_default_cutoff(self) -> None:
+        facts = RepoFacts(
+            repo=_repo(),
+            code_scanning_status=200,
+            code_scanning_tools={"CodeQL"},
+            code_scanning_alerts=[_cs_alert("CodeQL", "medium")],
+        )
+        assert _by_signal(facts)[SignalType.CODEQL].state is RepoState.OFFENDER
+
+    def test_zizmor_note_only_is_clean(self) -> None:
+        # Zizmor's cutoff is LOW, and SARIF note normalises to informational,
+        # so a note-only repository passes.
+        facts = RepoFacts(
+            repo=_repo(),
+            code_scanning_status=200,
+            code_scanning_tools={"zizmor"},
+            code_scanning_alerts=[_cs_alert("zizmor", None, "note")],
+        )
+        sig = _by_signal(facts)[SignalType.ZIZMOR]
+        assert sig.state is RepoState.CLEAN
+        assert sig.counts.informational == 1
+
+    def test_zizmor_warning_is_offender(self) -> None:
+        # warning -> medium, at/above the LOW cutoff -> offender.
+        facts = RepoFacts(
+            repo=_repo(),
+            code_scanning_status=200,
+            code_scanning_tools={"zizmor"},
+            code_scanning_alerts=[_cs_alert("zizmor", None, "warning")],
+        )
+        assert _by_signal(facts)[SignalType.ZIZMOR].state is RepoState.OFFENDER
+
+    def test_override_lowers_codeql_cutoff(self) -> None:
+        # A config override of LOW makes a low-only CodeQL repository fail.
+        facts = RepoFacts(
+            repo=_repo(),
+            code_scanning_status=200,
+            code_scanning_tools={"CodeQL"},
+            code_scanning_alerts=[_cs_alert("CodeQL", "low")],
+        )
+        sig = classify.classify_codeql(facts, {SignalType.CODEQL: Severity.LOW})
+        assert sig.state is RepoState.OFFENDER
+
+    def test_low_only_dependabot_is_clean_under_default_cutoff(self) -> None:
+        facts = RepoFacts(
+            repo=_repo(),
+            dependabot_enabled=True,
+            dependabot_alerts=[{"security_advisory": {"severity": "low"}}],
+        )
+        assert _by_signal(facts)[SignalType.DEPENDABOT].state is RepoState.CLEAN

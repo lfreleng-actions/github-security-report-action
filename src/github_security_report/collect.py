@@ -331,7 +331,19 @@ async def collect_org(
             )
         )
 
-    signals = [sig for repo_facts in facts for sig in classify_repo(repo_facts)]
+    # Resolve any configured per-signal fail-severity overrides; signals not
+    # listed fall back to their category default inside the classifier.
+    fail_severities = {
+        signal: override
+        for signal in SignalType
+        if (override := report_cfg.fail_severity_for(signal.category_key))
+        is not None
+    }
+    signals = [
+        sig
+        for repo_facts in facts
+        for sig in classify_repo(repo_facts, fail_severities)
+    ]
     report = build_org_report(
         org,
         signals,

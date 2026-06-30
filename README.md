@@ -267,6 +267,32 @@ flipping one output leaves the rest untouched). The machine-readable
 `report.json` artifact always contains the complete dataset, regardless of these
 toggles.
 
+### Pass/fail severity cutoff
+
+The severity-ranked signals (CodeQL, Scorecard, Zizmor, Dependabot alerts) use a
+`fail_severity` cutoff to decide when a repository counts as a failure. A
+repository is flagged as an offender only when it carries a finding **at or
+above** the cutoff; findings below it fold into the clean count. Severities run
+(lowest to highest) `informational`, `low`, `medium`, `high`, `critical` —
+`informational` being the new sub-low rung that SARIF `note`/`none` findings
+(the bulk of a tool like Zizmor) normalise to.
+
+The global default cutoff is `medium`, so `low` and `informational` findings
+pass. Zizmor defaults to `low` (only `informational` passes). Override the
+cutoff per category under `report.categories.<key>.fail_severity`:
+
+```json
+{
+  "report": {
+    "categories": {
+      "codeql": { "fail_severity": "low" },
+      "zizmor": { "fail_severity": "informational" }
+    }
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
+
 `slack.channel` is optional. The action's `slack_channel` input (wired to the
 `SLACK_CHANNEL_ID` variable in `reporting.yaml`) overrides it, so the channel
 can live as an org/repo variable rather than in the config JSON. It must be the

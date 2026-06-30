@@ -164,6 +164,16 @@ reported in **two separate columns** as a human "last release / last tag" age.
 - **Per-report-type metric definitions** — no single universal "issue count".
   Each report declares `(value, sort_direction)`.
 - **Severity-weighted where available; fall back to flat count** otherwise.
+- **Severity scale (lowest to highest):** informational → low → medium → high →
+  critical. `informational` is the sub-low rung that SARIF `note`/`none`
+  findings (the bulk of a tool like zizmor) normalise to, so a category can
+  treat them as non-actionable.
+- **Pass/fail cutoff (`fail_severity`):** each severity-ranked signal carries a
+  cutoff in its category metadata. A repository is an offender only when it has
+  a finding **at or above** the cutoff; sub-threshold findings fold into the
+  clean count. The global default is **medium** (low and informational pass);
+  **zizmor** lowers it to **low** (only informational passes). The cutoff is
+  overridable per category via `report.categories.<key>.fail_severity`.
 - When severity data exists, show **separate columns** (critical / high /
   medium / low).
 - **Row sort:** hierarchical, worst-first — critical desc → high desc →
@@ -175,9 +185,12 @@ reported in **two separate columns** as a human "last release / last tag" age.
 Each in-scope repo falls into exactly one bucket **per report type** (not
 global):
 
-1. **Enabled + has open findings** → table row (sorted worst-first).
-2. **Enabled + zero findings** → omitted from table; counted in the standardised
-   summary footer beneath the table (the "✅ N <pass>" / "✅ All <pass>" line).
+1. **Enabled + has a finding at/above the cutoff** → table row (sorted
+   worst-first). The `fail_severity` cutoff (§5) decides "actionable": a repo
+   whose findings are all below the cutoff is treated as clean, not an offender.
+2. **Enabled + zero failing findings** → omitted from table; counted in the
+   standardised summary footer beneath the table (the "✅ N <pass>" /
+   "✅ All <pass>" line).
 3. **Supported but NOT enabled** → counted as a **disabled** footer line with a
    named repository breakdown (excludes archived/test repos).
 4. **Unknown / insufficient permission** (indeterminate probe: missing scope,
