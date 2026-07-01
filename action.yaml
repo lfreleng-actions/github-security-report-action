@@ -69,7 +69,7 @@ inputs:
   tool_version:
     description: "Published PyPI version to run (ignored on pull_request, which runs from source)"
     required: false
-    default: "0.1.0"
+    default: "0.3.0"
   use_local_source:
     description: "Run from this checked-out source instead of the PyPI release (for testing unreleased code from any event)"
     required: false
