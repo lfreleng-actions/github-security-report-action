@@ -420,19 +420,26 @@ Four presentation surfaces from one canonical dataset:
   SHA-pinned) and `build-test-release.yaml` (tag → PyPI trusted publishing).
   `hatch-vcs` dynamic version; `uv.lock` committed.
 - **Action runtime hybrid:** `action.yaml` **auto-detects** run source —
-  `local` when `github.event_name == 'pull_request'` (`uvx --from
-  "${GITHUB_ACTION_PATH}"` so PRs exercise unreleased code), otherwise `pypi`
-  with a pinned `tool_version`
+  `local` when `github.event_name == 'pull_request'` **or** `use_local_source
+  == true` (`uvx --from "${GITHUB_ACTION_PATH}"` so PRs and manual test runs
+  exercise unreleased code), otherwise `pypi`
   (`uvx --from github-security-report==<version> github-security-report ...`).
+  For the `pypi` path an explicit `tool_version` input wins; when it is empty
+  (the default) the version is read from the Dependabot-managed pin in
+  `.github/runtime-pin/requirements.txt`, so bumps arrive as cooldown-gated
+  PRs instead of a hand-edited default that silently drifts each release.
   Harden-runner egress must allow `pypi.org` / `files.pythonhosted.org` for the
   `pypi` path and the GitHub API for both.
 
 ## 15. Dependabot
 
-`.github/dependabot.yml`, two ecosystems (`github-actions`, `uv`):
+`.github/dependabot.yml`, three ecosystems (`github-actions`, `uv`, and a
+`pip` entry scoped to `.github/runtime-pin/` that manages the published tool
+version the action installs at runtime):
 
-- weekly interval, **7-day cooldown**, **15** open-PR limit, `Chore` commit
-  prefix (matches the standard sibling config).
+- weekly interval, **7-day cooldown**, **15** open-PR limit; `CI(actions)`
+  commit prefix for the `github-actions` ecosystem and `CI(deps)` for the
+  `uv` and `pip` ecosystems.
 
 ## 16. Testing strategy
 

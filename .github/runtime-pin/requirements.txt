@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+# SPDX-License-Identifier: Apache-2.0
+#
+# Runtime pin for the published github-security-report tool that this
+# composite action installs from PyPI on non-pull_request runs when the
+# tool_version input is left empty. Keeping the pin here (rather than as a
+# static default in action.yaml) lets Dependabot's pip ecosystem propose
+# version bumps through a cooldown-gated PR instead of a hand-edited
+# default that silently drifts each release.
+github-security-report==0.3.0

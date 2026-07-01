@@ -27,3 +27,13 @@ updates:
     open-pull-requests-limit: 15
     exclude-paths:
       - "LICENSES/**"
+  - package-ecosystem: "pip"
+    # Runtime pin for the published tool this action installs at runtime.
+    directory: "/.github/runtime-pin"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "CI(deps)"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 15

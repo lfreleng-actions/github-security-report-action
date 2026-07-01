@@ -346,7 +346,7 @@ and the Slack **bot token** is consumed by the workflow, not the CLI.
 | `top_n_slack` | No | — | Offenders per signal in the Slack digest (`0` = no limit; overrides `top_n`) |
 | `fail_threshold` | No | `none` | `none`/`low`/`medium`/`high`/`critical`/`any` (repo mode) |
 | `force_notify` | No | `false` | Post to Slack regardless of `report_day` |
-| `tool_version` | No | `0.3.0` | Published PyPI version (ignored on pull requests) |
+| `tool_version` | No | `""` | Published PyPI version to install. Empty (the default) uses the Dependabot-managed pin in `.github/runtime-pin/requirements.txt`; set a specific version to override. Ignored on pull requests or when `use_local_source` is `true` (both run from source) |
 | `use_local_source` | No | `false` | Run from the checked-out source instead of PyPI (for testing unreleased code from any event) |
 
 <!-- markdownlint-enable MD013 -->

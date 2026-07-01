@@ -67,9 +67,9 @@ inputs:
     required: false
     default: "false"
   tool_version:
-    description: "Published PyPI version to run (ignored on pull_request, which runs from source)"
+    description: "Published PyPI version to run; ignored on pull_request or when use_local_source is true (both run from the checked-out source). Empty (the default) uses the Dependabot-managed pin in .github/runtime-pin/requirements.txt"
     required: false
-    default: "0.3.0"
+    default: ""
   use_local_source:
     description: "Run from this checked-out source instead of the PyPI release (for testing unreleased code from any event)"
     required: false
@@ -161,11 +161,33 @@ runs:
 
         # Hybrid runtime: pull requests (or an explicit use_local_source
         # toggle, for testing) exercise the checked-out source so unreleased
-        # code runs; everything else runs the pinned PyPI release.
+        # code runs; everything else runs a pinned PyPI release. An explicit
+        # tool_version input wins; otherwise the pin is read from the
+        # Dependabot-managed requirements file so version bumps arrive as
+        # cooldown-gated PRs rather than a hand-edited default.
         if [ "$EVENT_NAME" = "pull_request" ] || [ "$USE_LOCAL_SOURCE" = "true" ]; then
           SOURCE="$ACTION_PATH"
-        else
+        elif [ -n "$TOOL_VERSION" ]; then
           SOURCE="github-security-report==${TOOL_VERSION}"
+        else
+          PIN_FILE="$ACTION_PATH/.github/runtime-pin/requirements.txt"
+          if [ ! -f "$PIN_FILE" ]; then
+            echo "Error: runtime pin file not found: $PIN_FILE" >&2
+            exit 1
+          fi
+          # First 'github-security-report==' pin token on its own line
+          # (leading whitespace tolerated). sed captures up to the first
+          # whitespace, '#', or ';', so inline comments and attached
+          # environment markers are dropped without corrupting the token;
+          # sed/head always exit 0, so this is pipefail-safe and the
+          # emptiness check below reports a missing pin clearly.
+          SOURCE="$(sed -n \
+            's/^[[:space:]]*\(github-security-report==[^[:space:]#;]*\).*/\1/p' \
+            "$PIN_FILE" | head -n1)"
+          if [ -z "$SOURCE" ]; then
+            echo "Error: no github-security-report pin found in $PIN_FILE" >&2
+            exit 1
+          fi
         fi
 
         args=(report --scope "$INPUT_SCOPE" --token-env "$TOKEN_ENV" --no-color)
