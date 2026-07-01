@@ -36,7 +36,7 @@ jobs:
       # unreachable from workflows triggered by PRs raised from
       # forks, which previously forced a fallback to audit mode).
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@42663a22f7abe31521cbc6120901353a4b2849bc  # v0.2.0
+      - uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
         with:
           # yamllint disable-line rule:line-length
           config: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
@@ -84,7 +84,7 @@ jobs:
       # unreachable from workflows triggered by PRs raised from
       # forks, which previously forced a fallback to audit mode).
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@42663a22f7abe31521cbc6120901353a4b2849bc  # v0.2.0
+      - uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
         with:
           # yamllint disable-line rule:line-length
           config: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
@@ -167,7 +167,7 @@ jobs:
       # unreachable from workflows triggered by PRs raised from
       # forks, which previously forced a fallback to audit mode).
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@42663a22f7abe31521cbc6120901353a4b2849bc  # v0.2.0
+      - uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
         with:
           # yamllint disable-line rule:line-length
           config: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
@@ -213,7 +213,7 @@ jobs:
       # unreachable from workflows triggered by PRs raised from
       # forks, which previously forced a fallback to audit mode).
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@42663a22f7abe31521cbc6120901353a4b2849bc  # v0.2.0
+      - uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
         with:
           # yamllint disable-line rule:line-length
           config: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
@@ -257,7 +257,7 @@ jobs:
       # unreachable from workflows triggered by PRs raised from
       # forks, which previously forced a fallback to audit mode).
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@42663a22f7abe31521cbc6120901353a4b2849bc  # v0.2.0
+      - uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
         with:
           # yamllint disable-line rule:line-length
           config: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
@@ -298,7 +298,7 @@ jobs:
       # unreachable from workflows triggered by PRs raised from
       # forks, which previously forced a fallback to audit mode).
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@42663a22f7abe31521cbc6120901353a4b2849bc  # v0.2.0
+      - uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
         with:
           # yamllint disable-line rule:line-length
           config: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
@@ -359,7 +359,7 @@ jobs:
       # unreachable from workflows triggered by PRs raised from
       # forks, which previously forced a fallback to audit mode).
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@42663a22f7abe31521cbc6120901353a4b2849bc  # v0.2.0
+      - uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
         with:
           # yamllint disable-line rule:line-length
           config: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
@@ -547,7 +547,7 @@ jobs:
       # unreachable from workflows triggered by PRs raised from
       # forks, which previously forced a fallback to audit mode).
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@42663a22f7abe31521cbc6120901353a4b2849bc  # v0.2.0
+      - uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
         with:
           # yamllint disable-line rule:line-length
           config: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
@@ -591,7 +591,7 @@ jobs:
       # unreachable from workflows triggered by PRs raised from
       # forks, which previously forced a fallback to audit mode).
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@42663a22f7abe31521cbc6120901353a4b2849bc  # v0.2.0
+      - uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
         with:
           # yamllint disable-line rule:line-length
           config: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
@@ -645,7 +645,7 @@ jobs:
       # unreachable from workflows triggered by PRs raised from
       # forks, which previously forced a fallback to audit mode).
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@42663a22f7abe31521cbc6120901353a4b2849bc  # v0.2.0
+      - uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
         with:
           # yamllint disable-line rule:line-length
           config: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
@@ -700,7 +700,7 @@ jobs:
       # unreachable from workflows triggered by PRs raised from
       # forks, which previously forced a fallback to audit mode).
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@42663a22f7abe31521cbc6120901353a4b2849bc  # v0.2.0
+      - uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
         with:
           # yamllint disable-line rule:line-length
           config: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
