@@ -4,7 +4,8 @@
 
 from __future__ import annotations
 
-from github_security_report import severity
+from github_security_report import categories, severity
+from github_security_report.categories import CategoryKey
 from github_security_report.severity import Severity
 
 
@@ -37,14 +38,36 @@ class TestSarifFallback:
     def test_sarif_levels(self) -> None:
         assert severity.from_sarif_level("error") is Severity.HIGH
         assert severity.from_sarif_level("warning") is Severity.MEDIUM
-        # zizmor emits its Low findings at SARIF level note; the scan
-        # pipeline's low floor keeps informational out of the SARIF.
+        # zizmor emits BOTH its Low and Informational findings at SARIF
+        # level note, and the alerts API does not expose which. note maps
+        # to LOW to avoid under-stating; the zizmor category's
+        # INFORMATIONAL cutoff ensures both tiers are still reported.
         assert severity.from_sarif_level("note") is Severity.LOW
         assert severity.from_sarif_level("none") is Severity.INFORMATIONAL
 
     def test_unknown(self) -> None:
         assert severity.from_sarif_level("bogus") is None
         assert severity.from_sarif_level(None) is None
+
+
+class TestCategoryFailSeverity:
+    """Severity floor at which each category counts a finding as a failure.
+
+    Locked down because the zizmor cutoff is load-bearing: the organisation
+    scan pipeline runs zizmor with ``--min-severity informational``, and
+    zizmor emits Low and Informational alike at SARIF level ``note`` with
+    the code-scanning alerts API exposing no way to tell them apart. A
+    cutoff anywhere above INFORMATIONAL would therefore silently drop
+    genuine findings from the report.
+    """
+
+    def test_zizmor_counts_every_finding(self) -> None:
+        meta = categories.category_meta(CategoryKey.ZIZMOR)
+        assert meta.fail_severity is Severity.INFORMATIONAL
+
+    def test_global_default_stays_medium(self) -> None:
+        meta = categories.category_meta(CategoryKey.CODEQL)
+        assert meta.fail_severity is Severity.MEDIUM
 
 
 class TestFromCodeScanning:

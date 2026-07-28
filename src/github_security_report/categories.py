@@ -67,9 +67,9 @@ class CategoryMeta:
     # A repository fails (appears as an offender) only when it carries a finding
     # at or above this rung; findings below it fold into the clean count. The
     # global default is MEDIUM, so Low and Informational findings pass; a
-    # category may lower it (Zizmor uses LOW, so only Informational passes).
-    # Meaningful only for the severity-ranked signals; binary categories ignore
-    # it. Overridable per category via the JSON config.
+    # category may lower it (Zizmor uses INFORMATIONAL, so every finding
+    # counts). Meaningful only for the severity-ranked signals; binary
+    # categories ignore it. Overridable per category via the JSON config.
     fail_severity: Severity = Severity.MEDIUM
 
 
@@ -106,10 +106,18 @@ _CATEGORIES: dict[CategoryKey, CategoryMeta] = {
             "Zizmor static analysis of GitHub Actions workflows, ranked "
             "worst-first by severity."
         ),
-        # zizmor emits its Low findings at SARIF level "note", which
-        # normalises to LOW (see severity.py), so any zizmor finding fails --
-        # matching the ruleset-enforced PR gate that blocks on note-and-above.
-        fail_severity=Severity.LOW,
+        # The organisation scan pipeline runs zizmor with an
+        # 'informational' floor, so every finding it can report reaches the
+        # SARIF. Match that here: any zizmor finding counts, at any
+        # severity. This mirrors the ruleset-enforced PR gate, which blocks
+        # on any finding regardless of level.
+        #
+        # zizmor emits both Low and Informational findings at SARIF level
+        # "note", and the code-scanning alerts API exposes only that level
+        # (not zizmor's own severity property), so the two are
+        # indistinguishable here. Cutting at INFORMATIONAL sidesteps the
+        # ambiguity: both surface either way.
+        fail_severity=Severity.INFORMATIONAL,
     ),
     CategoryKey.AISLOP: CategoryMeta(
         key=CategoryKey.AISLOP,

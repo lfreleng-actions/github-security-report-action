@@ -19,10 +19,13 @@ directly.
 The ``note`` mapping mirrors zizmor's own SARIF encoder, which emits both its
 Low and Informational findings at SARIF level ``note`` (Medium -> ``warning``,
 High -> ``error``). The organisation scan pipeline runs zizmor with
-``--min-severity low``, so informational findings never reach the uploaded
-SARIF: every ``note`` alert in code scanning is a genuine Low finding, and the
-ruleset-enforced PR gate blocks on it. Mapping ``note`` below LOW would
-(and previously did) under-state the estate's posture relative to that gate.
+``--min-severity informational``, so both tiers reach the uploaded SARIF and a
+``note`` alert may be either. The code-scanning alerts API exposes only the
+SARIF level -- not the ``zizmor/severity`` property carried in the raw SARIF --
+so the two cannot be separated here. ``note`` therefore stays at LOW rather
+than INFORMATIONAL, which errs towards over- rather than under-stating the
+estate's posture; the zizmor category cuts at INFORMATIONAL (see
+``categories.py``) so both tiers are reported regardless of where this maps.
 """
 
 from __future__ import annotations
@@ -59,11 +62,13 @@ _SECURITY_NAMES: dict[str, Severity] = {
 }
 
 # SARIF level -> security scale, used only as a fallback (zizmor, aislop).
-# zizmor's SARIF encoder emits Low AND Informational findings as ``note``, but
-# the scan pipeline's --min-severity low floor keeps informational findings out
-# of the SARIF entirely, so a ``note`` alert is a genuine Low finding (matching
-# the ruleset-enforced PR gate, which blocks on note-and-above). aislop uses
-# the same three levels. The rare ``none`` level stays at INFORMATIONAL.
+# zizmor's SARIF encoder emits Low AND Informational findings as ``note``, and
+# the scan pipeline's --min-severity informational floor lets both through, so
+# a ``note`` alert may be either tier. The alerts API does not expose zizmor's
+# own severity property, so they are indistinguishable here; ``note`` maps to
+# LOW to avoid under-stating, and the zizmor category's INFORMATIONAL cutoff
+# ensures both are reported. aislop uses the same three levels. The rare
+# ``none`` level stays at INFORMATIONAL.
 _SARIF_LEVEL_NAMES: dict[str, Severity] = {
     "error": Severity.HIGH,
     "warning": Severity.MEDIUM,
