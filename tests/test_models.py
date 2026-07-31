@@ -23,20 +23,22 @@ def _repo(name: str) -> Repo:
     )
 
 
-def _offender(name: str, signal: SignalType, **kwargs: object) -> RepoSignal:
-    counts = SeverityCounts(
-        **{
-            k: v
-            for k, v in kwargs.items()
-            if k in {"critical", "high", "medium", "low"}
-        }
-    )
+def _offender(
+    name: str,
+    signal: SignalType,
+    *,
+    critical: int = 0,
+    high: int = 0,
+    medium: int = 0,
+    low: int = 0,
+    score: float | None = None,
+) -> RepoSignal:
     return RepoSignal(
         repo=_repo(name),
         signal=signal,
         state=RepoState.OFFENDER,
-        counts=counts,
-        score=kwargs.get("score"),  # type: ignore[arg-type]
+        counts=SeverityCounts(critical=critical, high=high, medium=medium, low=low),
+        score=score,
     )
 
 
@@ -69,6 +71,16 @@ class TestSeverityCounts:
         many_low = SeverityCounts(low=50)
         assert one_crit.sort_key > many_low.sort_key
         assert one_crit.weighted > many_low.weighted
+
+    def test_by_rung_is_worst_first(self) -> None:
+        c = SeverityCounts(critical=1, high=2, medium=3, low=4, informational=5)
+        assert list(c.by_rung.items()) == [
+            (Severity.CRITICAL, 1),
+            (Severity.HIGH, 2),
+            (Severity.MEDIUM, 3),
+            (Severity.LOW, 4),
+            (Severity.INFORMATIONAL, 5),
+        ]
 
 
 class TestSignalType:
@@ -106,6 +118,67 @@ class TestRankOffenders:
         bad = _offender("bad", SignalType.SCORECARD, score=4.1)
         ranked = rank_offenders([good, bad])
         assert [s.repo.name for s in ranked] == ["bad", "good"]
+
+    def test_scorecard_leads_on_critical_then_score(self) -> None:
+        # Regression: a critical finding must surface at the top even when the
+        # repository carrying it has the healthiest score in the table.
+        crit = _offender("crit", SignalType.SCORECARD, critical=1, score=7.5)
+        many_crit = _offender("many", SignalType.SCORECARD, critical=6, score=9.1)
+        weak = _offender("weak", SignalType.SCORECARD, high=3, score=6.3)
+        weaker = _offender("weaker", SignalType.SCORECARD, high=3, score=6.1)
+        ranked = rank_offenders([weak, crit, weaker, many_crit])
+        assert [s.repo.name for s in ranked] == ["many", "crit", "weaker", "weak"]
+
+    def test_scorecard_leading_rung_cascades_to_high(self) -> None:
+        # No critical anywhere, so High leads and score breaks the tie.
+        a = _offender("a", SignalType.SCORECARD, high=1, medium=9, score=4.0)
+        b = _offender("b", SignalType.SCORECARD, high=3, score=8.0)
+        c = _offender("c", SignalType.SCORECARD, high=3, score=7.0)
+        ranked = rank_offenders([a, b, c])
+        assert [s.repo.name for s in ranked] == ["c", "b", "a"]
+
+    def test_scorecard_leading_rung_cascades_to_medium(self) -> None:
+        a = _offender("a", SignalType.SCORECARD, medium=1, low=9, score=4.0)
+        b = _offender("b", SignalType.SCORECARD, medium=2, score=8.0)
+        ranked = rank_offenders([a, b])
+        assert [s.repo.name for s in ranked] == ["b", "a"]
+
+    def test_scorecard_leading_rung_cascades_to_low(self) -> None:
+        a = _offender("a", SignalType.SCORECARD, low=1, score=4.0)
+        b = _offender("b", SignalType.SCORECARD, low=2, score=8.0)
+        ranked = rank_offenders([a, b])
+        assert [s.repo.name for s in ranked] == ["b", "a"]
+
+    def test_scorecard_without_findings_sorts_by_score_alone(self) -> None:
+        # Informational never leads: it is the non-actionable rung.
+        a = RepoSignal(
+            _repo("a"),
+            SignalType.SCORECARD,
+            RepoState.OFFENDER,
+            counts=SeverityCounts(informational=9),
+            score=8.0,
+        )
+        b = RepoSignal(
+            _repo("b"),
+            SignalType.SCORECARD,
+            RepoState.OFFENDER,
+            counts=SeverityCounts(informational=1),
+            score=4.0,
+        )
+        ranked = rank_offenders([a, b])
+        assert [s.repo.name for s in ranked] == ["b", "a"]
+
+    def test_scorecard_missing_score_sorts_last_within_rung(self) -> None:
+        unknown = _offender("unknown", SignalType.SCORECARD, high=1)
+        known = _offender("known", SignalType.SCORECARD, high=1, score=9.9)
+        ranked = rank_offenders([unknown, known])
+        assert [s.repo.name for s in ranked] == ["known", "unknown"]
+
+    def test_scorecard_full_ties_broken_by_name(self) -> None:
+        z = _offender("zebra", SignalType.SCORECARD, high=2, score=5.0)
+        a = _offender("alpha", SignalType.SCORECARD, high=2, score=5.0)
+        ranked = rank_offenders([z, a])
+        assert [s.repo.name for s in ranked] == ["alpha", "zebra"]
 
     def test_excludes_non_offenders(self) -> None:
         offender = _offender("a", SignalType.CODEQL, high=1)
