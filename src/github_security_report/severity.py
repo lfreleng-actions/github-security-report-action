@@ -52,6 +52,18 @@ class Severity(IntEnum):
         return self.name.lower()
 
 
+# The canonical worst-first rung order, for the severity columns and for every
+# worst-first ranking. Declared once so display order and ranking order cannot
+# drift apart.
+RUNGS_WORST_FIRST: tuple[Severity, ...] = (
+    Severity.CRITICAL,
+    Severity.HIGH,
+    Severity.MEDIUM,
+    Severity.LOW,
+    Severity.INFORMATIONAL,
+)
+
+
 # Direct names on the security-severity scale (CodeQL, Scorecard, Dependabot).
 _SECURITY_NAMES: dict[str, Severity] = {
     "critical": Severity.CRITICAL,

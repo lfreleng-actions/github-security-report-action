@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from github_security_report.categories import CategoryKey, CategoryMeta, category_meta
-from github_security_report.severity import Severity
+from github_security_report.severity import RUNGS_WORST_FIRST, Severity
 
 
 class SignalType(str, Enum):
@@ -66,11 +66,12 @@ class SignalType(str, Enum):
 
     @property
     def sort_ascending(self) -> bool:
-        """Scorecard ranks by score ascending (lower == worse); others descend.
+        """Whether lower is worse for this signal's primary metric.
 
-        The score is Scorecard's *secondary* key: ``rank_offenders`` leads on
-        the worst severity rung present in the table and uses the score to
-        order repositories within that rung.
+        True only for Scorecard, whose aggregate score runs the opposite way to
+        a finding count (lower == weaker). The score is Scorecard's *secondary*
+        key: ``rank_offenders`` leads on the worst severity rung present in the
+        table and uses the score to order repositories within that rung.
         """
         return self is SignalType.SCORECARD
 
@@ -182,6 +183,22 @@ class SeverityCounts:
     def total(self) -> int:
         return self.critical + self.high + self.medium + self.low + self.informational
 
+    def at(self, rung: Severity) -> int:
+        """The count at exactly one severity rung.
+
+        Attribute access rather than a ``by_rung`` lookup, so the ranking hot
+        path does not build a dict per comparison.
+        """
+        if rung is Severity.CRITICAL:
+            return self.critical
+        if rung is Severity.HIGH:
+            return self.high
+        if rung is Severity.MEDIUM:
+            return self.medium
+        if rung is Severity.LOW:
+            return self.low
+        return self.informational
+
     def at_or_above(self, cutoff: Severity) -> int:
         """Count of findings whose severity is at least ``cutoff``.
 
@@ -195,13 +212,7 @@ class SeverityCounts:
     @property
     def by_rung(self) -> dict[Severity, int]:
         """Per-severity counts keyed by rung, in worst-first iteration order."""
-        return {
-            Severity.CRITICAL: self.critical,
-            Severity.HIGH: self.high,
-            Severity.MEDIUM: self.medium,
-            Severity.LOW: self.low,
-            Severity.INFORMATIONAL: self.informational,
-        }
+        return {rung: self.at(rung) for rung in RUNGS_WORST_FIRST}
 
     @property
     def weighted(self) -> int:
@@ -248,11 +259,8 @@ class RepoSignal:
 # The rungs eligible to lead the Scorecard ordering, worst-first.
 # ``INFORMATIONAL`` is deliberately absent: it is the non-actionable rung, so it
 # never displaces the score as the primary key.
-LEAD_RUNGS: tuple[Severity, ...] = (
-    Severity.CRITICAL,
-    Severity.HIGH,
-    Severity.MEDIUM,
-    Severity.LOW,
+LEAD_RUNGS: tuple[Severity, ...] = tuple(
+    rung for rung in RUNGS_WORST_FIRST if rung is not Severity.INFORMATIONAL
 )
 
 
@@ -263,7 +271,7 @@ def lead_rung(offenders: list[RepoSignal]) -> Severity | None:
     which case there is no severity tier worth leading on.
     """
     return next(
-        (rung for rung in LEAD_RUNGS if any(s.counts.by_rung[rung] for s in offenders)),
+        (rung for rung in LEAD_RUNGS if any(s.counts.at(rung) for s in offenders)),
         None,
     )
 
@@ -297,7 +305,7 @@ def rank_offenders(signals: list[RepoSignal]) -> list[RepoSignal]:
         return sorted(
             offenders,
             key=lambda s: (
-                -s.counts.by_rung[rung] if rung is not None else 0,
+                -s.counts.at(rung) if rung is not None else 0,
                 s.score if s.score is not None else float("inf"),
                 s.repo.name,
             ),

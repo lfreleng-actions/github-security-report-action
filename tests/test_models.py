@@ -12,7 +12,7 @@ from github_security_report.models import (
     SignalType,
     rank_offenders,
 )
-from github_security_report.severity import Severity
+from github_security_report.severity import RUNGS_WORST_FIRST, Severity
 
 
 def _repo(name: str) -> Repo:
@@ -81,6 +81,10 @@ class TestSeverityCounts:
             (Severity.LOW, 4),
             (Severity.INFORMATIONAL, 5),
         ]
+
+    def test_at_returns_the_single_rung_count(self) -> None:
+        c = SeverityCounts(critical=1, high=2, medium=3, low=4, informational=5)
+        assert [c.at(rung) for rung in RUNGS_WORST_FIRST] == [1, 2, 3, 4, 5]
 
 
 class TestSignalType:
