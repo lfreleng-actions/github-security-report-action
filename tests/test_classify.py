@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from github_security_report import classify
 from github_security_report.classify import RepoFacts
-from github_security_report.models import Repo, RepoState, SignalType
+from github_security_report.models import Repo, RepoSignal, RepoState, SignalType
 from github_security_report.severity import Severity
 
 
@@ -25,7 +25,7 @@ def _cs_alert(
     }
 
 
-def _by_signal(facts: RepoFacts) -> dict[SignalType, object]:
+def _by_signal(facts: RepoFacts) -> dict[SignalType, RepoSignal]:
     return {s.signal: s for s in classify.classify_repo(facts)}
 
 

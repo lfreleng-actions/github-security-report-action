@@ -5,7 +5,8 @@
 from __future__ import annotations
 
 import socket
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine, Sequence
+from typing import Any
 
 import httpx
 import pytest
@@ -321,8 +322,10 @@ async def test_endpoint_diagnostics_reports_resolved_addresses(
     # an operator can tell a DNS failure from a host that resolves but will not
     # connect. The resolver runs through the event loop (not blocking
     # socket.getaddrinfo); patch the bounded wait_for to return a fixed answer.
-    async def _fake_wait_for(awaitable: object, timeout: float) -> object:
-        awaitable.close()  # type: ignore[attr-defined]
+    async def _fake_wait_for(
+        awaitable: Coroutine[Any, Any, Any], timeout: float
+    ) -> object:
+        awaitable.close()  # the real wait_for awaits it; close to avoid a warning
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("140.82.112.3", 443))]
 
     monkeypatch.setattr(client_mod.asyncio, "wait_for", _fake_wait_for)
@@ -336,8 +339,8 @@ async def test_endpoint_diagnostics_dns_timeout_falls_back(
     # A slow or hanging resolver must not stall the event loop while the run is
     # already aborting: the bounded wait_for gives up and the address falls back
     # to "unresolved (timed out)" rather than blocking on socket.getaddrinfo.
-    async def _timeout(awaitable: object, timeout: float) -> object:
-        awaitable.close()  # type: ignore[attr-defined]
+    async def _timeout(awaitable: Coroutine[Any, Any, Any], timeout: float) -> object:
+        awaitable.close()  # the real wait_for awaits it; close to avoid a warning
         # asyncio.wait_for raises asyncio.TimeoutError on every supported Python
         # version; on 3.10 it is distinct from the builtin TimeoutError (an
         # OSError subclass), so raise the exact type wait_for would raise.
@@ -646,7 +649,10 @@ def _graph_repo_node(
     enabled: bool | None = True,
     config_text: str | None = None,
     tag_target: dict | None = None,
-    releases: list[dict] | None = None,
+    # A GraphQL list entry can be null (a sub-object that errored), so the
+    # release nodes are deliberately nullable here. Sequence (not list) keeps
+    # the parameter covariant, so a list of concretely-typed dicts is accepted.
+    releases: Sequence[dict | None] | None = None,
     latest_release: dict | None = None,
 ) -> dict:
     """Build one repository alias node as the batched query returns it."""
@@ -657,7 +663,7 @@ def _graph_repo_node(
         ),
         "tags": {"nodes": [{"target": tag_target}] if tag_target else []},
         "latestRelease": latest_release,
-        "releases": {"nodes": releases or []},
+        "releases": {"nodes": list(releases or [])},
     }
 
 

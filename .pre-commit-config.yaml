@@ -65,8 +65,22 @@ repos:
     rev: 41e691678310dfd3833f7ab4e180ddb014310356  # frozen: v2.3.0
     hooks:
       - id: mypy
-        # Tests use loose typing by design (fixtures, helper return types).
-        exclude: "^tests/"
+        # The hook runs in its own sandbox, so without these the third-party
+        # imports degrade to Any and the check silently weakens (and diverges
+        # from a local 'uv run mypy'). Pins mirror pyproject.toml; keep the two
+        # in step when bumping a dependency.
+        additional_dependencies:
+          - "httpx==0.28.1"
+          - "typer==0.27.0"
+          - "rich==15.0.0"
+          - "jinja2==3.1.6"
+          - "jsonschema==4.26.0"
+          - "pyyaml==6.0.3"
+          - "pytest==9.1.1"
+          - "respx==0.23.1"
+          - "syrupy==5.5.3"
+          - "types-jsonschema==4.26.0.20260518"
+          - "types-PyYAML==6.0.12.20250915"
 
   - repo: https://github.com/btford/write-good
     rev: ab66ce10136dfad5146e69e70f82a3efac8842c1 # frozen: v1.0.8

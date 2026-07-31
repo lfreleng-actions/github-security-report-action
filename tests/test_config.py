@@ -443,7 +443,7 @@ class TestResolveToken:
 
 class TestDefaultConfig:
     def test_default_path_honours_xdg(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: object
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
         path = config.default_config_path()
@@ -463,7 +463,7 @@ class TestDefaultConfig:
         )
 
     def test_find_default_config_missing(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: object
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
         assert config.find_default_config() is None

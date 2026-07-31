@@ -66,7 +66,7 @@ def test_safe_component_blocks_path_traversal() -> None:
 
 
 @respx.mock
-def test_org_mode_writes_pages(tmp_path: object) -> None:
+def test_org_mode_writes_pages(tmp_path: Path) -> None:
     respx.get(url__startswith=f"{API}/orgs/o/repos").mock(
         return_value=httpx.Response(
             200,
@@ -194,7 +194,7 @@ def test_org_mode_uses_default_config(
 
 
 @respx.mock
-def test_repo_mode_fail_threshold(tmp_path: object) -> None:
+def test_repo_mode_fail_threshold(tmp_path: Path) -> None:
     respx.get(f"{API}/repos/o/r").mock(
         return_value=httpx.Response(
             200,
@@ -322,7 +322,7 @@ def test_org_shorthand_honours_token_env() -> None:
 
 
 @respx.mock
-def test_org_mode_top_n_from_config(tmp_path: object) -> None:
+def test_org_mode_top_n_from_config(tmp_path: Path) -> None:
     # Two repos are CodeQL offenders; report.top_n=1 from config must limit the
     # Slack code fence to a single offender (no --top-n override on the CLI).
     respx.get(url__startswith=f"{API}/orgs/o/repos").mock(
