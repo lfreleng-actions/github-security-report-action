@@ -5,8 +5,8 @@
 Encodes the Phase 0 design (see ``docs/BRIEF.md`` and
 ``docs/phase0-findings.md``): the six ranked signals, the four-state per-report
 classification, severity counts with hierarchical worst-first ordering, and the
-ranking rules (alert tables sort by severity descending; Scorecard by score
-ascending).
+ranking rules (alert tables sort by severity descending; Scorecard by its worst
+populated severity rung descending, then by score ascending).
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from github_security_report.categories import CategoryKey, CategoryMeta, category_meta
-from github_security_report.severity import Severity
+from github_security_report.severity import RUNGS_WORST_FIRST, Severity
 
 
 class SignalType(str, Enum):
@@ -66,7 +66,13 @@ class SignalType(str, Enum):
 
     @property
     def sort_ascending(self) -> bool:
-        """Scorecard ranks by score ascending (lower == worse); others descend."""
+        """Whether lower is worse for this signal's primary metric.
+
+        True only for Scorecard, whose aggregate score runs the opposite way to
+        a finding count (lower == weaker). The score is Scorecard's *secondary*
+        key: ``rank_offenders`` leads on the worst severity rung present in the
+        table and uses the score to order repositories within that rung.
+        """
         return self is SignalType.SCORECARD
 
 
@@ -177,6 +183,22 @@ class SeverityCounts:
     def total(self) -> int:
         return self.critical + self.high + self.medium + self.low + self.informational
 
+    def at(self, rung: Severity) -> int:
+        """The count at exactly one severity rung.
+
+        Attribute access rather than a ``by_rung`` lookup, so the ranking hot
+        path does not build a dict per comparison.
+        """
+        if rung is Severity.CRITICAL:
+            return self.critical
+        if rung is Severity.HIGH:
+            return self.high
+        if rung is Severity.MEDIUM:
+            return self.medium
+        if rung is Severity.LOW:
+            return self.low
+        return self.informational
+
     def at_or_above(self, cutoff: Severity) -> int:
         """Count of findings whose severity is at least ``cutoff``.
 
@@ -185,14 +207,12 @@ class SeverityCounts:
         category's ``fail_severity`` cutoff. Findings below the cutoff (e.g.
         informational-only) do not count towards a failure.
         """
-        by_rung = {
-            Severity.CRITICAL: self.critical,
-            Severity.HIGH: self.high,
-            Severity.MEDIUM: self.medium,
-            Severity.LOW: self.low,
-            Severity.INFORMATIONAL: self.informational,
-        }
-        return sum(count for rung, count in by_rung.items() if rung >= cutoff)
+        return sum(count for rung, count in self.by_rung.items() if rung >= cutoff)
+
+    @property
+    def by_rung(self) -> dict[Severity, int]:
+        """Per-severity counts keyed by rung, in worst-first iteration order."""
+        return {rung: self.at(rung) for rung in RUNGS_WORST_FIRST}
 
     @property
     def weighted(self) -> int:
@@ -236,12 +256,41 @@ class RepoSignal:
         return self.state is RepoState.OFFENDER
 
 
+# The rungs eligible to lead the Scorecard ordering, worst-first.
+# ``INFORMATIONAL`` is deliberately absent: it is the non-actionable rung, so it
+# never displaces the score as the primary key.
+LEAD_RUNGS: tuple[Severity, ...] = tuple(
+    rung for rung in RUNGS_WORST_FIRST if rung is not Severity.INFORMATIONAL
+)
+
+
+def lead_rung(offenders: list[RepoSignal]) -> Severity | None:
+    """The worst severity rung any offender actually carries.
+
+    Returns ``None`` when no offender carries a finding at Low or above, in
+    which case there is no severity tier worth leading on.
+    """
+    return next(
+        (rung for rung in LEAD_RUNGS if any(s.counts.at(rung) for s in offenders)),
+        None,
+    )
+
+
 def rank_offenders(signals: list[RepoSignal]) -> list[RepoSignal]:
     """Sort offenders worst-first for a single signal.
 
     Alert-based signals sort by the hierarchical severity key descending, with
-    total as a tiebreaker. Scorecard sorts by aggregate score ascending (lower
-    == worse). Repo name breaks remaining ties, ascending.
+    total as a tiebreaker.
+
+    Scorecard sorts on two tiers: the count at the worst severity rung present
+    anywhere in the table (descending), then the aggregate score (ascending,
+    lower == worse). The leading rung cascades -- Critical, else High, else
+    Medium, else Low -- so the rung that actually discriminates between
+    repositories leads, and a lone Critical can never be buried mid-table by a
+    weaker repository with a lower score. When no offender carries a finding at
+    Low or above, the score alone orders the table.
+
+    Repo name breaks remaining ties, ascending.
 
     Numeric components are negated so the whole sort runs ascending (no
     ``reverse=True``); that keeps the name tiebreaker correctly ascending even
@@ -252,9 +301,11 @@ def rank_offenders(signals: list[RepoSignal]) -> list[RepoSignal]:
         return []
     signal = offenders[0].signal
     if signal.sort_ascending:
+        rung = lead_rung(offenders)
         return sorted(
             offenders,
             key=lambda s: (
+                -s.counts.at(rung) if rung is not None else 0,
                 s.score if s.score is not None else float("inf"),
                 s.repo.name,
             ),

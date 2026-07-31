@@ -9,6 +9,7 @@ import datetime as dt
 from github_security_report import collect
 from github_security_report.config import OrgConfig, ReportConfig
 from github_security_report.models import Repo, RepoGraphData, RepoState, SignalType
+from github_security_report.report import OrgReport, SignalSection
 
 WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.timezone.utc)
 
@@ -138,7 +139,7 @@ class FakeClient:
         return out
 
 
-def _sections(org_report: object) -> dict[SignalType, object]:
+def _sections(org_report: OrgReport) -> dict[SignalType, SignalSection]:
     return {s.signal: s for s in org_report.sections}
 
 
@@ -305,7 +306,9 @@ class FakeRepoClient:
             return None
         return _repo(repo)
 
-    async def code_scanning_tools(self, org: str, repo: str) -> tuple[int, set[str]]:
+    async def code_scanning_tools(
+        self, org: str, repo: str, tools: tuple[str, ...] | None = None
+    ) -> tuple[int, set[str]]:
         return 200, {"CodeQL", "Scorecard"}
 
     async def repo_code_scanning_alerts(

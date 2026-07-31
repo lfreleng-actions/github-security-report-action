@@ -183,8 +183,12 @@ reported in **two separate columns** as a human "last release / last tag" age.
   with an all-zero column. When shown, its counts feed the trailing `Total`
   column, so the visible severity columns sum vertically.
 - **Row sort:** hierarchical, worst-first — critical desc → high desc →
-  medium desc → low desc. Scorecard sorts by score **ascending** (lowest =
-  worst = top).
+  medium desc → low desc. Scorecard sorts on **two tiers**: the count at the
+  worst severity rung present anywhere in its table (descending), then score
+  **ascending** (lowest = worst = top). The leading rung cascades — critical,
+  else high, else medium, else low — so a lone critical is never buried
+  mid-table behind a weaker-scoring repo with no critical findings. With no
+  finding at low or above, the score alone orders the table.
 
 ## 6. Four-state model (per report type, per repo)
 

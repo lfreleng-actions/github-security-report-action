@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from github_security_report import scope
 from github_security_report.models import Repo
 
@@ -61,7 +63,7 @@ class TestDecide:
 
 
 class TestFilterRepos:
-    def test_filters_and_logs(self, caplog: object) -> None:
+    def test_filters_and_logs(self, caplog: pytest.LogCaptureFixture) -> None:
         repos = [
             _repo("dependamerge"),
             _repo("a-fork", fork=True),

@@ -66,7 +66,8 @@ load-bearing architecture:
    determined by the presence of CodeQL **analyses**, not `default-setup`.
 5. **Metrics are per-report-type**, severity-weighted where available (else flat
    count), with separate severity columns and worst-first hierarchical sorting
-   (critical → high → medium → low; Scorecard sorts by score ascending).
+   (critical → high → medium → low; Scorecard leads on the worst severity rung
+   present in its table, then sorts by score ascending).
 6. **Two operating modes** via `scope: auto|org|repo`. Org mode requires a
    classic PAT (the ephemeral `GITHUB_TOKEN` cannot read org-wide security
    data) and produces Pages + Slack. Repo mode is a degraded, self-contained PR

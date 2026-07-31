@@ -93,7 +93,8 @@ _CATEGORIES: dict[CategoryKey, CategoryMeta] = {
         url="https://github.com/ossf/scorecard",
         description=(
             "OpenSSF Scorecard supply-chain health scores (a lower score is "
-            "weaker), ranked weakest-first."
+            "weaker). Ranked by the worst severity rung present in the table "
+            "(most findings at that rung first), then weakest score first."
         ),
     ),
     CategoryKey.ZIZMOR: CategoryMeta(

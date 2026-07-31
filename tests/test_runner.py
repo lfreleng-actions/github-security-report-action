@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from github_security_report import runner
@@ -81,21 +83,21 @@ class TestShouldFail:
 
 
 class TestActionsIO:
-    def test_write_github_output(self, tmp_path: object) -> None:
+    def test_write_github_output(self, tmp_path: Path) -> None:
         out = tmp_path / "out.txt"
         runner.write_github_output({"should_notify": "true", "count": "3"}, str(out))
         content = out.read_text()
         assert "should_notify=true" in content
         assert "count=3" in content
 
-    def test_write_github_output_multiline(self, tmp_path: object) -> None:
+    def test_write_github_output_multiline(self, tmp_path: Path) -> None:
         out = tmp_path / "out.txt"
         runner.write_github_output({"body": "line1\nline2"}, str(out))
         content = out.read_text()
         assert "body<<ghadelim_" in content  # unique per-value delimiter
         assert "line1\nline2" in content
 
-    def test_write_github_output_rejects_unsafe_key(self, tmp_path: object) -> None:
+    def test_write_github_output_rejects_unsafe_key(self, tmp_path: Path) -> None:
         # A non-identifier key (newline / '=' / '<<') must not be written, so it
         # cannot corrupt the output file or inject extra outputs.
         out = tmp_path / "out.txt"
@@ -107,7 +109,7 @@ class TestActionsIO:
         assert "bad" not in content
         assert "with space" not in content
 
-    def test_append_step_summary(self, tmp_path: object) -> None:
+    def test_append_step_summary(self, tmp_path: Path) -> None:
         summary = tmp_path / "summary.md"
         runner.append_step_summary("## Hi", str(summary))
         assert "## Hi" in summary.read_text()
