@@ -50,6 +50,17 @@ log = logging.getLogger(__name__)
 # The org-bulk alert sweeps, in the order their results are unpacked.
 _SWEEP_KINDS = ("code-scanning", "dependabot", "secret-scanning")
 
+# GitHub gates ``GET /orgs/{org}/rulesets`` behind an org-admin permission
+# (classic ``admin:org``, or fine-grained Administration *write*) and answers
+# 404 -- not 403 -- for a token that lacks it. That permission is deliberately
+# absent from the minimal tokens the README recommends, because ruleset coverage
+# is optional: a tool is still detected from the code-scanning analyses it
+# uploads, so only a repository covered *solely* by a required-workflow ruleset
+# that has never run is affected. Reporting the documented, recommended token's
+# own outcome as a WARNING implies a broken deployment, so these statuses log at
+# INFO and only a genuinely unexpected failure (e.g. a 5xx) warns.
+_RULESET_OPTIONAL_STATUSES = frozenset({401, 403, 404})
+
 
 def _group_by_repo(alerts: list[dict]) -> dict[str, list[dict]]:
     """Group org-bulk alerts by repository name (each carries ``repository``)."""
@@ -125,6 +136,29 @@ class _OrgSweeps:
     workflow_rulesets: list[WorkflowRuleset]
 
 
+def _log_ruleset_status(org: str, status: int) -> None:
+    """Report an unreadable org-rulesets list at a level matching its cause."""
+    if status == 200:
+        return
+    if status in _RULESET_OPTIONAL_STATUSES:
+        log.info(
+            "org rulesets not readable for %s (status %s); expected unless the "
+            "token carries the optional org-admin permission (classic "
+            "admin:org, or fine-grained Administration write). Tools are still "
+            "detected from their code-scanning analyses, so only a repository "
+            "covered solely by a required-workflow ruleset is affected",
+            org,
+            status,
+        )
+        return
+    log.warning(
+        "org rulesets read failed unexpectedly for %s (status %s); "
+        "ruleset-based tool coverage is disabled for this run",
+        org,
+        status,
+    )
+
+
 async def _run_sweeps(client: ClientProtocol, org: str) -> _OrgSweeps:
     """Read every org-wide signal concurrently: bulk alerts plus rulesets.
 
@@ -149,13 +183,7 @@ async def _run_sweeps(client: ClientProtocol, org: str) -> _OrgSweeps:
                 org,
                 kind_status,
             )
-    if rs_status != 200:
-        log.warning(
-            "org rulesets unavailable for %s (status %s); ruleset-based tool "
-            "coverage disabled",
-            org,
-            rs_status,
-        )
+    _log_ruleset_status(org, rs_status)
     return _OrgSweeps(
         alerts={
             kind: _group_by_repo(result[1])

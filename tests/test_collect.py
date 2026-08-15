@@ -5,6 +5,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
+
+import pytest
 
 from github_security_report import collect
 from github_security_report.config import OrgConfig, ReportConfig
@@ -296,6 +299,68 @@ async def test_collect_org_tracks_explicitly_excluded_repos() -> None:
     assert report.repo_count == 1  # only dependamerge remains (fork also dropped)
     for section in report.sections:
         assert "git-configure-action" not in [r.name for r in section.nag_repos]
+
+
+class UnreadableRulesetClient(FakeClient):
+    """An organisation whose rulesets the token cannot read."""
+
+    ruleset_status = 404
+
+    async def org_workflow_rulesets(self, org: str) -> tuple[int, list[dict]]:
+        return self.ruleset_status, []
+
+
+def _ruleset_logs(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if "org rulesets" in r.getMessage()]
+
+
+async def test_collect_org_missing_ruleset_permission_is_not_a_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Reading org rulesets needs an org-admin permission that the documented
+    # minimal tokens deliberately omit, and GitHub answers 404 (not 403) for a
+    # token without it. That is the expected, supported configuration, so it
+    # must not be reported as a WARNING implying a broken deployment.
+    with caplog.at_level(logging.INFO, logger="github_security_report.collect.org"):
+        await collect.collect_org(
+            UnreadableRulesetClient(),
+            OrgConfig(name="o"),
+            ReportConfig(),
+            generated_at=WHEN,
+        )
+    records = _ruleset_logs(caplog)
+    assert [r.levelno for r in records] == [logging.INFO]
+    assert "optional org-admin permission" in records[0].getMessage()
+
+
+async def test_collect_org_unexpected_ruleset_failure_still_warns(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A 5xx is not the documented "token lacks the optional permission" path,
+    # so it remains a warning: something genuinely went wrong.
+    class ServerErrorClient(UnreadableRulesetClient):
+        ruleset_status = 500
+
+    with caplog.at_level(logging.INFO, logger="github_security_report.collect.org"):
+        await collect.collect_org(
+            ServerErrorClient(),
+            OrgConfig(name="o"),
+            ReportConfig(),
+            generated_at=WHEN,
+        )
+    records = _ruleset_logs(caplog)
+    assert [r.levelno for r in records] == [logging.WARNING]
+    assert "unexpectedly" in records[0].getMessage()
+
+
+async def test_collect_org_readable_rulesets_log_nothing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.INFO, logger="github_security_report.collect.org"):
+        await collect.collect_org(
+            FakeClient(), OrgConfig(name="o"), ReportConfig(), generated_at=WHEN
+        )
+    assert _ruleset_logs(caplog) == []
 
 
 class FakeRepoClient:
