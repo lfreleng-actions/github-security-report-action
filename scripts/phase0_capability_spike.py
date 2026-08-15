@@ -8,6 +8,9 @@
 # ///
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
+# aislop-ignore-file complexity/file-too-large -- self-contained PEP 723 script:
+# it must stay a single file to run via `uv run --script`, so the module-size
+# limit that keeps the library navigable does not apply here.
 """Phase 0 capability spike for the GitHub Security Report Action.
 
 THROWAWAY. This script exists only to answer the open questions in

@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import httpx
@@ -14,6 +16,8 @@ import respx
 from typer.testing import CliRunner
 
 from github_security_report.cli import _safe_component, app
+from github_security_report.cli.outputs import TopNLimits, most_generous
+from github_security_report.config import OrgConfig, ReportConfig
 
 API = "https://api.github.com"
 SCORECARD = "https://api.securityscorecards.dev"
@@ -518,3 +522,75 @@ def test_remediate_apply_enables_every_category() -> None:
     assert "enabled: r" in result.stdout
     for route in (codeql, secret, alerts, fixes, pvr):
         assert route.called, result.stdout
+
+
+class TestTopNLimits:
+    """Per-output offender-limit resolution, extracted from ``_run_org``."""
+
+    def _org(
+        self,
+        *,
+        top_n_report: int | None = None,
+        top_n_cli: int | None = None,
+        top_n_slack: int | None = None,
+    ) -> OrgConfig:
+        return OrgConfig(
+            name="o",
+            report=ReportConfig(
+                top_n_report=top_n_report,
+                top_n_cli=top_n_cli,
+                top_n_slack=top_n_slack,
+            ),
+        )
+
+    def test_config_value_used_when_no_override(self) -> None:
+        org = self._org(top_n_slack=3)
+        assert TopNLimits().resolve(org, "slack") == 3
+
+    def test_shared_override_beats_config(self) -> None:
+        org = self._org(top_n_slack=3)
+        assert TopNLimits(shared=7).resolve(org, "slack") == 7
+
+    def test_category_override_beats_shared(self) -> None:
+        org = self._org(top_n_slack=3)
+        assert TopNLimits(shared=7, slack=1).resolve(org, "slack") == 1
+
+    def test_zero_override_is_honoured_as_no_limit(self) -> None:
+        # 0 disables the limit, so it must not be mistaken for "unset".
+        org = self._org(top_n_slack=3)
+        assert TopNLimits(shared=0).resolve(org, "slack") == 0
+
+    def test_each_output_reads_its_own_config_attribute(self) -> None:
+        org = self._org(top_n_report=1, top_n_cli=2, top_n_slack=3)
+        limits = TopNLimits()
+        assert [limits.resolve(org, out) for out in ("report", "cli", "slack")] == [
+            1,
+            2,
+            3,
+        ]
+
+
+class TestMostGenerous:
+    """Channel-sharing limit reconciliation, extracted from ``_run_org``."""
+
+    def test_largest_cap_wins(self) -> None:
+        assert most_generous([5, 10, 2]) == 10
+
+    def test_no_limit_beats_any_cap(self) -> None:
+        # 0 means "show everything", so a capped org sharing the channel must
+        # not silently re-impose its cap on the org that asked for everything.
+        assert most_generous([5, 0, 20]) == 0
+
+
+def test_module_form_entry_point_still_runs() -> None:
+    # `python -m github_security_report.cli` worked while the CLI was a single
+    # module. A package cannot be executed through the __init__ guard, so it
+    # needs a __main__.py; this pins that the invocation keeps working.
+    result = subprocess.run(
+        [sys.executable, "-m", "github_security_report.cli", "--version"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "github-security-report version" in result.stdout

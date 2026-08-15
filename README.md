@@ -107,6 +107,20 @@ signal is skipped and every other part of the report is unaffected, so the
 minimal tokens below omit it. Grant the org-admin permission only if you want
 ruleset-based tool coverage.
 
+A token without that permission gets a `404` from the endpoint, which the tool
+reports at **INFO** — so it is invisible unless you pass `--verbose`:
+
+```text
+org rulesets not readable for <org> (status 404); expected unless the token
+carries the optional org-admin permission ...
+```
+
+That line is informational, not a defect. Tools are still detected from the
+code-scanning analyses they upload, so the report is identical unless a
+repository is covered *solely* by a required-workflow ruleset whose workflow has
+never run. A genuinely unexpected failure to read the rulesets (for example a
+`5xx`) is still logged as a warning.
+
 ### Single organisation — fine-grained PAT
 
 A fine-grained PAT is bound to one resource owner, so it works for a report
