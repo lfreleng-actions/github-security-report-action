@@ -134,13 +134,21 @@ class SignalSection:
 class TableRow:
     """A generic, repository-keyed table row with pre-formatted cells.
 
-    Used by the Dependabot posture and Releases/Tagging tables, which do not fit
-    the four-state :class:`SignalSection` model. ``cells`` excludes the leading
-    repository link cell (each renderer supplies that from ``repo``).
+    Used by the Dependabot posture, Releases/Tagging and GitHub Issues tables,
+    which do not fit the four-state :class:`SignalSection` model. ``cells``
+    excludes the leading repository link cell (each renderer supplies that from
+    ``repo``).
+
+    ``sort_values`` carries the typed value behind each cell, parallel to
+    ``cells``, so a configured column ordering sorts on the number rather than
+    its rendering -- "16 days" and "9 days" compare correctly as 16 and 9, but
+    backwards as strings. Empty means the builder published no sort values, in
+    which case ordering falls back to the displayed text.
     """
 
     repo: Repo
     cells: tuple[str, ...]
+    sort_values: tuple[float | str, ...] = ()
 
 
 @dataclass

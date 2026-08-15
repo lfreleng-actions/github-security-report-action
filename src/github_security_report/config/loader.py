@@ -166,6 +166,7 @@ def _categories_from(
             outputs=outputs,
             fail_severity=fail_severity,
             top_n=raw.get("top_n", current.top_n),
+            sort=tuple(raw["sort"]) if "sort" in raw else current.sort,
         )
     return MappingProxyType(merged)
 

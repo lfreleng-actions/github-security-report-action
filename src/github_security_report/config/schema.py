@@ -132,6 +132,16 @@ CONFIG_SCHEMA: dict = {
                                 # more" tally, overriding the per-output limit
                                 # (0 = no limit, show every row).
                                 "top_n": {"type": "integer", "minimum": 0},
+                                # Row ordering for a generic table: column
+                                # names, most significant first. A leading '-'
+                                # forces descending and '+' forces ascending;
+                                # bare names take the direction implied by the
+                                # column's type. Ignored by the severity signal
+                                # tables, which keep their own ranking.
+                                "sort": {
+                                    "type": "array",
+                                    "items": {"type": "string", "minLength": 1},
+                                },
                             },
                         }
                         for meta in all_categories()

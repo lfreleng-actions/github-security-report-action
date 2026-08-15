@@ -88,13 +88,16 @@ class CategoryToggle:
     signals only); ``None`` keeps the category default. ``top_n`` overrides how
     many rows this one category shows before an "and N more" tally, so a
     high-volume category can be uncapped (``0``) while the rest stay limited;
-    ``None`` falls back to the per-output limit.
+    ``None`` falls back to the per-output limit. ``sort`` overrides the row
+    ordering of a generic table with a list of column names; ``None`` keeps the
+    ordering the table's builder chose.
     """
 
     enabled: bool = True
     outputs: OutputToggles = field(default_factory=OutputToggles)
     fail_severity: Severity | None = None
     top_n: int | None = None
+    sort: tuple[str, ...] | None = None
 
     def shows_on(self, output: str) -> bool:
         """Whether this category renders on ``output`` (cli/slack/markdown/html)."""
@@ -200,6 +203,16 @@ class ReportConfig:
         if toggle is not None and toggle.top_n is not None:
             return toggle.top_n
         return self.output_top_n(output)
+
+    def category_sort(self, key: CategoryKey) -> tuple[str, ...] | None:
+        """The configured row ordering for ``key``, or ``None`` for the default.
+
+        ``None`` means "keep the ordering the table's builder chose", which is
+        not always expressible as a column list: the Releases table ranks on
+        missing release/tag signals that it never displays as a column.
+        """
+        toggle = self.categories.get(key.value)
+        return toggle.sort if toggle is not None else None
 
 
 @dataclass(frozen=True)

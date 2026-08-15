@@ -348,6 +348,48 @@ config asked for an uncapped one. `0` means "no limit" at every level. In a
 shared Slack channel the most generous value any contributing org configured for
 that category wins, matching the visibility rule above.
 
+### Per-category row ordering
+
+Each table ships a sensible default ordering — largest backlog first, stalest
+release first, and so on. `report.categories.<key>.sort` overrides it with a list
+of column names, evaluated left to right:
+
+```json
+{
+  "report": {
+    "categories": {
+      "github_issues": { "sort": ["untriaged", "bug", "total", "oldest"] }
+    }
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
+
+That ranks the Issues table by untriaged count, breaking ties on Bug, then on
+total open issues, then on the oldest issue.
+
+- Names match column headers **case-insensitively**, so `untriaged` finds
+  `Untriaged` and a custom `issue_labels` column such as `Regression` works with
+  no extra configuration. `repository` sorts by repository name.
+- **Direction is implicit by type**: numeric columns descend (most first, which
+  is also oldest-first for an age column) and text columns ascend.
+- A leading **`-` forces descending** and **`+` forces ascending**, so
+  `["+total"]` lists the smallest backlogs first.
+- The repository name is always applied as the final tiebreaker, so rows that
+  are equal under every configured term still order deterministically.
+- An unrecognised column name is logged and skipped rather than failing the run.
+- Omitting `sort` keeps the table's own default ordering. This matters: some
+  defaults rank on values that are never displayed as a column — Releases /
+  Tagging ranks on *missing* release and tag signals — so they cannot be
+  expressed as a column list.
+
+Ordering is resolved once, when the report is built, so every surface and
+`report.json` agree. It applies to the generic tables (GitHub Issues, Releases /
+Tagging, Mutable Releases, the Dependabot posture tables). The severity signal
+tables keep their own ranking, which encodes domain logic a column sort would
+flatten — Scorecard cascades through the worst populated severity rung so a lone
+Critical is never buried by a weaker repository with a lower score.
+
 ### GitHub Issues
 
 The `github_issues` category counts each repository's **open issues**, split by

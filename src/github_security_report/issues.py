@@ -71,15 +71,13 @@ def _age_days(when: dt.datetime | None, now: dt.datetime) -> int | None:
     return max((now - when).days, 0)
 
 
-def _oldest_cell(
-    issues: tuple[IssueRef, ...], now: dt.datetime, truncated: bool
-) -> str:
-    """The age of the oldest open issue, marked when the window truncated.
+def _oldest_age(issues: tuple[IssueRef, ...], now: dt.datetime) -> int | None:
+    """Age in days of the oldest open issue, or None when no date is usable.
 
     The window is ordered oldest-first, so the first dated entry is the oldest
     open issue even when the window is shorter than the backlog.
     """
-    age = next(
+    return next(
         (
             days
             for issue in issues
@@ -87,8 +85,12 @@ def _oldest_cell(
         ),
         None,
     )
+
+
+def _oldest_cell(age: int | None, truncated: bool) -> str:
+    """Render the oldest-issue age, marked when the window truncated."""
     if age is None:
-        return "unknown"
+        return f"unknown {TRUNCATED_MARKER}" if truncated else "unknown"
     text = "today" if age == 0 else "1 day" if age == 1 else f"{age} days"
     return f"{text} {TRUNCATED_MARKER}" if truncated else text
 
@@ -109,7 +111,7 @@ def build_issues_table(
     with equal backlogs surface the less-triaged one first.
     """
     columns = (*label_columns, OTHER_COLUMN, UNTRIAGED_COLUMN)
-    ranked: list[tuple[int, int, str, tuple[str, ...], Repo]] = []
+    rows: list[tuple[int, int, str, TableRow]] = []
     clean_count = 0
     for repo in repos:
         data = graph.get(repo.name, RepoGraphData())
@@ -120,22 +122,35 @@ def build_issues_table(
         for issue in data.issues:
             counts[classify_issue(issue, label_columns)] += 1
         truncated = data.open_issues > len(data.issues)
+        oldest = _oldest_age(data.issues, generated_at)
         cells = (
             *(str(counts[column]) for column in columns),
             str(data.open_issues),
-            _oldest_cell(data.issues, generated_at, truncated),
+            _oldest_cell(oldest, truncated),
         )
-        ranked.append(
-            (data.open_issues, counts[UNTRIAGED_COLUMN], repo.name, cells, repo)
+        # An unknown age sorts last under the oldest-first default rather than
+        # displacing a repository whose age is known.
+        sort_values: tuple[float | str, ...] = (
+            *(float(counts[column]) for column in columns),
+            float(data.open_issues),
+            float(oldest) if oldest is not None else -1.0,
+        )
+        rows.append(
+            (
+                data.open_issues,
+                counts[UNTRIAGED_COLUMN],
+                repo.name,
+                TableRow(repo=repo, cells=cells, sort_values=sort_values),
+            )
         )
     # Negated numerics so the whole sort runs ascending, keeping the name
     # tiebreaker correctly ascending even when one name prefixes another.
-    ranked.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    rows.sort(key=lambda item: (-item[0], -item[1], item[2]))
 
     meta = category_meta(CategoryKey.GITHUB_ISSUES)
     all_columns = ("Repository", *columns, "Total", "Oldest")
     description = meta.description
-    if any(cells[-1].endswith(TRUNCATED_MARKER) for _, _, _, cells, _ in ranked):
+    if any(row.cells[-1].endswith(TRUNCATED_MARKER) for _, _, _, row in rows):
         description += (
             f" A trailing '{TRUNCATED_MARKER}' marks a repository whose open "
             "issues exceed the collected window: its Total and Oldest are still "
@@ -144,10 +159,10 @@ def build_issues_table(
     return TableSection(
         category=meta,
         columns=all_columns,
-        rows=[TableRow(repo=repo, cells=cells) for _, _, _, cells, repo in ranked],
+        rows=[row for _, _, _, row in rows],
         # Every column except the repository and the trailing age is a count.
         sum_columns=frozenset(range(1, len(all_columns) - 1)),
         pass_count=clean_count,
-        fail_count=len(ranked),
+        fail_count=len(rows),
         description=description,
     )

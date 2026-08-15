@@ -209,9 +209,9 @@ def build_security_updates_table(postures: list[RepoPosture]) -> TableSection:
 def build_cooldown_table(postures: list[RepoPosture]) -> TableSection:
     """A table of repositories/ecosystems that configure no update cooldown."""
     rows = [
-        TableRow(repo=p.repo, cells=(", ".join(p.cooldown_missing),))
+        TableRow(repo=p.repo, cells=(joined,), sort_values=(joined,))
         for p in sorted(postures, key=lambda p: p.repo.name)
-        if p.cooldown_missing
+        if p.cooldown_missing and (joined := ", ".join(p.cooldown_missing))
     ]
     missing = sum(1 for p in postures if p.cooldown_missing)
     with_cooldown = sum(
@@ -311,6 +311,12 @@ def build_releases_table(
         TableRow(
             repo=posture.repo,
             cells=(_age_cell(release_age), _age_cell(tag_age)),
+            # A missing release or tag is infinitely stale, so it leads an
+            # oldest-first ordering rather than sorting as zero days.
+            sort_values=(
+                float(release_age) if release_age is not None else float("inf"),
+                float(tag_age) if tag_age is not None else float("inf"),
+            ),
         )
         for _missing, _known, posture, release_age, tag_age in ranked
     ]
@@ -385,7 +391,8 @@ def build_mutable_releases_table(postures: list[RepoPosture]) -> TableSection:
         labels = [
             f"{ref.tag} (latest)" if ref.is_latest else ref.tag for ref in ordered
         ]
-        rows.append(TableRow(repo=posture.repo, cells=(", ".join(labels),)))
+        joined = ", ".join(labels)
+        rows.append(TableRow(repo=posture.repo, cells=(joined,), sort_values=(joined,)))
 
     finding_count = len(flagged)
     return TableSection(
