@@ -8,6 +8,9 @@
 # ///
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
+# aislop-ignore-file complexity/file-too-large -- self-contained PEP 723 script:
+# it must stay a single file to run via `uv run --script`, so the module-size
+# limit that keeps the library navigable does not apply here.
 """Bulk-enable Dependabot security updates across an organisation.
 
 The reporting tool flags repositories where "Dependabot: Security Updates" is

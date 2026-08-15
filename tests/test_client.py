@@ -12,7 +12,6 @@ import httpx
 import pytest
 import respx
 
-from github_security_report import client as client_mod
 from github_security_report.client import (
     API_MAX_RETRIES,
     GitHubClient,
@@ -21,6 +20,7 @@ from github_security_report.client import (
     _https_endpoint,
     _parse_retry_after,
 )
+from github_security_report.client import transport as transport_mod
 
 API = "https://api.github.com"
 SCORECARD = "https://api.securityscorecards.dev"
@@ -216,7 +216,9 @@ async def test_backoff_retries_then_succeeds(
     async def _fake_sleep(delay: float) -> None:
         slept.append(delay)
 
-    monkeypatch.setattr("github_security_report.client.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr(
+        "github_security_report.client.transport.asyncio.sleep", _fake_sleep
+    )
     route = respx.get(f"{API}/repos/o/r/secret-scanning/alerts")
     route.side_effect = [
         httpx.Response(429, headers={"retry-after": "1"}),
@@ -239,7 +241,9 @@ async def test_429_without_headers_is_retried(
     async def _fake_sleep(delay: float) -> None:
         slept.append(delay)
 
-    monkeypatch.setattr("github_security_report.client.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr(
+        "github_security_report.client.transport.asyncio.sleep", _fake_sleep
+    )
     route = respx.get(f"{API}/repos/o/r/secret-scanning/alerts")
     route.side_effect = [
         httpx.Response(429),
@@ -263,7 +267,9 @@ async def test_403_with_malformed_retry_after_is_retried(
     async def _fake_sleep(delay: float) -> None:
         slept.append(delay)
 
-    monkeypatch.setattr("github_security_report.client.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr(
+        "github_security_report.client.transport.asyncio.sleep", _fake_sleep
+    )
     route = respx.get(f"{API}/repos/o/r/secret-scanning/alerts")
     route.side_effect = [
         httpx.Response(403, headers={"retry-after": "not-a-number"}),
@@ -297,7 +303,9 @@ async def test_github_transport_failure_raises_network_error(
     async def _fake_sleep(delay: float) -> None:
         slept.append(delay)
 
-    monkeypatch.setattr("github_security_report.client.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr(
+        "github_security_report.client.transport.asyncio.sleep", _fake_sleep
+    )
     route = respx.get(f"{API}/repos/o/r/secret-scanning/alerts")
     route.mock(side_effect=httpx.ConnectError("boom"))
 
@@ -328,7 +336,7 @@ async def test_endpoint_diagnostics_reports_resolved_addresses(
         awaitable.close()  # the real wait_for awaits it; close to avoid a warning
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("140.82.112.3", 443))]
 
-    monkeypatch.setattr(client_mod.asyncio, "wait_for", _fake_wait_for)
+    monkeypatch.setattr(transport_mod.asyncio, "wait_for", _fake_wait_for)
     line = await _endpoint_diagnostics("https://api.github.com/repos/o/r")
     assert line == "host=api.github.com ip=140.82.112.3 port=443"
 
@@ -344,9 +352,9 @@ async def test_endpoint_diagnostics_dns_timeout_falls_back(
         # asyncio.wait_for raises asyncio.TimeoutError on every supported Python
         # version; on 3.10 it is distinct from the builtin TimeoutError (an
         # OSError subclass), so raise the exact type wait_for would raise.
-        raise client_mod.asyncio.TimeoutError
+        raise transport_mod.asyncio.TimeoutError
 
-    monkeypatch.setattr(client_mod.asyncio, "wait_for", _timeout)
+    monkeypatch.setattr(transport_mod.asyncio, "wait_for", _timeout)
     line = await _endpoint_diagnostics("https://api.github.com/repos/o/r")
     assert line == "host=api.github.com ip=unresolved (timed out) port=443"
 
@@ -381,7 +389,9 @@ async def test_external_transport_failure_degrades_not_raises(
     async def _fake_sleep(delay: float) -> None:
         return None
 
-    monkeypatch.setattr("github_security_report.client.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr(
+        "github_security_report.client.transport.asyncio.sleep", _fake_sleep
+    )
     respx.get(url__startswith=f"{SCORECARD}/projects/github.com/o/r").mock(
         side_effect=httpx.ConnectError("boom")
     )
