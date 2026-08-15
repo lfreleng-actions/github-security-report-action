@@ -29,6 +29,7 @@ from github_security_report.report import (
     limit_resolver,
     offender_column_totals,
     section_shows_informational,
+    table_column_totals,
     truncate,
 )
 
@@ -182,6 +183,9 @@ def _table_block(
     text = f"*{section.title}*"
     if shown:
         rows = [[row.repo.name, *row.cells] for row in shown]
+        totals = table_column_totals(section, shown)
+        if totals is not None:
+            rows.append(list(totals))
         table = _fixed_table_generic(section.columns, rows)
         if hidden:
             table += f"\n… and {hidden} more"
@@ -278,6 +282,7 @@ def render_org_blocks(
     add_table(org.releases)
     add_table(org.mutable_releases)
     add_table(org.private_vulnerability_reporting)
+    add_table(org.issues)
     if pages_url:
         blocks.append(
             {

@@ -33,6 +33,7 @@ from github_security_report.report import (
     build_summary,
     limit_resolver,
     section_shows_informational,
+    table_column_totals,
     truncate,
 )
 
@@ -205,6 +206,12 @@ def render_table_section(
             )
         for row in rows:
             table.add_row(row.repo.name, *row.cells)
+        # A trailing totals row sums the numeric columns across the rows shown
+        # above, matching the offender tables.
+        totals = table_column_totals(section, rows)
+        if totals is not None:
+            table.add_section()
+            table.add_row(*totals, style="bold")
         console.print(table)
         if hidden:
             console.print(f"  [dim]\u2026 and {hidden} more[/dim]")
@@ -271,6 +278,7 @@ def render_org(
     table(org.releases)
     table(org.mutable_releases)
     table(org.private_vulnerability_reporting)
+    table(org.issues)
 
 
 def render_orgs(

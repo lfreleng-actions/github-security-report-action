@@ -109,6 +109,19 @@ def _report_from(data: dict, base: ReportConfig) -> ReportConfig:
         # Merge so the built-in defaults (e.g. zizmor) survive unless overridden.
         merged = {**base.ruleset_workflows, **data["ruleset_workflows"]}
         result = replace(result, ruleset_workflows=MappingProxyType(merged))
+    if "issue_labels" in data:
+        # Replace rather than merge: the mapping defines the Issues table's
+        # column set, so merging would keep default columns the operator
+        # deliberately left out.
+        result = replace(
+            result,
+            issue_labels=MappingProxyType(
+                {
+                    column: tuple(labels)
+                    for column, labels in data["issue_labels"].items()
+                }
+            ),
+        )
     if "categories" in data:
         result = replace(
             result,

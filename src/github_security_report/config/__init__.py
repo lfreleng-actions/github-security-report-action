@@ -32,6 +32,7 @@ from github_security_report.config.loader import (
     resolve_token,
 )
 from github_security_report.config.models import (
+    DEFAULT_ISSUE_LABELS,
     DEFAULT_RULESET_WORKFLOWS,
     CategoryToggle,
     Config,
@@ -54,6 +55,7 @@ __all__ = [
     "CONFIG_SCHEMA",
     "DEFAULT_CONFIG_DIR",
     "DEFAULT_CONFIG_FILE",
+    "DEFAULT_ISSUE_LABELS",
     "DEFAULT_RULESET_WORKFLOWS",
     "REPORT_OUTPUTS",
     "SEVERITY_NAMES",

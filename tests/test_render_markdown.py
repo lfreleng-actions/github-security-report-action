@@ -410,3 +410,36 @@ class TestPerCategoryLimit:
         out = markdown.render_org(self._org_with_tables(), top_n=2)
         assert "rel4" not in out
         assert "cq4" not in out
+
+
+class TestTableTotalsRow:
+    def _issues_table(self) -> report.TableSection:
+        return report.TableSection(
+            category=category_meta(CategoryKey.GITHUB_ISSUES),
+            columns=("Repository", "Bug", "Untriaged", "Total", "Oldest"),
+            rows=[
+                report.TableRow(repo=_repo("a"), cells=("1", "2", "3", "9 days")),
+                report.TableRow(repo=_repo("b"), cells=("0", "4", "4", "2 days")),
+            ],
+            sum_columns=frozenset({1, 2, 3}),
+            fail_count=2,
+        )
+
+    def test_totals_row_rendered_in_bold(self) -> None:
+        out = markdown.render_table_section(self._issues_table(), level=2)
+        assert "| **Total** | **1** | **6** | **7** |  |" in out
+
+    def test_totals_reflect_truncation(self) -> None:
+        out = markdown.render_table_section(self._issues_table(), level=2, top_n=1)
+        # Only the first row is shown, so the totals describe just that row.
+        assert "| **Total** | **1** | **2** | **3** |  |" in out
+        assert "… and 1 more" in out
+
+    def test_table_without_sum_columns_has_no_totals_row(self) -> None:
+        section = report.TableSection(
+            category=category_meta(CategoryKey.RELEASES),
+            columns=("Repository", "Last release", "Last tag"),
+            rows=[report.TableRow(repo=_repo("z"), cells=("never", "never"))],
+            fail_count=1,
+        )
+        assert "**Total**" not in markdown.render_table_section(section, level=2)

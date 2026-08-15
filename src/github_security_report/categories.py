@@ -40,6 +40,7 @@ class CategoryKey(str, Enum):
     RELEASES = "releases"
     MUTABLE_RELEASES = "mutable_releases"
     PRIVATE_VULNERABILITY_REPORTING = "private_vulnerability_reporting"
+    GITHUB_ISSUES = "github_issues"
 
 
 @dataclass(frozen=True)
@@ -250,6 +251,20 @@ _CATEGORIES: dict[CategoryKey, CategoryMeta] = {
             "Repositories with private vulnerability reporting disabled. Enable "
             "it so security researchers can privately report vulnerabilities "
             "instead of disclosing them publicly."
+        ),
+    ),
+    CategoryKey.GITHUB_ISSUES: CategoryMeta(
+        key=CategoryKey.GITHUB_ISSUES,
+        title="GitHub Issues",
+        pass_label="No open issues",
+        fail_label="With open issues",
+        url="https://docs.github.com/en/issues",
+        description=(
+            "Open issues per repository, split by label into the configured "
+            "classes. Issues carrying none of the configured labels count as "
+            "Other; issues with no labels at all count as Untriaged, which is "
+            "the column to watch -- an unlabelled issue has not been triaged. "
+            "Ranked by total open issues, then by Untriaged."
         ),
     ),
 }

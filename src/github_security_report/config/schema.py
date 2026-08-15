@@ -89,6 +89,17 @@ CONFIG_SCHEMA: dict = {
                     "type": "object",
                     "additionalProperties": {"type": "string"},
                 },
+                # Column -> issue labels for the GitHub Issues table. Each key
+                # becomes a table column, in declaration order; the value lists
+                # the issue labels that count towards it. A configured mapping
+                # replaces the built-in default rather than merging with it.
+                "issue_labels": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                    },
+                },
                 # Per-category render toggles. Each known category may set a
                 # global `enabled` switch (highest precedence: off hides the
                 # category on every surface) and, beneath it, a lower-precedence

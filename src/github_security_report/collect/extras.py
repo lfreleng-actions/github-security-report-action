@@ -21,6 +21,7 @@ from github_security_report.collect.context import (
     gather_in_batches,
 )
 from github_security_report.config import OrgConfig, ReportConfig
+from github_security_report.issues import build_issues_table
 from github_security_report.models import Repo, SignalType
 from github_security_report.posture import RepoPosture
 from github_security_report.report import OrgReport
@@ -86,6 +87,14 @@ async def attach_extra_tables(
     )
     report.mutable_releases = posture.build_mutable_releases_table(postures)
     report.private_vulnerability_reporting = posture.build_pvr_table(postures)
+    # Open issues come from the same batched GraphQL prefetch as the release and
+    # Dependabot data, so this table costs no extra requests.
+    report.issues = build_issues_table(
+        ctx.graph,
+        in_scope,
+        generated_at=report.generated_at,
+        label_columns=report_cfg.issue_labels,
+    )
     # The Dependabot alerts enablement sub-table carries the repositories with
     # Dependabot alerts disabled, so drop them from the Dependabot signal
     # section's nag list to avoid listing the same repositories twice under the

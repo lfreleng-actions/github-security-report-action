@@ -294,7 +294,8 @@ out of the terminal and Slack while still publishing it to the Markdown and HTML
 Pages output. The valid category keys are: `codeql`, `scorecard`, `zizmor`,
 `aislop`, `dependabot_alerts`, `secret_scanning`, `dependabot_alerts_enabled`,
 `dependabot_updates_enabled`, `dependabot_cooldown`, `releases`,
-`mutable_releases`, `private_vulnerability_reporting`. Like the other `report`
+`mutable_releases`, `private_vulnerability_reporting`, `github_issues`. Like the
+other `report`
 settings, `categories` can be set
 globally and overridden per organisation (overrides merge key-by-key, so
 flipping one output leaves the rest untouched). The machine-readable
@@ -346,6 +347,68 @@ a decision about a single run, so `--top-n 5` caps every category even where the
 config asked for an uncapped one. `0` means "no limit" at every level. In a
 shared Slack channel the most generous value any contributing org configured for
 that category wins, matching the visibility rule above.
+
+### GitHub Issues
+
+The `github_issues` category counts each repository's **open issues**, split by
+label into columns. It reads from the same batched GraphQL prefetch as the
+release and Dependabot data, so it costs no extra API requests:
+
+```text
+GitHub Issues
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━┳━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━┓
+┃ Repository                    ┃ Bug ┃ Feature ┃ Docs ┃ Other ┃ Untriaged ┃ Total ┃  Oldest ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━╇━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━┩
+│ .github                       │   1 │       0 │    0 │     0 │        10 │    11 │ 16 days │
+│ tag-validate-action           │   0 │       0 │    0 │     0 │         8 │     8 │ 25 days │
+│ security-workflows            │   0 │       5 │    1 │     0 │         0 │     6 │   today │
+├───────────────────────────────┼─────┼─────────┼──────┼───────┼───────────┼───────┼─────────┤
+│ Total                         │   2 │       6 │    1 │     5 │        26 │    40 │         │
+└───────────────────────────────┴─────┴─────────┴──────┴───────┴───────────┴───────┴─────────┘
+  … and 6 more
+  ❌ 16 With open issues
+  ✅ 87 No open issues
+```
+
+Two columns are always present and are not configurable:
+
+- **Other** — the issue is labelled, but with nothing you asked about.
+- **Untriaged** — the issue has no labels at all. This is the column to watch:
+  an unlabelled issue is one nobody has categorised.
+
+The remaining columns come from `report.issue_labels`, which maps a column name
+to the issue labels that count towards it. An issue counts **once**, under the
+first column whose labels it carries, so the columns always sum to the classified
+total. Matching is case-insensitive on the whole label name, so `docs` does not
+swallow an unrelated `docs-needed`. The default is:
+
+```json
+{
+  "report": {
+    "issue_labels": {
+      "Bug": ["bug", "defect"],
+      "Feature": ["feature", "enhancement"],
+      "Docs": ["documentation", "docs"]
+    }
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
+
+Unlike `ruleset_workflows`, a configured `issue_labels` **replaces** the default
+rather than merging into it — the mapping defines a coherent set of table
+columns, so merging would leave behind default columns you deliberately left out.
+
+Repositories with no open issues are counted in the `✅ No open issues` footer
+rather than listed. Rows rank by total open issues, then by Untriaged. Pull
+requests are **not** counted: the GraphQL `issues` connection excludes them.
+
+> **Accuracy note.** `Total` and `Oldest` are exact at any backlog size. The
+> label columns are computed from a bounded, oldest-first window of each
+> repository's open issues (25 issues, 5 labels each) that keeps the query well
+> inside GitHub's GraphQL rate-limit budget. A repository whose open issues
+> exceed that window shows a trailing `+` on its `Oldest` cell, marking that its
+> label breakdown covers only the oldest of its issues.
 
 ### Organisation feature gating
 

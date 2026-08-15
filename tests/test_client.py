@@ -875,6 +875,139 @@ async def test_repo_graph_batch_empty_names_no_request(client: GitHubClient) -> 
     assert await client.repo_graph_batch("o", []) == {}
 
 
+def _issue_node(
+    number: int,
+    title: str,
+    *,
+    created_at: str | None = "2025-01-01T00:00:00Z",
+    # A label connection (and its entries) can be null when a sub-object
+    # errored, so both are deliberately nullable here.
+    labels: Sequence[dict | None] | None = None,
+) -> dict:
+    """Build one open-issue node as the batched query returns it."""
+    return {
+        "number": number,
+        "title": title,
+        "createdAt": created_at,
+        "labels": {"nodes": list(labels or [])},
+    }
+
+
+@respx.mock
+async def test_repo_graph_batch_parses_open_issues(client: GitHubClient) -> None:
+    # The issues connection is ordered oldest-first, so the window's first entry
+    # is the oldest open issue and labels arrive as a flat, ordered tuple.
+    node = _graph_repo_node()
+    node["issues"] = {
+        "totalCount": 3,
+        "nodes": [
+            _issue_node(
+                7,
+                "Oldest thing",
+                created_at="2023-03-04T05:06:07Z",
+                labels=[{"name": "bug"}, {"name": "help wanted"}],
+            ),
+            _issue_node(11, "Middle thing", created_at="2024-06-01T00:00:00Z"),
+            _issue_node(
+                12,
+                "Newest thing",
+                created_at="2025-09-09T00:00:00Z",
+                labels=[{"name": "enhancement"}],
+            ),
+        ],
+    }
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": {"r0": node}})
+    )
+    out = await client.repo_graph_batch("o", ["a"])
+
+    a = out["a"]
+    assert a.open_issues == 3
+    assert [i.number for i in a.issues] == [7, 11, 12]
+    assert [i.title for i in a.issues] == [
+        "Oldest thing",
+        "Middle thing",
+        "Newest thing",
+    ]
+    # Labels flatten to their names, preserving GraphQL's order.
+    assert a.issues[0].labels == ("bug", "help wanted")
+    assert a.issues[1].labels == ()
+    assert a.issues[2].labels == ("enhancement",)
+    oldest = a.issues[0].created_at
+    assert oldest is not None
+    assert (oldest.year, oldest.month, oldest.day) == (2023, 3, 4)
+
+
+@respx.mock
+async def test_repo_graph_batch_issue_window_is_bounded(client: GitHubClient) -> None:
+    # A large backlog exceeds the query's page size: totalCount stays
+    # authoritative while the parsed window is capped at what GitHub returned.
+    node = _graph_repo_node()
+    node["issues"] = {
+        "totalCount": 4321,
+        "nodes": [_issue_node(i, f"issue {i}") for i in range(1, 101)],
+    }
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": {"r0": node}})
+    )
+    out = await client.repo_graph_batch("o", ["a"])
+
+    a = out["a"]
+    assert a.open_issues == 4321
+    assert len(a.issues) == 100
+
+
+@respx.mock
+async def test_repo_graph_batch_null_issues_object(client: GitHubClient) -> None:
+    # A null issues connection (a failed sub-object) and a wholly absent one
+    # must both degrade to zero open issues rather than raising.
+    null_node = _graph_repo_node()
+    null_node["issues"] = None
+    missing_node = _graph_repo_node()  # no "issues" key at all
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(
+            200, json={"data": {"r0": null_node, "r1": missing_node}}
+        )
+    )
+    out = await client.repo_graph_batch("o", ["a", "b"])
+
+    assert out["a"].open_issues == 0
+    assert out["a"].issues == ()
+    assert out["b"].open_issues == 0
+    assert out["b"].issues == ()
+
+
+@respx.mock
+async def test_repo_graph_batch_malformed_issue_entries(client: GitHubClient) -> None:
+    # A null node, a node with no usable number, a null labels connection and a
+    # null label entry must each be skipped without aborting the whole parse.
+    numberless = _issue_node(0, "numberless")
+    numberless["number"] = None
+    no_labels = _issue_node(9, "null labels")
+    no_labels["labels"] = None
+    node = _graph_repo_node()
+    node["issues"] = {
+        "totalCount": 4,
+        "nodes": [
+            None,
+            numberless,
+            no_labels,
+            _issue_node(10, "partial labels", labels=[None, {"name": "bug"}]),
+        ],
+    }
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": {"r0": node}})
+    )
+    out = await client.repo_graph_batch("o", ["a"])
+
+    a = out["a"]
+    # totalCount is GitHub's, not a count of what survived parsing.
+    assert a.open_issues == 4
+    assert [i.number for i in a.issues] == [9, 10]
+    assert a.issues[0].labels == ()
+    assert a.issues[1].labels == ("bug",)
+
+
 def test_https_endpoint_defaults_when_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -48,6 +48,19 @@ class SlackConfig:
 # keyword is treated as having that tool enabled (see :mod:`rulesets`).
 DEFAULT_RULESET_WORKFLOWS = {"zizmor": "zizmor", "aislop": "aislop"}
 
+# Default column -> issue-label mapping for the GitHub Issues table. Each key
+# becomes a column, in this order; an open issue counts towards the first column
+# whose labels it carries (matched case-insensitively against the whole label
+# name). Issues matching no column count as Other, and issues with no labels at
+# all count as Untriaged -- both columns are implicit and always present.
+DEFAULT_ISSUE_LABELS: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "Bug": ("bug", "defect"),
+        "Feature": ("feature", "enhancement"),
+        "Docs": ("documentation", "docs"),
+    }
+)
+
 
 @dataclass(frozen=True)
 class OutputToggles:
@@ -122,6 +135,14 @@ class ReportConfig:
     # MappingProxyType prevents in-place mutation of a shared config).
     ruleset_workflows: Mapping[str, str] = field(
         default_factory=lambda: MappingProxyType(dict(DEFAULT_RULESET_WORKFLOWS))
+    )
+    # Column -> issue labels for the GitHub Issues table. Unlike
+    # ``ruleset_workflows`` a configured value *replaces* the default rather
+    # than merging into it: the mapping defines a coherent set of table columns,
+    # so merging would leave behind default columns the operator did not ask
+    # for.
+    issue_labels: Mapping[str, tuple[str, ...]] = field(
+        default_factory=lambda: DEFAULT_ISSUE_LABELS
     )
     # Per-category render toggles, keyed by category-key value. Absent keys fall
     # back to a fully-enabled default, so the empty default shows everything.

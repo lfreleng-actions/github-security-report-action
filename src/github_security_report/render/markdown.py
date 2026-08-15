@@ -30,6 +30,7 @@ from github_security_report.report import (
     limit_resolver,
     offender_column_totals,
     section_shows_informational,
+    table_column_totals,
     truncate,
 )
 
@@ -237,6 +238,15 @@ def render_table_section(
         for row in rows:
             cells = [_link(row.repo), *row.cells]
             lines.append("| " + " | ".join(cells) + " |")
+        # A trailing totals row sums the numeric columns across the rows shown
+        # above, matching the offender tables.
+        totals = table_column_totals(section, rows)
+        if totals is not None:
+            lines.append(
+                "| "
+                + " | ".join(f"**{cell}**" if cell else "" for cell in totals)
+                + " |"
+            )
         lines.append("")
         if hidden:
             lines.append(f"_… and {hidden} more_")
@@ -311,6 +321,7 @@ def render_org(
     table(org.releases)
     table(org.mutable_releases)
     table(org.private_vulnerability_reporting)
+    table(org.issues)
     return "\n".join(parts).rstrip() + "\n"
 
 

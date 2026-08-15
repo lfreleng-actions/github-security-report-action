@@ -134,6 +134,23 @@ class ReleaseRef:
     is_prerelease: bool = False
 
 
+@dataclass(frozen=True)
+class IssueRef:
+    """One open issue's triage-relevant facts.
+
+    Carries only what the open-issues reporting needs: the label set, so issues
+    can be classified into buckets (bug, enhancement, and so on), and the
+    creation time, so the oldest outstanding issue and its age can be reported.
+    ``created_at`` is ``None`` when GitHub supplied no usable timestamp, in
+    which case the issue cannot contribute to the oldest-issue age.
+    """
+
+    number: int
+    title: str
+    labels: tuple[str, ...] = ()
+    created_at: dt.datetime | None = None
+
+
 @dataclass
 class RepoGraphData:
     """Per-repository data fetched in the batched GraphQL prefetch.
@@ -143,6 +160,15 @@ class RepoGraphData:
     and ``dependabot.yml`` round-trips into a single request. Defaults model the
     degraded case (an unreadable repository or a failed query), so affected
     repositories drop out of the dependent tables rather than being mislabelled.
+
+    ``open_issues`` and ``issues`` deliberately disagree on a large backlog:
+    ``open_issues`` is the authoritative total, whereas ``issues`` is a bounded
+    window capped by the query's page size. A caller classifying labels or
+    summing per-label counts therefore sees at most the window, never more than
+    ``open_issues``, and should present its own totals as covering the window
+    rather than the whole backlog. The window is ordered oldest-first, so the
+    oldest issue -- the one the age check reports -- is always present even when
+    the window truncates.
     """
 
     dependabot_alerts_enabled: bool | None = None
@@ -155,6 +181,12 @@ class RepoGraphData:
     last_published_release: ReleaseRef | None = None
     # Raw ``.github/dependabot.yml`` text, or None when the file is absent.
     dependabot_config: str | None = None
+    # Total open issues (authoritative count from GraphQL ``totalCount``).
+    open_issues: int = 0
+    # A bounded, oldest-first window of those issues, for label classification
+    # and the oldest-issue age. May be shorter than ``open_issues`` on a
+    # repository with a very large backlog.
+    issues: tuple[IssueRef, ...] = ()
 
 
 @dataclass

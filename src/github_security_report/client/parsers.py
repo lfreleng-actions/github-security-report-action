@@ -16,7 +16,7 @@ from typing import cast
 
 import httpx
 
-from github_security_report.models import ReleaseRef, RepoGraphData
+from github_security_report.models import IssueRef, ReleaseRef, RepoGraphData
 
 
 def _parse_iso(value: object) -> dt.datetime | None:
@@ -131,6 +131,66 @@ def _last_published(refs: list[ReleaseRef]) -> ReleaseRef | None:
     return max(dated, key=lambda r: cast(dt.datetime, r.published_at))
 
 
+def _label_names(node: dict) -> tuple[str, ...]:
+    """Label names from one issue node's ``labels`` connection, in order.
+
+    The connection, its ``nodes`` list and each entry may legally be null (or a
+    non-dict) when a sub-object errors, so each level is guarded and unusable
+    entries are skipped rather than aborting the parse.
+    """
+    labels = node.get("labels")
+    if not isinstance(labels, dict):
+        return ()
+    names: list[str] = []
+    for label in labels.get("nodes") or []:
+        if not isinstance(label, dict):
+            continue
+        name = label.get("name")
+        if not name:
+            continue
+        names.append(str(name))
+    return tuple(names)
+
+
+def _issue_refs(issues: dict | None) -> tuple[int, tuple[IssueRef, ...]]:
+    """Open-issue total and window from an ``issues`` connection node.
+
+    Returns the authoritative ``totalCount`` alongside the bounded window of
+    parsed issues; the window may be shorter than the total on a repository
+    with a large backlog. A missing or failed connection degrades to ``(0, ())``
+    rather than raising, matching the other fields in this module. ``totalCount``
+    likewise degrades to ``0`` when absent or not an integer.
+    """
+    if not isinstance(issues, dict):
+        return 0, ()
+    raw_total = issues.get("totalCount")
+    # ``bool`` is an ``int`` subclass; a boolean here would be a schema
+    # violation, so reject it rather than silently counting it as 0/1.
+    total = (
+        raw_total
+        if isinstance(raw_total, int) and not isinstance(raw_total, bool)
+        else 0
+    )
+    refs: list[IssueRef] = []
+    for node in issues.get("nodes") or []:
+        # GraphQL list entries may be null (e.g. when a sub-object errors);
+        # skip non-dict nodes so a single bad entry cannot abort collection.
+        if not isinstance(node, dict):
+            continue
+        number = node.get("number")
+        if not isinstance(number, int) or isinstance(number, bool):
+            continue
+        refs.append(
+            IssueRef(
+                number=number,
+                title=str(node.get("title") or ""),
+                labels=_label_names(node),
+                created_at=_parse_iso(node.get("createdAt")),
+            )
+        )
+    return total, tuple(refs)
+
+
 def _parse_repo_node(node: dict) -> RepoGraphData:
     """Map one repository alias from the batched query to ``RepoGraphData``.
 
@@ -140,6 +200,9 @@ def _parse_repo_node(node: dict) -> RepoGraphData:
     ``isLatest`` release out of the window, dropping it from staleness and the
     Mutable Releases findings. The window still feeds the last-published
     computation, with the latest ref folded in (deduplicated by tag).
+
+    Open issues arrive as an authoritative ``totalCount`` plus a bounded,
+    oldest-first window of nodes, which may be shorter than that total.
     """
     enabled_raw = node.get("hasVulnerabilityAlertsEnabled")
     enabled = bool(enabled_raw) if enabled_raw is not None else None
@@ -157,6 +220,7 @@ def _parse_repo_node(node: dict) -> RepoGraphData:
     candidates = list(window)
     if latest is not None and all(r.tag != latest.tag for r in candidates):
         candidates.append(latest)
+    open_issues, issues = _issue_refs(node.get("issues"))
     return RepoGraphData(
         dependabot_alerts_enabled=enabled,
         latest_tag_at=_tag_committed_date(node.get("tags")),
@@ -164,4 +228,6 @@ def _parse_repo_node(node: dict) -> RepoGraphData:
         latest_release=latest,
         last_published_release=_last_published(candidates),
         dependabot_config=config_text,
+        open_issues=open_issues,
+        issues=issues,
     )

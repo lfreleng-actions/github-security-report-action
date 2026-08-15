@@ -31,6 +31,7 @@ from github_security_report.report import (
     build_summary,
     limit_resolver,
     section_shows_informational,
+    table_column_totals,
     truncate,
 )
 
@@ -126,19 +127,23 @@ def _table_context(
     """Context for a generic posture/freshness table (Dependabot, releases)."""
     rows, hidden = truncate(section.rows, top_n)
     name_to_repo = {r.name: r for r in excluded}
+    totals = table_column_totals(section, rows)
     return {
         "title": section.title,
         "url": section.category.url,
         "description": section.resolved_description(),
         # Posture/freshness columns are textual (ecosystem lists, release/tag
         # strings), so they are left-aligned rather than the right-aligned
-        # tabular-nums treatment used for the severity-count tables.
-        "numeric": False,
+        # tabular-nums treatment used for the severity-count tables. A table
+        # declaring summable columns is counting, so it gets the numeric
+        # treatment and a totals row.
+        "numeric": bool(section.sum_columns),
         "columns": list(section.columns),
         "rows": [
             {"name": row.repo.name, "url": row.repo.html_url, "cells": list(row.cells)}
             for row in rows
         ],
+        "total_cells": list(totals) if totals is not None else None,
         "hidden": hidden,
         "summary": _summary_context(
             build_summary(section.summary_counts(excluded)),
@@ -261,6 +266,7 @@ def render_org_html(
             releases=table(org.releases),
             mutable_releases=table(org.mutable_releases),
             private_vulnerability_reporting=table(org.private_vulnerability_reporting),
+            issues=table(org.issues),
             datatables_version=DATATABLES_VERSION,
             datatables_css_sri=DATATABLES_CSS_SRI,
             datatables_js_sri=DATATABLES_JS_SRI,

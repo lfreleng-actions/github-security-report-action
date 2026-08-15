@@ -83,4 +83,5 @@ def _org_to_dict(org: OrgReport) -> dict:
             if org.private_vulnerability_reporting
             else None
         ),
+        "issues": _table_to_dict(org.issues) if org.issues else None,
     }

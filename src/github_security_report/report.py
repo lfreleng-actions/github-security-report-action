@@ -25,6 +25,35 @@ from github_security_report.models import (
     SignalType,
     rank_offenders,
 )
+from github_security_report.summary import (
+    SUMMARY_EMOJI,
+    SummaryCount,
+    SummaryLine,
+    build_summary,
+)
+
+# Re-exported so every renderer keeps importing the footer vocabulary from
+# ``report`` alongside the structures it decorates.
+__all__ = [
+    "ORG_SETUP_DOC_URL",
+    "SKIP_MESSAGE",
+    "SUMMARY_EMOJI",
+    "LimitFor",
+    "OrgReport",
+    "Report",
+    "SignalSection",
+    "SummaryCount",
+    "SummaryLine",
+    "TableRow",
+    "TableSection",
+    "build_org_report",
+    "build_summary",
+    "limit_resolver",
+    "offender_column_totals",
+    "section_shows_informational",
+    "table_column_totals",
+    "truncate",
+]
 
 SIGNAL_ORDER: tuple[SignalType, ...] = (
     SignalType.SCORECARD,
@@ -101,80 +130,6 @@ class SignalSection:
         ]
 
 
-@dataclass(frozen=True)
-class SummaryCount:
-    """One labelled count feeding the standardised summary footer.
-
-    ``kind`` selects the glyph, colour and ordering; ``names`` carries the
-    repository names listed beneath the count line (used for the disabled and
-    excluded kinds, where naming the repositories is actionable). ``render``
-    false keeps the bucket out of the visible footer while still letting it
-    count towards the "nothing needs attention" test that collapses the pass
-    line to ``All <pass>``: a severity signal's offenders live in the table
-    (not as a footer line), but they must still suppress a falsely reassuring
-    ``All <pass>`` when the section is only partially clean.
-    """
-
-    kind: str  # "fail" | "disabled" | "unknown" | "pass" | "excluded"
-    count: int
-    label: str
-    names: tuple[str, ...] = ()
-    render: bool = True
-
-
-@dataclass(frozen=True)
-class SummaryLine:
-    """A formatted summary footer line, ready for any render surface.
-
-    ``kind`` lets each surface pick its own glyph/colour; ``text`` is the
-    surface-agnostic body (e.g. ``"All Clean"`` or ``"1 Mutable"``).
-    """
-
-    kind: str
-    text: str
-    names: tuple[str, ...] = ()
-
-
-# Footer ordering: actionable items first (failures, then not-enabled, then
-# unknown), then the healthy pass line, then the neutral excluded line last.
-# This tool drives remediation, so the work to do sits at the top.
-_SUMMARY_ORDER = {"fail": 0, "disabled": 1, "unknown": 2, "pass": 3, "excluded": 4}
-
-# Glyph per summary kind, shared by every render surface.
-SUMMARY_EMOJI = {
-    "fail": "\u274c",
-    "disabled": "\u274c",
-    "unknown": "\u2753",
-    "pass": "\u2705",
-    "excluded": "\u23e9",
-}
-
-
-def build_summary(counts: Sequence[SummaryCount]) -> list[SummaryLine]:
-    """Turn raw count buckets into ordered, formatted summary lines.
-
-    The single place every surface builds its under-table footer, so the
-    wording, ordering and the ``All <pass>`` collapse behave identically
-    everywhere. The pass line reads ``All <pass_label>`` -- with no number --
-    only when nothing else needs attention (no failures, not-enabled, unknown
-    or excluded repositories); otherwise every present bucket shows its count.
-    Zero-valued buckets are dropped, as are buckets flagged ``render=False``
-    (which still count towards the collapse test but emit no visible line).
-    """
-    present = [c for c in counts if c.count > 0]
-    non_pass = sum(c.count for c in present if c.kind != "pass")
-    lines: list[SummaryLine] = []
-    for count in sorted(present, key=lambda c: _SUMMARY_ORDER[c.kind]):
-        if not count.render:
-            continue
-        if count.kind == "pass" and non_pass == 0:
-            text = f"All {count.label}"
-        else:
-            text = f"{count.count} {count.label}"
-        lines.append(SummaryLine(kind=count.kind, text=text, names=count.names))
-    return lines
-
-
 @dataclass
 class TableRow:
     """A generic, repository-keyed table row with pre-formatted cells.
@@ -205,6 +160,11 @@ class TableSection:
     category: CategoryMeta
     columns: tuple[str, ...]  # column 0 is the repository column (label varies)
     rows: list[TableRow] = field(default_factory=list)
+    # Column indices (into ``columns``) whose cells are numeric and should be
+    # summed into a trailing totals row. Empty means the table has no summable
+    # columns and renders without one -- the case for every qualitative table
+    # (release ages, ecosystems, release tags).
+    sum_columns: frozenset[int] = frozenset()
     # Normalised footer counts. ``fail_count`` is the number of listed (rows)
     # offenders; ``pass_count`` the healthy repositories; ``unknown_count`` the
     # repositories whose state could not be determined.
@@ -266,6 +226,9 @@ class OrgReport:
     # The Private Vulnerability Reporting table: repositories where the feature
     # is not enabled. None in repo mode / when not collected.
     private_vulnerability_reporting: TableSection | None = None
+    # The GitHub Issues table: open issues per repository, split by label class.
+    # None in repo mode / when not collected.
+    issues: TableSection | None = None
 
 
 @dataclass
@@ -342,6 +305,42 @@ def section_shows_informational(offenders: Sequence[RepoSignal]) -> bool:
     (already-truncated) offenders, so the column matches the visible rows.
     """
     return any(sig.counts.informational for sig in offenders)
+
+
+def table_column_totals(
+    section: TableSection, rows: Sequence[TableRow]
+) -> tuple[str, ...] | None:
+    """The trailing totals row for a table, or ``None`` when it has none.
+
+    Every render surface uses this to draw a "Total" row beneath a table with
+    numeric columns, so the wording and the column alignment match everywhere.
+    Only the rows passed in are summed -- callers pass the displayed,
+    already-truncated set -- so the totals describe the visible table even when
+    an "and N more" tally hides further rows, matching
+    :func:`offender_column_totals`.
+
+    Non-numeric columns render an empty cell: an "oldest issue" age or a list of
+    ecosystems has no meaningful sum. A cell that cannot be read as a number
+    contributes zero rather than raising, so a malformed row degrades the total
+    instead of failing the whole report.
+    """
+    if not section.sum_columns:
+        return None
+    cells = ["Total"]
+    for index in range(1, len(section.columns)):
+        if index not in section.sum_columns:
+            cells.append("")
+            continue
+        cells.append(str(sum(_as_int(row.cells[index - 1]) for row in rows)))
+    return tuple(cells)
+
+
+def _as_int(cell: str) -> int:
+    """A table cell as a number, or 0 when it does not parse."""
+    try:
+        return int(cell)
+    except (TypeError, ValueError):
+        return 0
 
 
 def build_org_report(
