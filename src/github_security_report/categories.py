@@ -49,7 +49,10 @@ class CategoryMeta:
 
     ``pass_label`` names the healthy state (e.g. ``"Clean"``, ``"Immutable"``)
     and is what the summary footer reports as ``All <pass_label>`` when nothing
-    needs attention. ``fail_label`` names the actionable state for categories
+    needs attention. That collapse wants an adjectival label; a category whose
+    counted wording is a noun phrase ("12 No open issues") sets
+    ``pass_all_label`` to the word that reads correctly after "All" instead.
+    ``fail_label`` names the actionable state for categories
     with a binary pass/fail axis (enablement, cooldown, mutability, release
     freshness); it is ``None`` for the severity-ranked signals, whose offenders
     are enumerated in the table itself rather than as a single failure count.
@@ -64,6 +67,9 @@ class CategoryMeta:
     fail_label: str | None
     url: str
     description: str = ""
+    # Alternative pass wording for the collapsed "All <label>" footer line,
+    # when the counted wording would not read grammatically after "All".
+    pass_all_label: str | None = None
     # The lowest finding severity that counts as a failure for this category.
     # A repository fails (appears as an offender) only when it carries a finding
     # at or above this rung; findings below it fold into the clean count. The
@@ -257,6 +263,9 @@ _CATEGORIES: dict[CategoryKey, CategoryMeta] = {
         key=CategoryKey.GITHUB_ISSUES,
         title="GitHub Issues",
         pass_label="No open issues",
+        # "All No open issues" does not parse; the collapsed line reads
+        # "All Clean", matching the other categories' vocabulary.
+        pass_all_label="Clean",
         fail_label="With open issues",
         url="https://docs.github.com/en/issues",
         description=(

@@ -120,7 +120,12 @@ class SignalSection:
                 tuple(r.name for r in self.nag_repos),
             ),
             SummaryCount("unknown", self.unknown_count, "Unknown"),
-            SummaryCount("pass", self.clean_count, meta.pass_label),
+            SummaryCount(
+                "pass",
+                self.clean_count,
+                meta.pass_label,
+                all_label=meta.pass_all_label,
+            ),
             SummaryCount(
                 "excluded",
                 len(excluded),
@@ -143,12 +148,15 @@ class TableRow:
     ``cells``, so a configured column ordering sorts on the number rather than
     its rendering -- "16 days" and "9 days" compare correctly as 16 and 9, but
     backwards as strings. Empty means the builder published no sort values, in
-    which case ordering falls back to the displayed text.
+    which case ordering falls back to the displayed text. ``None`` for one entry
+    means that cell has no value to sort on (an unknown age, say); the ordering
+    layer keeps such rows last whichever direction the column is sorted in,
+    since missing is not the same as small.
     """
 
     repo: Repo
     cells: tuple[str, ...]
-    sort_values: tuple[float | str, ...] = ()
+    sort_values: tuple[float | str | None, ...] = ()
 
 
 @dataclass
@@ -179,6 +187,12 @@ class TableSection:
     pass_count: int = 0
     fail_count: int = 0
     unknown_count: int = 0
+    # Column indices whose values are numeric, declared by the builder so a
+    # configured sort resolves its default direction from the table's schema
+    # rather than from whatever rows this particular run produced (an empty or
+    # all-unknown column would otherwise be judged text). Empty means the
+    # builder declared nothing and ordering falls back to inspecting values.
+    numeric_columns: frozenset[int] = frozenset()
     # Resolved explanatory description (Markdown/HTML only). Empty falls back to
     # the category's default description at render time.
     description: str = ""
@@ -197,7 +211,12 @@ class TableSection:
         return [
             SummaryCount("fail", self.fail_count, fail_label),
             SummaryCount("unknown", self.unknown_count, "Unknown"),
-            SummaryCount("pass", self.pass_count, self.category.pass_label),
+            SummaryCount(
+                "pass",
+                self.pass_count,
+                self.category.pass_label,
+                all_label=self.category.pass_all_label,
+            ),
             SummaryCount(
                 "excluded",
                 len(excluded),

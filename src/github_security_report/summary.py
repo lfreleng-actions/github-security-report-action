@@ -37,6 +37,9 @@ class SummaryCount:
     label: str
     names: tuple[str, ...] = ()
     render: bool = True
+    # Wording for the collapsed ``All <label>`` line, when the counted label
+    # would not read grammatically after "All". Falls back to ``label``.
+    all_label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -85,7 +88,7 @@ def build_summary(counts: Sequence[SummaryCount]) -> list[SummaryLine]:
         if not count.render:
             continue
         if count.kind == "pass" and non_pass == 0:
-            text = f"All {count.label}"
+            text = f"All {count.all_label or count.label}"
         else:
             text = f"{count.count} {count.label}"
         lines.append(SummaryLine(kind=count.kind, text=text, names=count.names))

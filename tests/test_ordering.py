@@ -18,10 +18,14 @@ def _repo(name: str) -> Repo:
     return Repo(name, f"o/{name}", f"https://github.com/o/{name}")
 
 
-def _row(name: str, untriaged: float, total: float, oldest: float) -> TableRow:
+def _row(name: str, untriaged: float, total: float, oldest: float | None) -> TableRow:
     return TableRow(
         repo=_repo(name),
-        cells=(str(int(untriaged)), str(int(total)), f"{int(oldest)} days"),
+        cells=(
+            str(int(untriaged)),
+            str(int(total)),
+            "unknown" if oldest is None else f"{int(oldest)} days",
+        ),
         sort_values=(untriaged, total, oldest),
     )
 
@@ -39,6 +43,29 @@ def _names(section: TableSection, order: list[str]) -> list[str]:
 
 
 class TestSortRows:
+    def _missing_sample(self) -> TableSection:
+        return _section(
+            _row("alpha", untriaged=1, total=9, oldest=5),
+            _row("bravo", untriaged=5, total=5, oldest=None),
+            _row("charlie", untriaged=3, total=7, oldest=0),
+        )
+
+    def test_missing_value_sorts_last_descending(self) -> None:
+        assert _names(self._missing_sample(), ["oldest"]) == [
+            "alpha",
+            "charlie",
+            "bravo",
+        ]
+
+    def test_missing_value_sorts_last_ascending_too(self) -> None:
+        # "unknown" is not the youngest age: reversing the direction must not
+        # promote a row whose value was never known above one that has a value.
+        assert _names(self._missing_sample(), ["+oldest"]) == [
+            "charlie",
+            "alpha",
+            "bravo",
+        ]
+
     def _sample(self) -> TableSection:
         return _section(
             _row("alpha", untriaged=1, total=9, oldest=5),
@@ -148,6 +175,25 @@ class TestApplyConfiguredOrder:
             .report
         )
 
+    def test_declared_numeric_column_keeps_its_direction_when_empty(self) -> None:
+        # A count column is numeric by schema, not by whatever rows a given run
+        # produced: an all-clean report has no rows, and inferring the type from
+        # them would silently flip the documented default direction.
+        empty = TableSection(
+            category=category_meta(CategoryKey.GITHUB_ISSUES),
+            columns=("Repository", "Untriaged", "Total", "Oldest"),
+            rows=[],
+            numeric_columns=frozenset({1, 2, 3}),
+        )
+        terms = ordering.resolve_terms(empty, ["untriaged"])
+        assert terms[0].descending is True
+        assert terms[0].numeric is True
+
+    def test_undeclared_column_still_falls_back_to_values(self) -> None:
+        # Tables that publish no schema keep the original behaviour.
+        section = _section(_row("alpha", untriaged=1, total=9, oldest=5))
+        assert ordering.resolve_terms(section, ["untriaged"])[0].descending is True
+
     def test_applies_configured_order_in_place(self) -> None:
         section = _section(
             _row("alpha", untriaged=1, total=9, oldest=5),
@@ -164,6 +210,34 @@ class TestApplyConfiguredOrder:
         before = [r.repo.name for r in section.rows]
         ordering.apply_configured_order([section], config.ReportConfig())
         assert [r.repo.name for r in section.rows] == before
+
+    def test_configured_order_is_described(self) -> None:
+        # A category description states the order its builder chose, so an
+        # override must be reported or the table describes an order it is not
+        # using -- on every surface, including report.json.
+        section = _section(
+            _row("alpha", untriaged=1, total=9, oldest=5),
+            _row("bravo", untriaged=5, total=5, oldest=50),
+        )
+        ordering.apply_configured_order([section], self._cfg(["untriaged", "+total"]))
+        described = section.resolved_description()
+        assert "overridden" in described
+        assert "Untriaged (descending)" in described
+        assert "Total (ascending)" in described
+
+    def test_unconfigured_category_description_is_untouched(self) -> None:
+        section = _section(_row("alpha", untriaged=1, total=9, oldest=5))
+        before = section.resolved_description()
+        ordering.apply_configured_order([section], config.ReportConfig())
+        assert section.resolved_description() == before
+
+    def test_unknown_only_order_leaves_the_description_alone(self) -> None:
+        # Every term was skipped, so the builder's order still stands and
+        # claiming an override would be wrong.
+        section = _section(_row("alpha", untriaged=1, total=9, oldest=5))
+        before = section.resolved_description()
+        ordering.apply_configured_order([section], self._cfg(["nonesuch"]))
+        assert section.resolved_description() == before
 
     def test_none_sections_are_skipped(self) -> None:
         # Repo mode leaves the extra tables unset; that must not raise.

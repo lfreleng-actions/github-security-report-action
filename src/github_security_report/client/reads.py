@@ -362,8 +362,28 @@ class ReadClient(Transport):
         if resp.status_code != 200:
             await resp.aclose()  # unread body would leak a pooled connection
             return out
-        data = resp.json().get("data") or {}
+        body = resp.json()
+        data = body.get("data") or {}
         await resp.aclose()  # release the connection once the body is read
+        # GitHub answers a partially-refused query with HTTP 200: the readable
+        # aliases populated, the rest null, and an ``errors`` array explaining
+        # why. Silently dropping it hides exactly the case where a field was
+        # served as null because the token could not read it, so the paths are
+        # logged once per batch for diagnosis.
+        errors = body.get("errors")
+        if errors:
+            log.warning(
+                "GraphQL prefetch for %s returned %d error(s); affected data is "
+                "reported as unknown: %s",
+                org,
+                len(errors),
+                "; ".join(
+                    f"{'.'.join(str(p) for p in (e.get('path') or []))}: "
+                    f"{e.get('message', '')}"
+                    for e in errors[:5]
+                    if isinstance(e, dict)
+                ),
+            )
         for i, name in enumerate(names):
             node = data.get(f"r{i}")
             if isinstance(node, dict):

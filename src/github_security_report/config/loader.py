@@ -36,10 +36,15 @@ from github_security_report.config.schema import (
     WEEKDAYS,
     ConfigError,
 )
+from github_security_report.issues import RESERVED_COLUMNS
 from github_security_report.models import SignalType
 from github_security_report.severity import Severity, from_name
 
 log = logging.getLogger(__name__)
+
+# Characters that would break the surfaces a column header is rendered into:
+# a pipe ends a Markdown table cell, a backtick can close the Slack code fence.
+_UNSAFE_COLUMN = ("|", "`")
 
 
 def parse_report_day(value: str | list[str] | None) -> ReportDay:
@@ -75,6 +80,62 @@ def _slack_from(data: dict, base: SlackConfig) -> SlackConfig:
             else base.report_day
         ),
     )
+
+
+def _issue_labels_from(data: Mapping[str, list[str]]) -> Mapping[str, tuple[str, ...]]:
+    """Validate and convert the ``issue_labels`` column -> labels mapping.
+
+    Three ways a column name can break the Issues table, none of which JSON
+    Schema can express as a useful error:
+
+    * **Reusing a fixed header.** The table supplies five of its own
+      (:data:`~github_security_report.issues.RESERVED_COLUMNS`). A configured
+      ``Other`` shares the implicit column's counter, so those issues are shown
+      twice and the class columns stop summing to ``Total``; a configured
+      ``Repository`` is worse, because ``sort: ["repository"]`` would then
+      resolve to a count column rather than the repository name.
+    * **Differing only by case.** ``Bug`` and ``bug`` are two columns but one
+      sort target, and ``ordering.resolve_terms`` matches case-insensitively.
+    * **Being blank, padded, or structurally unsafe.** A blank name renders a
+      column nothing can refer to; a padded one such as ``" Bug "`` could never
+      be named in ``sort``, whose terms are stripped before matching; and a
+      name carrying ``|``, a backtick or a control character would corrupt the
+      Markdown table or Slack code fence it is rendered into, since headers go
+      out verbatim.
+    """
+    reserved = {column.casefold(): column for column in RESERVED_COLUMNS}
+    seen: set[str] = set()
+    for column in data:
+        folded = column.casefold()
+        if not column.strip():
+            raise ConfigError("issue_labels column names cannot be blank")
+        if column != column.strip():
+            raise ConfigError(
+                f"issue_labels column {column!r} has leading or trailing "
+                "whitespace; sort terms are stripped before matching, so this "
+                "column could never be named in a `sort` list"
+            )
+        if not column.isprintable() or any(ch in column for ch in _UNSAFE_COLUMN):
+            raise ConfigError(
+                f"issue_labels column {column!r} contains a character that "
+                "would corrupt the rendered tables; column names go into "
+                "Markdown headers and Slack code fences verbatim, so they must "
+                "be printable single-line text without '|' or backticks"
+            )
+        if folded in reserved:
+            raise ConfigError(
+                f"issue_labels column {column!r} collides with {reserved[folded]!r}, "
+                "one of the columns the Issues table always supplies "
+                f"({', '.join(RESERVED_COLUMNS)}); choose a different name"
+            )
+        if folded in seen:
+            raise ConfigError(
+                f"issue_labels column {column!r} duplicates an earlier column "
+                "differing only in case; column names must be distinct "
+                "case-insensitively so they can be sorted on unambiguously"
+            )
+        seen.add(folded)
+    return MappingProxyType({column: tuple(labels) for column, labels in data.items()})
 
 
 def _report_from(data: dict, base: ReportConfig) -> ReportConfig:
@@ -113,15 +174,7 @@ def _report_from(data: dict, base: ReportConfig) -> ReportConfig:
         # Replace rather than merge: the mapping defines the Issues table's
         # column set, so merging would keep default columns the operator
         # deliberately left out.
-        result = replace(
-            result,
-            issue_labels=MappingProxyType(
-                {
-                    column: tuple(labels)
-                    for column, labels in data["issue_labels"].items()
-                }
-            ),
-        )
+        result = replace(result, issue_labels=_issue_labels_from(data["issue_labels"]))
     if "categories" in data:
         result = replace(
             result,

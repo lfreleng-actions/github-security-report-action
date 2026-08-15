@@ -38,6 +38,27 @@ class TestBuildSummary:
         lines = report.build_summary([report.SummaryCount("pass", 86, "Clean")])
         assert [(line.kind, line.text) for line in lines] == [("pass", "All Clean")]
 
+    def test_all_pass_uses_the_alternative_collapse_label(self) -> None:
+        # A counted label that is a noun phrase ("12 No open issues") does not
+        # parse after "All", so a category may supply adjectival wording for
+        # the collapsed line only.
+        lines = report.build_summary(
+            [report.SummaryCount("pass", 86, "No open issues", all_label="Clean")]
+        )
+        assert [line.text for line in lines] == ["All Clean"]
+
+    def test_alternative_collapse_label_is_unused_when_counted(self) -> None:
+        lines = report.build_summary(
+            [
+                report.SummaryCount("fail", 2, "With open issues"),
+                report.SummaryCount("pass", 84, "No open issues", all_label="Clean"),
+            ]
+        )
+        assert [line.text for line in lines] == [
+            "2 With open issues",
+            "84 No open issues",
+        ]
+
     def test_pass_keeps_number_when_excluded_present(self) -> None:
         lines = report.build_summary(
             [

@@ -201,11 +201,15 @@ def render_table_section(
     if not inline and rows:
         table = Table(title_justify="left", title_style="bold")
         for i, col in enumerate(section.columns):
+            # Headers and cells are escaped because both carry text from
+            # outside this module -- a configured `issue_labels` column name, a
+            # release tag -- and Rich would otherwise read a stray '[' as
+            # markup and raise mid-render, taking the whole report with it.
             table.add_column(
-                col, overflow="fold", justify="left" if i == 0 else "right"
+                escape(col), overflow="fold", justify="left" if i == 0 else "right"
             )
         for row in rows:
-            table.add_row(row.repo.name, *row.cells)
+            table.add_row(escape(row.repo.name), *(escape(cell) for cell in row.cells))
         # A trailing totals row sums the numeric columns across the rows shown
         # above, matching the offender tables.
         totals = table_column_totals(section, rows)

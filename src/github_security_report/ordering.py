@@ -43,10 +43,11 @@ log = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class SortTerm:
-    """One resolved ordering term: which column, and which direction."""
+    """One resolved ordering term: which column, direction, and value type."""
 
     index: int  # index into ``TableSection.columns``; 0 is the repository
     descending: bool
+    numeric: bool
 
 
 def _split_direction(spec: str) -> tuple[str, bool | None]:
@@ -63,12 +64,13 @@ def _split_direction(spec: str) -> tuple[str, bool | None]:
     return spec, None
 
 
-def _column_value(row: TableRow, index: int) -> float | str:
+def _column_value(row: TableRow, index: int) -> float | str | None:
     """The value column ``index`` sorts on for one row.
 
     Prefers the builder's typed sort value, falling back to the displayed cell
     when a builder published none -- so a table that never opted in still orders
-    predictably (alphabetically by its text) rather than raising.
+    predictably (alphabetically by its text) rather than raising. ``None`` means
+    the builder published no value for this cell.
     """
     if index == 0:
         return row.repo.name
@@ -81,7 +83,15 @@ def _column_value(row: TableRow, index: int) -> float | str:
 
 
 def _is_numeric(section: TableSection, index: int) -> bool:
-    """Whether a column sorts numerically, judged from the rows themselves."""
+    """Whether a column sorts numerically.
+
+    Prefers the builder's declaration, so the same configuration resolves the
+    same way for every report: judging from the rows alone would call an empty
+    table's count column text, and flip its documented default direction.
+    Falls back to inspecting values for a table that declares nothing.
+    """
+    if section.numeric_columns:
+        return index in section.numeric_columns
     return any(
         isinstance(_column_value(row, index), (int, float)) for row in section.rows
     )
@@ -110,29 +120,67 @@ def resolve_terms(section: TableSection, order: Sequence[str]) -> list[SortTerm]
                 ", ".join(section.columns),
             )
             continue
-        descending = forced if forced is not None else _is_numeric(section, index)
-        terms.append(SortTerm(index=index, descending=descending))
+        numeric = _is_numeric(section, index)
+        descending = forced if forced is not None else numeric
+        terms.append(SortTerm(index=index, descending=descending, numeric=numeric))
     return terms
 
 
-def sort_rows(section: TableSection, order: Sequence[str]) -> list[TableRow]:
-    """A table's rows ordered by ``order``, most significant term first.
+def _sort_key(row: TableRow, term: SortTerm) -> tuple[bool, float | str]:
+    """Sort key for one row under one term, keeping missing values last.
+
+    A missing value is not a small one: an unknown age belongs at the bottom of
+    the table whether the column is sorted oldest-first or newest-first. Since
+    the sort reverses the whole key, the present/absent flag is flipped with the
+    direction so that reversing leaves it pointing the same way.
+    """
+    value = _column_value(row, term.index)
+    if value is None:
+        return (not term.descending, 0.0 if term.numeric else "")
+    return (term.descending, value)
+
+
+def _sorted_by(section: TableSection, terms: Sequence[SortTerm]) -> list[TableRow]:
+    """A table's rows ordered by resolved ``terms``, most significant first.
 
     Applies the terms least-significant first onto Python's stable sort, which
     keeps multi-column ordering correct while letting a text column descend --
     something a single composite key cannot express, since a string has no
     negation.
     """
-    terms = resolve_terms(section, order)
-    if not terms:
-        return list(section.rows)
     rows = sorted(section.rows, key=lambda row: row.repo.name)
     for term in reversed(terms):
         rows.sort(
-            key=lambda row, term=term: _column_value(row, term.index),  # type: ignore[misc]
+            key=lambda row, term=term: _sort_key(row, term),  # type: ignore[misc]
             reverse=term.descending,
         )
     return rows
+
+
+def sort_rows(section: TableSection, order: Sequence[str]) -> list[TableRow]:
+    """A table's rows ordered by the configured ``order`` column names."""
+    terms = resolve_terms(section, order)
+    if not terms:
+        return list(section.rows)
+    return _sorted_by(section, terms)
+
+
+def _order_note(section: TableSection, terms: Sequence[SortTerm]) -> str:
+    """A sentence naming the ordering that was actually applied.
+
+    Category descriptions state the ordering their builder chose, so a table
+    reordered by configuration would otherwise describe an order it is no
+    longer using -- on every surface, including ``report.json``.
+    """
+    named = ", then ".join(
+        f"{section.columns[term.index]} "
+        f"({'descending' if term.descending else 'ascending'})"
+        for term in terms
+    )
+    return (
+        f" That default order is overridden here by configuration: {named}, "
+        "with the repository name as the final tiebreaker."
+    )
 
 
 def apply_configured_order(
@@ -144,6 +192,9 @@ def apply_configured_order(
     matters because some defaults rank on values that are not displayed columns
     at all (Releases ranks on missing release/tag signals) and so cannot be
     expressed as a column list.
+
+    The description is amended alongside the rows: it states the builder's
+    ordering, which would otherwise be a claim the report no longer honours.
     """
     for section in sections:
         if section is None:
@@ -151,7 +202,13 @@ def apply_configured_order(
         order = report_cfg.category_sort(section.category.key)
         if not order:
             continue
-        section.rows = sort_rows(section, order)
+        terms = resolve_terms(section, order)
+        if not terms:
+            continue
+        section.rows = _sorted_by(section, terms)
+        section.description = section.resolved_description() + _order_note(
+            section, terms
+        )
 
 
 def report_tables(report: OrgReport) -> list[TableSection | None]:

@@ -136,6 +136,7 @@ organisation and **Repository access** set to *All repositories*, then grant:
 | Dependabot alerts | Open Dependabot vulnerability alerts |
 | Code scanning alerts | CodeQL / Scorecard / zizmor / aislop findings |
 | Secret scanning alerts | Open secret-scanning alerts |
+| Issues | Open issues and their labels (GitHub Issues table) |
 | Administration | Dependabot enablement + security-updates status, and effective branch rules |
 
 **Organization permissions:**
@@ -375,6 +376,8 @@ total open issues, then on the oldest issue.
   is also oldest-first for an age column) and text columns ascend.
 - A leading **`-` forces descending** and **`+` forces ascending**, so
   `["+total"]` lists the smallest backlogs first.
+- A cell with **no value to sort on** — an `Oldest` of `unknown`, say — stays at
+  the bottom whichever direction you choose. Missing is not the same as small.
 - The repository name is always applied as the final tiebreaker, so rows that
   are equal under every configured term still order deterministically.
 - An unrecognised column name is logged and skipped rather than failing the run.
@@ -404,19 +407,35 @@ GitHub Issues
 │ .github                       │   1 │       0 │    0 │     0 │        10 │    11 │ 16 days │
 │ tag-validate-action           │   0 │       0 │    0 │     0 │         8 │     8 │ 25 days │
 │ security-workflows            │   0 │       5 │    1 │     0 │         0 │     6 │   today │
+│ github-security-report-action │   0 │       0 │    0 │     3 │         1 │     4 │ 52 days │
+│ dependamerge                  │   0 │       1 │    0 │     1 │         1 │     3 │ 52 days │
 ├───────────────────────────────┼─────┼─────────┼──────┼───────┼───────────┼───────┼─────────┤
-│ Total                         │   2 │       6 │    1 │     5 │        26 │    40 │         │
+│ Total                         │   1 │       6 │    1 │     4 │        20 │    32 │         │
 └───────────────────────────────┴─────┴─────────┴──────┴───────┴───────────┴───────┴─────────┘
-  … and 6 more
+  … and 11 more
   ❌ 16 With open issues
   ✅ 87 No open issues
 ```
+
+That is a real run of `lfreleng-actions` under `top_n: 5`. The totals row sums
+the rows actually **displayed**, matching the offender tables, so it stays
+consistent with a truncated view; `… and 11 more` plus the five listed rows
+reconcile with the `❌ 16` in the footer.
 
 Two columns are always present and are not configurable:
 
 - **Other** — the issue is labelled, but with nothing you asked about.
 - **Untriaged** — the issue has no labels at all. This is the column to watch:
   an unlabelled issue is one nobody has categorised.
+
+Both names are reserved, as are `Repository`, `Total` and `Oldest`: configuring a
+column with one of those names is rejected, because it would either share a
+counter with the implicit column — stopping the class columns summing to `Total`
+— or duplicate a header, which would also make `sort: ["repository"]` resolve to
+a count column instead of the repository name. Column names must additionally be
+non-blank, unpadded, distinct case-insensitively (`sort` matches them that way,
+and strips its terms), and free of `|`, backticks and control characters, which
+would corrupt the Markdown table or Slack code fence they are rendered into.
 
 The remaining columns come from `report.issue_labels`, which maps a column name
 to the issue labels that count towards it. An issue counts **once**, under the
@@ -445,12 +464,25 @@ Repositories with no open issues are counted in the `✅ No open issues` footer
 rather than listed. Rows rank by total open issues, then by Untriaged. Pull
 requests are **not** counted: the GraphQL `issues` connection excludes them.
 
-> **Accuracy note.** `Total` and `Oldest` are exact at any backlog size. The
-> label columns are computed from a bounded, oldest-first window of each
-> repository's open issues (25 issues, 5 labels each) that keeps the query well
-> inside GitHub's GraphQL rate-limit budget. A repository whose open issues
-> exceed that window shows a trailing `+` on its `Oldest` cell, marking that its
-> label breakdown covers only the oldest of its issues.
+> **Accuracy note.** `Total` is exact at any backlog size, as is `Oldest`
+> wherever an age is shown. The label columns are computed from a bounded,
+> oldest-first window of each repository's open issues (25 issues, 5 labels
+> each) that keeps the query well inside GitHub's GraphQL rate-limit budget. A
+> repository whose label breakdown is partial shows a trailing `+` on its
+> `Oldest` cell. That covers a backlog exceeding the issue window, and any issue
+> whose classification a label beyond the label window could have changed —
+> which is every classification except a match on the *first* configured column,
+> since columns are matched in declaration order and an unseen label could
+> belong to an earlier one. An issue whose labels could not be read at all is
+> left out of the class columns entirely rather than counted as `Untriaged`. An
+> `Oldest` of `unknown` means the oldest issue came back unreadable or undated;
+> it can still carry the `+`.
+
+**Permissions.** A fine-grained PAT needs **Issues: read** for this table; a
+classic PAT's `repo` scope already covers it. Without it GitHub serves the query
+with HTTP 200 and this one field null, so affected repositories are reported as
+`❓ Unknown` rather than counted as having no open issues — an unreadable backlog
+is never presented as a clean one.
 
 ### Organisation feature gating
 

@@ -90,12 +90,22 @@ class TestClassifyIssue:
 
 class TestBuildIssuesTable:
     def test_repos_without_issues_count_as_clean(self) -> None:
+        table = _build(_graph(b=RepoGraphData(open_issues=0)), ["b"])
+        assert table.rows == []
+        assert table.pass_count == 1
+        assert table.fail_count == 0
+        assert table.unknown_count == 0
+
+    def test_unreadable_issues_count_as_unknown_not_clean(self) -> None:
+        # GitHub serves a token lacking Issues: read with HTTP 200, the rest of
+        # the repository populated and this field null. Counting that as clean
+        # would render a confident "no open issues" for an unreadable backlog.
         table = _build(
             _graph(a=RepoGraphData(), b=RepoGraphData(open_issues=0)), ["a", "b"]
         )
         assert table.rows == []
-        assert table.pass_count == 2
-        assert table.fail_count == 0
+        assert table.unknown_count == 1
+        assert table.pass_count == 1
 
     def test_counts_split_across_columns(self) -> None:
         graph = _graph(
@@ -183,12 +193,13 @@ class TestBuildIssuesTable:
         )
         assert table.rows[0].cells[:4] == ("1", "0", "0", "1")
 
-    def test_missing_repo_in_graph_counts_as_clean(self) -> None:
+    def test_missing_repo_in_graph_counts_as_unknown(self) -> None:
         # A repository absent from the prefetch (unreadable alias) must not be
-        # reported as having issues; it degrades to the clean count.
+        # reported as having no issues; its backlog was never seen.
         table = _build(_graph(), ["ghost"])
         assert table.rows == []
-        assert table.pass_count == 1
+        assert table.pass_count == 0
+        assert table.unknown_count == 1
 
     def test_unknown_created_at_does_not_crash(self) -> None:
         graph = _graph(
@@ -197,7 +208,145 @@ class TestBuildIssuesTable:
             )
         )
         table = _build(graph, ["a"])
-        assert table.rows[0].cells[-1] == "unknown"
+        assert table.rows[0].cells[-1] == issues.UNKNOWN_AGE
+
+    def test_unknown_age_is_explained_and_never_called_exact(self) -> None:
+        graph = _graph(
+            a=RepoGraphData(
+                open_issues=1, issues=(IssueRef(number=1, title="t", labels=()),)
+            )
+        )
+        description = _build(graph, ["a"]).resolved_description()
+        assert issues.UNKNOWN_AGE in description
+        assert "Oldest remain exact" not in description
+
+    def test_unknown_age_still_marks_a_truncated_window(self) -> None:
+        # The label breakdown is partial whether or not a date came back, so
+        # dropping the marker here would present it as complete.
+        graph = _graph(
+            a=RepoGraphData(
+                open_issues=40, issues=(IssueRef(number=1, title="t", labels=()),)
+            )
+        )
+        table = _build(graph, ["a"])
+        assert table.rows[0].cells[-1] == (
+            f"{issues.UNKNOWN_AGE} {issues.TRUNCATED_MARKER}"
+        )
+        assert issues.TRUNCATED_MARKER in table.resolved_description()
+
+    def test_truncated_label_window_marks_the_row(self) -> None:
+        # An issue with more labels than were fetched, none of which matched a
+        # configured column, could have been classified differently.
+        graph = _graph(
+            a=RepoGraphData(
+                open_issues=1,
+                issues=(
+                    IssueRef(
+                        number=1,
+                        title="t",
+                        labels=("wontfix",),
+                        labels_truncated=True,
+                        created_at=WHEN,
+                    ),
+                ),
+            )
+        )
+        table = _build(graph, ["a"])
+        assert table.rows[0].cells[-1].endswith(issues.TRUNCATED_MARKER)
+
+    def test_matched_issue_is_not_marked_despite_label_truncation(self) -> None:
+        # A match on the *first* configured column is immune: no unseen label
+        # can belong to an earlier column, because there is no earlier column.
+        graph = _graph(
+            a=RepoGraphData(
+                open_issues=1,
+                issues=(
+                    IssueRef(
+                        number=1,
+                        title="t",
+                        labels=("bug",),
+                        labels_truncated=True,
+                        created_at=WHEN,
+                    ),
+                ),
+            )
+        )
+        table = _build(graph, ["a"])
+        assert not table.rows[0].cells[-1].endswith(issues.TRUNCATED_MARKER)
+
+    def test_match_on_a_later_column_is_marked_when_labels_truncated(self) -> None:
+        # Classification walks the configured columns, not the fetched labels,
+        # so a Feature match could still be outranked by an unseen `bug` label.
+        graph = _graph(
+            a=RepoGraphData(
+                open_issues=1,
+                issues=(
+                    IssueRef(
+                        number=1,
+                        title="t",
+                        labels=("feature",),
+                        labels_truncated=True,
+                        created_at=WHEN,
+                    ),
+                ),
+            )
+        )
+        table = _build(graph, ["a"])
+        assert table.rows[0].cells[-1].endswith(issues.TRUNCATED_MARKER)
+
+    def test_untriaged_with_unreadable_labels_is_marked(self) -> None:
+        # An unreadable labels connection parses as no labels but truncated.
+        # The issue must not be counted at all: calling it Untriaged would
+        # invent a triage gap from data the run never saw.
+        graph = _graph(
+            a=RepoGraphData(
+                open_issues=1,
+                issues=(
+                    IssueRef(
+                        number=1,
+                        title="t",
+                        labels=(),
+                        labels_truncated=True,
+                        created_at=WHEN,
+                    ),
+                ),
+            )
+        )
+        table = _build(graph, ["a"])
+        assert table.rows[0].cells[-1].endswith(issues.TRUNCATED_MARKER)
+        untriaged = table.columns.index(issues.UNTRIAGED_COLUMN)
+        assert table.rows[0].cells[untriaged - 1] == "0"
+        # Total stays authoritative even though nothing could be classified.
+        assert table.rows[0].cells[-2] == "1"
+
+    def test_undated_oldest_entry_is_unknown_not_the_next_issue(self) -> None:
+        # The window is ordered oldest-first, so entry 0 is the only evidence of
+        # which issue is oldest. Falling through to entry 1 would report a newer
+        # issue's age as the oldest.
+        graph = _graph(
+            a=RepoGraphData(
+                open_issues=2,
+                issues=(
+                    IssueRef(number=1, title="t", labels=("bug",)),
+                    _issue(2, "bug", age_days=3),
+                ),
+            )
+        )
+        table = _build(graph, ["a"])
+        assert table.rows[0].cells[-1] == issues.UNKNOWN_AGE
+
+    def test_dropped_oldest_node_is_unknown_not_the_next_issue(self) -> None:
+        # Same hazard one level up: when parsing drops the leading node, the
+        # surviving entry 0 is only the oldest *readable* issue.
+        graph = _graph(
+            a=RepoGraphData(
+                open_issues=2,
+                issues=(_issue(2, "bug", age_days=3),),
+                oldest_issue_unreadable=True,
+            )
+        )
+        table = _build(graph, ["a"])
+        assert table.rows[0].cells[-1].startswith(issues.UNKNOWN_AGE)
 
     def test_sum_columns_cover_every_count_column(self) -> None:
         table = _build(

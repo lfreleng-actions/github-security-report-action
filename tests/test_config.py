@@ -172,6 +172,78 @@ class TestBuildConfig:
         assert workflows["zizmor"] == "zizmor"
         assert workflows["aislop"] == "aislop"
 
+    def test_issue_labels_replace_rather_than_merge(self) -> None:
+        # The mapping defines the Issues table's column set, so a configured one
+        # must not leave behind default columns the operator dropped.
+        columns = config.build_config(
+            {
+                "report": {"issue_labels": {"Regression": ["regression"]}},
+                "organizations": [{"name": "o"}],
+            }
+        ).report.issue_labels
+        assert dict(columns) == {"Regression": ("regression",)}
+
+    @pytest.mark.parametrize(
+        "column",
+        ["Other", "Untriaged", "other", "UNTRIAGED", "Repository", "Total", "Oldest"],
+    )
+    def test_rejects_issue_label_columns_reserved_by_the_table(
+        self, column: str
+    ) -> None:
+        # The Issues table supplies these headers itself. Reusing one either
+        # shares a counter with the implicit column (so the class columns stop
+        # summing to Total) or duplicates a header, which would also make
+        # `sort: ["repository"]` resolve to a count column.
+        with pytest.raises(ConfigError, match="collides"):
+            config.build_config(
+                {
+                    "report": {"issue_labels": {column: ["bug"]}},
+                    "organizations": [{"name": "o"}],
+                }
+            )
+
+    def test_rejects_issue_label_columns_differing_only_in_case(self) -> None:
+        # Two columns but one sort target: `ordering.resolve_terms` matches
+        # column names case-insensitively.
+        with pytest.raises(ConfigError, match="differing only in case"):
+            config.build_config(
+                {
+                    "report": {"issue_labels": {"Bug": ["bug"], "bug": ["defect"]}},
+                    "organizations": [{"name": "o"}],
+                }
+            )
+
+    def test_rejects_blank_issue_label_column(self) -> None:
+        with pytest.raises(ConfigError, match="blank"):
+            config.build_config(
+                {
+                    "report": {"issue_labels": {"  ": ["bug"]}},
+                    "organizations": [{"name": "o"}],
+                }
+            )
+
+    def test_rejects_padded_issue_label_column(self) -> None:
+        # `sort` terms are stripped before matching, so a padded column name
+        # could never be selected for sorting.
+        with pytest.raises(ConfigError, match="whitespace"):
+            config.build_config(
+                {
+                    "report": {"issue_labels": {" Bug ": ["bug"]}},
+                    "organizations": [{"name": "o"}],
+                }
+            )
+
+    @pytest.mark.parametrize("column", ["Bug|Feature", "Bug`s", "Bug\nFeature"])
+    def test_rejects_structurally_unsafe_issue_label_column(self, column: str) -> None:
+        # Headers reach Markdown tables and Slack code fences verbatim.
+        with pytest.raises(ConfigError, match="corrupt"):
+            config.build_config(
+                {
+                    "report": {"issue_labels": {column: ["bug"]}},
+                    "organizations": [{"name": "o"}],
+                }
+            )
+
     def test_rejects_negative_repo_min_age_days(self) -> None:
         with pytest.raises(ConfigError):
             config.build_config(

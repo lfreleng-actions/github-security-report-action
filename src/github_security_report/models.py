@@ -148,6 +148,9 @@ class IssueRef:
     number: int
     title: str
     labels: tuple[str, ...] = ()
+    # True when the issue carries more labels than the query's window returned,
+    # so ``labels`` may omit the one that would have classified it.
+    labels_truncated: bool = False
     created_at: dt.datetime | None = None
 
 
@@ -182,11 +185,21 @@ class RepoGraphData:
     # Raw ``.github/dependabot.yml`` text, or None when the file is absent.
     dependabot_config: str | None = None
     # Total open issues (authoritative count from GraphQL ``totalCount``).
-    open_issues: int = 0
+    # Total open issues. ``None`` means the issues connection could not be read
+    # at all -- GitHub serves a token lacking ``Issues: read`` with HTTP 200,
+    # the rest of the repository populated and this field null, so a zero here
+    # would render a confident "no open issues" for a backlog nobody could see.
+    # Callers must report ``None`` as unknown rather than clean.
+    open_issues: int | None = None
     # A bounded, oldest-first window of those issues, for label classification
     # and the oldest-issue age. May be shorter than ``open_issues`` on a
     # repository with a very large backlog.
     issues: tuple[IssueRef, ...] = ()
+    # True when the leading (oldest) entry of that window could not be parsed.
+    # The oldest-first ordering is the only evidence of which issue is oldest,
+    # so once entry 0 is lost ``issues[0]`` is merely the oldest *readable*
+    # one, and reporting its age would name a newer issue as the oldest.
+    oldest_issue_unreadable: bool = False
 
 
 @dataclass

@@ -93,6 +93,10 @@ CONFIG_SCHEMA: dict = {
                 # becomes a table column, in declaration order; the value lists
                 # the issue labels that count towards it. A configured mapping
                 # replaces the built-in default rather than merging with it.
+                # The loader rejects names the table supplies itself (all five
+                # of RESERVED_COLUMNS) plus blank, padded, case-duplicate and
+                # markup-breaking ones: JSON Schema cannot express those with a
+                # usable error message.
                 "issue_labels": {
                     "type": "object",
                     "additionalProperties": {

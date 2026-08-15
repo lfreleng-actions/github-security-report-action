@@ -44,6 +44,10 @@ _CODE_SCANNING_SIGNAL_TOOLS = tuple(CODE_SCANNING_TOOLS.values())
 # stays exact however large a backlog is; only the label breakdown is
 # window-scoped. Note that ``GRAPH_BATCH`` is not a lever here: batching changes
 # how many requests carry the nodes, not how many nodes are charged for.
+# ``totalCount`` is requested on both connections. It costs no nodes, and it is
+# what keeps a bounded window honest: the issue total stays exact however large
+# a backlog is, and an issue carrying more labels than the label window returned
+# can be reported as partially classified rather than silently mislabelled.
 _ISSUE_WINDOW = 25
 _ISSUE_LABEL_WINDOW = 5
 _REPO_GRAPH_FRAGMENT = f"""\
@@ -77,7 +81,7 @@ fragment RepoData on Repository {{
       number
       title
       createdAt
-      labels(first: {_ISSUE_LABEL_WINDOW}) {{ nodes {{ name }} }}
+      labels(first: {_ISSUE_LABEL_WINDOW}) {{ totalCount nodes {{ name }} }}
     }}
   }}
 }}
