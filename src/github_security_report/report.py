@@ -11,12 +11,12 @@ repos excluded), and an unknown count. See ``docs/BRIEF.md`` sections 4-6, 11.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Sequence, Set
+from collections.abc import Callable, Sequence, Set
 from dataclasses import dataclass, field
 from typing import TypeVar
 
 from github_security_report import scope
-from github_security_report.categories import CategoryMeta
+from github_security_report.categories import CategoryKey, CategoryMeta
 from github_security_report.models import (
     Repo,
     RepoSignal,
@@ -275,6 +275,23 @@ class Report:
 
 
 _T = TypeVar("_T")
+
+# A per-category row limit, mirroring the ``show`` visibility predicate every
+# render surface already accepts. Returning ``None`` or ``0`` means "no limit".
+LimitFor = Callable[[CategoryKey], int | None]
+
+
+def limit_resolver(top_n: int | None, limit: LimitFor | None) -> LimitFor:
+    """Build the per-category limit lookup a render surface should use.
+
+    Renderers accept both a single ``top_n`` (the same cap for every category)
+    and an optional per-category ``limit`` callable. This is the one place that
+    reconciles them, so every surface resolves a category's limit identically:
+    an explicit ``limit`` wins, otherwise the shared ``top_n`` applies to all.
+    """
+    if limit is not None:
+        return limit
+    return lambda _key: top_n
 
 
 def truncate(items: Sequence[_T], top_n: int | None) -> tuple[list[_T], int]:

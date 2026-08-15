@@ -117,6 +117,10 @@ CONFIG_SCHEMA: dict = {
                                 # failure for this category (severity signals
                                 # only). Overrides the category default.
                                 "fail_severity": {"enum": list(SEVERITY_NAMES)},
+                                # Rows this category shows before an "and N
+                                # more" tally, overriding the per-output limit
+                                # (0 = no limit, show every row).
+                                "top_n": {"type": "integer", "minimum": 0},
                             },
                         }
                         for meta in all_categories()

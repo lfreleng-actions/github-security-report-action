@@ -20,11 +20,13 @@ from github_security_report.report import (
     ORG_SETUP_DOC_URL,
     SKIP_MESSAGE,
     SUMMARY_EMOJI,
+    LimitFor,
     OrgReport,
     SignalSection,
     SummaryLine,
     TableSection,
     build_summary,
+    limit_resolver,
     offender_column_totals,
     section_shows_informational,
     truncate,
@@ -198,9 +200,17 @@ def render_org_blocks(
     top_n: int,
     pages_url: str | None,
     show: Callable[[CategoryKey], bool] | None = None,
+    limit: LimitFor | None = None,
 ) -> list[dict]:
     """Slack blocks for one organisation."""
     visible = show or (lambda _key: True)
+    resolve = limit_resolver(top_n, limit)
+
+    def limit_for(key: CategoryKey) -> int:
+        # Slack's helpers take a plain int; ``truncate`` treats None and 0
+        # identically (both mean "no limit"), so normalise None to 0 here.
+        return resolve(key) or 0
+
     blocks: list[dict] = [
         {
             "type": "header",
@@ -221,8 +231,21 @@ def render_org_blocks(
             }
         )
     excluded = org.excluded_repos
+
+    def add_table(section: TableSection | None) -> None:
+        """Append one extra table's block, honouring its visibility and limit."""
+        if section is None or not visible(section.category.key):
+            return
+        block = _table_block(
+            section, limit_for(section.category.key), excluded=excluded
+        )
+        if block is not None:
+            blocks.append(block)
+
     for section in org.sections:
-        if visible(section.signal.category_key):
+        key = section.signal.category_key
+        if visible(key):
+            section_top_n = limit_for(key)
             text = f"*{section.signal.heading}*"
             if section.skipped:
                 # Feature gating found no organisation support: one skip line
@@ -236,10 +259,10 @@ def render_org_blocks(
                 )
                 continue
             if section.offenders:
-                table = _fixed_table(section, top_n)
+                table = _fixed_table(section, section_top_n)
                 text += f"\n```\n{table}\n```"
             summary = _summary_text(
-                build_summary(section.summary_counts(excluded)), top_n=top_n
+                build_summary(section.summary_counts(excluded)), top_n=section_top_n
             )
             if summary:
                 text += f"\n{summary}"
@@ -251,27 +274,10 @@ def render_org_blocks(
         # Dependabot posture sub-tables follow the Dependabot signal block.
         if section.signal is SignalType.DEPENDABOT:
             for table_section in org.dependabot_tables:
-                if not visible(table_section.category.key):
-                    continue
-                block = _table_block(table_section, top_n, excluded=excluded)
-                if block is not None:
-                    blocks.append(block)
-    if org.releases is not None and visible(org.releases.category.key):
-        block = _table_block(org.releases, top_n, excluded=excluded)
-        if block is not None:
-            blocks.append(block)
-    if org.mutable_releases is not None and visible(org.mutable_releases.category.key):
-        block = _table_block(org.mutable_releases, top_n, excluded=excluded)
-        if block is not None:
-            blocks.append(block)
-    if org.private_vulnerability_reporting is not None and visible(
-        org.private_vulnerability_reporting.category.key
-    ):
-        block = _table_block(
-            org.private_vulnerability_reporting, top_n, excluded=excluded
-        )
-        if block is not None:
-            blocks.append(block)
+                add_table(table_section)
+    add_table(org.releases)
+    add_table(org.mutable_releases)
+    add_table(org.private_vulnerability_reporting)
     if pages_url:
         blocks.append(
             {
@@ -312,12 +318,15 @@ def render_payload(
     top_n: int = 10,
     pages_url: str | None = None,
     show: Callable[[CategoryKey], bool] | None = None,
+    limit: LimitFor | None = None,
 ) -> dict:
     """Build a ``chat.postMessage`` payload across one or more organisations."""
     blocks: list[dict] = []
     for org in orgs:
         blocks.extend(
-            render_org_blocks(org, top_n=top_n, pages_url=pages_url, show=show)
+            render_org_blocks(
+                org, top_n=top_n, pages_url=pages_url, show=show, limit=limit
+            )
         )
     blocks = _enforce_block_limit(blocks, pages_url)
     names = ", ".join(o.org for o in orgs)

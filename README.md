@@ -309,6 +309,44 @@ unless every org sharing that channel also disables it (this mirrors the
 most-generous `top_n` rule applied to the same grouping). The terminal, Markdown
 and HTML surfaces are per-org and are not affected by this union.
 
+### Per-category row limits
+
+A category can also set its own `top_n`, capping that one table independently of
+every other. Reach for this when one category is worth showing in full while the
+rest stay short — set it to `0` for no limit at all:
+
+```json
+{
+  "report": {
+    "top_n": 10,
+    "categories": {
+      "releases": { "top_n": 0 },
+      "codeql": { "top_n": 3 }
+    }
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
+
+Here Releases / Tagging lists every repository, CodeQL shows its worst three, and
+every other category keeps the shared limit of 10. A category's `top_n` applies
+to all four surfaces at once; combine it with `top_n_report` / `top_n_cli` /
+`top_n_slack` to vary the fallback per surface.
+
+The resolution order for one category on one surface, most specific first:
+
+1. `--top-n-report` / `--top-n-cli` / `--top-n-slack` (command line)
+2. `--top-n` (command line)
+3. `report.categories.<key>.top_n` (config)
+4. `report.top_n_report` / `top_n_cli` / `top_n_slack` (config)
+5. `report.top_n` (config, default `10`)
+
+Command-line flags deliberately outrank the per-category configuration: a flag is
+a decision about a single run, so `--top-n 5` caps every category even where the
+config asked for an uncapped one. `0` means "no limit" at every level. In a
+shared Slack channel the most generous value any contributing org configured for
+that category wins, matching the visibility rule above.
+
 ### Organisation feature gating
 
 The workflow-driven signals (OpenSSF Scorecard, zizmor, aislop) need

@@ -361,3 +361,52 @@ class TestExtraTables:
         out = markdown.render_org(org)
         assert "⏩ 1 Excluded" in out
         assert "**Excluded:** [opted-out](https://github.com/o/opted-out)" in out
+
+
+class TestPerCategoryLimit:
+    """The ``limit`` callable truncates each category independently."""
+
+    def _org_with_tables(self) -> report.OrgReport:
+        offenders = [
+            RepoSignal(
+                _repo(f"cq{i}"),
+                SignalType.CODEQL,
+                RepoState.OFFENDER,
+                SeverityCounts(high=1),
+            )
+            for i in range(5)
+        ]
+        org = _org(offenders, count=5)
+        org.releases = report.TableSection(
+            category=category_meta(CategoryKey.RELEASES),
+            columns=("Repository", "Last release", "Last tag"),
+            rows=[
+                report.TableRow(repo=_repo(f"rel{i}"), cells=("never", "never"))
+                for i in range(5)
+            ],
+            fail_count=5,
+        )
+        return org
+
+    def test_limit_applies_per_category(self) -> None:
+        org = self._org_with_tables()
+        out = markdown.render_org(
+            org,
+            top_n=2,
+            limit=lambda key: 0 if key is CategoryKey.RELEASES else 2,
+        )
+        # Releases asked for no limit, so every row is present and nothing is
+        # reported as hidden for it.
+        for i in range(5):
+            assert f"rel{i}" in out
+        # CodeQL keeps its own cap of 2, so the rest are hidden.
+        assert "cq0" in out and "cq1" in out
+        assert "cq4" not in out
+        assert "and 3 more" in out
+
+    def test_scalar_top_n_still_caps_every_category(self) -> None:
+        # Without a limit callable the shared top_n governs both, preserving
+        # the pre-per-category behaviour.
+        out = markdown.render_org(self._org_with_tables(), top_n=2)
+        assert "rel4" not in out
+        assert "cq4" not in out

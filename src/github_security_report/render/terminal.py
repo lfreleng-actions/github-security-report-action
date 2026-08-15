@@ -25,11 +25,13 @@ from github_security_report.report import (
     ORG_SETUP_DOC_URL,
     SKIP_MESSAGE,
     SUMMARY_EMOJI,
+    LimitFor,
     OrgReport,
     SignalSection,
     SummaryLine,
     TableSection,
     build_summary,
+    limit_resolver,
     section_shows_informational,
     truncate,
 )
@@ -234,8 +236,22 @@ def render_org(
     *,
     top_n: int | None = None,
     show: Callable[[CategoryKey], bool] | None = None,
+    limit: LimitFor | None = None,
 ) -> None:
     visible = show or (lambda _key: True)
+    limit_for = limit_resolver(top_n, limit)
+
+    def table(section: TableSection | None) -> None:
+        """Render one extra table, honouring its own visibility and limit."""
+        if section is None or not visible(section.category.key):
+            return
+        render_table_section(
+            section,
+            console,
+            excluded=org.excluded_repos,
+            top_n=limit_for(section.category.key),
+        )
+
     console.rule(f"[bold]Security report: {org.org}[/bold]")
     console.print(f"[dim]{org.repo_count} repositories analysed[/dim]\n")
     if org.partial:
@@ -244,31 +260,17 @@ def render_org(
             "read; some repositories may be missing.[/yellow]\n"
         )
     for section in org.sections:
-        if visible(section.signal.category_key):
-            render_section(section, console, excluded=org.excluded_repos, top_n=top_n)
+        key = section.signal.category_key
+        if visible(key):
+            render_section(
+                section, console, excluded=org.excluded_repos, top_n=limit_for(key)
+            )
         if section.signal is SignalType.DEPENDABOT:
-            for table in org.dependabot_tables:
-                if visible(table.category.key):
-                    render_table_section(
-                        table, console, excluded=org.excluded_repos, top_n=top_n
-                    )
-    if org.releases is not None and visible(org.releases.category.key):
-        render_table_section(
-            org.releases, console, excluded=org.excluded_repos, top_n=top_n
-        )
-    if org.mutable_releases is not None and visible(org.mutable_releases.category.key):
-        render_table_section(
-            org.mutable_releases, console, excluded=org.excluded_repos, top_n=top_n
-        )
-    if org.private_vulnerability_reporting is not None and visible(
-        org.private_vulnerability_reporting.category.key
-    ):
-        render_table_section(
-            org.private_vulnerability_reporting,
-            console,
-            excluded=org.excluded_repos,
-            top_n=top_n,
-        )
+            for dependabot_table in org.dependabot_tables:
+                table(dependabot_table)
+    table(org.releases)
+    table(org.mutable_releases)
+    table(org.private_vulnerability_reporting)
 
 
 def render_orgs(

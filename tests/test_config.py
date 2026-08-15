@@ -481,3 +481,64 @@ class TestDefaultConfig:
         assert config.load_file(str(found)).organizations[0].name == (
             "lfreleng-actions"
         )
+
+
+class TestPerCategoryTopN:
+    """A category may cap its own table independently of the output limit."""
+
+    def _report(self, categories: dict) -> config.ReportConfig:
+        return (
+            config.build_config(
+                {
+                    "report": {"top_n": 10, "categories": categories},
+                    "organizations": [{"name": "o"}],
+                }
+            )
+            .organizations[0]
+            .report
+        )
+
+    def test_unset_category_falls_back_to_output_limit(self) -> None:
+        rc = self._report({})
+        assert rc.category_top_n(CategoryKey.RELEASES, "cli") == 10
+
+    def test_category_top_n_overrides_output_limit(self) -> None:
+        rc = self._report({"releases": {"top_n": 3}})
+        assert rc.category_top_n(CategoryKey.RELEASES, "cli") == 3
+        # Other categories are untouched by one category's override.
+        assert rc.category_top_n(CategoryKey.CODEQL, "cli") == 10
+
+    def test_zero_means_no_limit_for_that_category_only(self) -> None:
+        rc = self._report({"releases": {"top_n": 0}})
+        assert rc.category_top_n(CategoryKey.RELEASES, "cli") == 0
+        assert rc.category_top_n(CategoryKey.CODEQL, "cli") == 10
+
+    def test_applies_across_every_output(self) -> None:
+        rc = self._report({"releases": {"top_n": 0}})
+        assert [
+            rc.category_top_n(CategoryKey.RELEASES, out)
+            for out in ("report", "cli", "slack")
+        ] == [0, 0, 0]
+
+    def test_org_override_inherits_other_category_keys(self) -> None:
+        # An org that overrides only top_n must keep the inherited enabled flag.
+        cfg = config.build_config(
+            {
+                "report": {"categories": {"releases": {"enabled": False}}},
+                "organizations": [
+                    {"name": "o", "report": {"categories": {"releases": {"top_n": 0}}}}
+                ],
+            }
+        )
+        toggle = cfg.organizations[0].report.categories["releases"]
+        assert toggle.top_n == 0
+        assert toggle.enabled is False
+
+    def test_negative_top_n_rejected(self) -> None:
+        with pytest.raises(ConfigError):
+            config.build_config(
+                {
+                    "report": {"categories": {"releases": {"top_n": -1}}},
+                    "organizations": [{"name": "o"}],
+                }
+            )

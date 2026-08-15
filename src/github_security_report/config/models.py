@@ -72,12 +72,16 @@ class CategoryToggle:
     map, consulted only when the category is enabled. The data is always
     collected regardless of these toggles; they govern presentation alone.
     ``fail_severity`` overrides the category's default failure cutoff (severity
-    signals only); ``None`` keeps the category default.
+    signals only); ``None`` keeps the category default. ``top_n`` overrides how
+    many rows this one category shows before an "and N more" tally, so a
+    high-volume category can be uncapped (``0``) while the rest stay limited;
+    ``None`` falls back to the per-output limit.
     """
 
     enabled: bool = True
     outputs: OutputToggles = field(default_factory=OutputToggles)
     fail_severity: Severity | None = None
+    top_n: int | None = None
 
     def shows_on(self, output: str) -> bool:
         """Whether this category renders on ``output`` (cli/slack/markdown/html)."""
@@ -158,6 +162,23 @@ class ReportConfig:
     def slack_top_n(self) -> int:
         """Offenders shown per signal in the Slack digest."""
         return self.top_n_slack if self.top_n_slack is not None else self.top_n
+
+    def output_top_n(self, output: str) -> int:
+        """The configured row limit for one output (``report``/``cli``/``slack``)."""
+        return int(getattr(self, f"{output}_top_n"))
+
+    def category_top_n(self, key: CategoryKey, output: str) -> int:
+        """The configured row limit for one category on one output.
+
+        A category's own ``top_n`` is the most specific configured value, so it
+        wins over the per-output limit; ``0`` means "no limit" here as it does
+        everywhere else. An unconfigured category falls back to the per-output
+        limit, so the default behaviour is unchanged.
+        """
+        toggle = self.categories.get(key.value)
+        if toggle is not None and toggle.top_n is not None:
+            return toggle.top_n
+        return self.output_top_n(output)
 
 
 @dataclass(frozen=True)

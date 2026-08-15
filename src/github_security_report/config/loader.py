@@ -152,6 +152,7 @@ def _categories_from(
             enabled=raw.get("enabled", current.enabled),
             outputs=outputs,
             fail_severity=fail_severity,
+            top_n=raw.get("top_n", current.top_n),
         )
     return MappingProxyType(merged)
 
