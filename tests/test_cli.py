@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import httpx
@@ -578,3 +580,17 @@ class TestMostGenerous:
         # 0 means "show everything", so a capped org sharing the channel must
         # not silently re-impose its cap on the org that asked for everything.
         assert most_generous([5, 0, 20]) == 0
+
+
+def test_module_form_entry_point_still_runs() -> None:
+    # `python -m github_security_report.cli` worked while the CLI was a single
+    # module. A package cannot be executed through the __init__ guard, so it
+    # needs a __main__.py; this pins that the invocation keeps working.
+    result = subprocess.run(
+        [sys.executable, "-m", "github_security_report.cli", "--version"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "github-security-report version" in result.stdout

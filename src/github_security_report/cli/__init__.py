@@ -64,7 +64,3 @@ __all__ = [
     "report",
     "write_org_files",
 ]
-
-
-if __name__ == "__main__":  # pragma: no cover
-    app()

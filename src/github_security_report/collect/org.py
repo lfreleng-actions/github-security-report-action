@@ -58,8 +58,10 @@ _SWEEP_KINDS = ("code-scanning", "dependabot", "secret-scanning")
 # uploads, so only a repository covered *solely* by a required-workflow ruleset
 # that has never run is affected. Reporting the documented, recommended token's
 # own outcome as a WARNING implies a broken deployment, so these statuses log at
-# INFO and only a genuinely unexpected failure (e.g. a 5xx) warns.
-_RULESET_OPTIONAL_STATUSES = frozenset({401, 403, 404})
+# INFO and only a genuinely unexpected failure (e.g. a 5xx) warns. Deliberately
+# limited to the permission-shaped statuses: a 401 means the credential itself
+# is bad or expired, which is a real fault and must keep warning.
+_RULESET_OPTIONAL_STATUSES = frozenset({403, 404})
 
 
 def _group_by_repo(alerts: list[dict]) -> dict[str, list[dict]]:

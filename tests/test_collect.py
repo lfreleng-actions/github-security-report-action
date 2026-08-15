@@ -333,13 +333,15 @@ async def test_collect_org_missing_ruleset_permission_is_not_a_warning(
     assert "optional org-admin permission" in records[0].getMessage()
 
 
+@pytest.mark.parametrize("status", [401, 500])
 async def test_collect_org_unexpected_ruleset_failure_still_warns(
-    caplog: pytest.LogCaptureFixture,
+    status: int, caplog: pytest.LogCaptureFixture
 ) -> None:
-    # A 5xx is not the documented "token lacks the optional permission" path,
-    # so it remains a warning: something genuinely went wrong.
+    # Neither a bad or expired credential (401) nor a server error (5xx) is the
+    # documented "token lacks the optional permission" path, so both keep
+    # warning: each is a genuine fault worth surfacing.
     class ServerErrorClient(UnreadableRulesetClient):
-        ruleset_status = 500
+        ruleset_status = status
 
     with caplog.at_level(logging.INFO, logger="github_security_report.collect.org"):
         await collect.collect_org(
