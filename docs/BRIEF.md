@@ -391,7 +391,16 @@ Four presentation surfaces from one canonical dataset:
    `releng-scm`). Slack **cannot render Markdown tables**, so the message is a
    **code-fenced (monospace) top-N (10) block** per report type **plus a
    prominent link** to the GitHub Pages report. Top-N (10) applies **only to
-   Slack**.
+   Slack**. Slack validates a post as a whole and rejects **all** of it if any
+   structural limit is breached (50 blocks per message, 3,000 characters per
+   text object, 150 per header), so the digest sizes itself to fit rather than
+   risking delivering nothing: repository name lists give way first, then table
+   rows, with the shared `… and N more` tally accounting for whatever was left
+   out. Counts are never shed, only names and rows. An over-long `pages_url` is
+   *dropped* rather than cut, since a truncated URL resolves somewhere other
+   than the report. Enforcement lives in one place
+   (`render/slack_limits.py`) so a new block type cannot quietly reintroduce
+   the gap.
 3. **Job summary (repo mode)** — tidy `$GITHUB_STEP_SUMMARY` + action outputs.
 4. **Rich terminal (local)** — see §10.
 

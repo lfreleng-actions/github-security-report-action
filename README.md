@@ -349,6 +349,19 @@ config asked for an uncapped one. `0` means "no limit" at every level. In a
 shared Slack channel the most generous value any contributing org configured for
 that category wins, matching the visibility rule above.
 
+On Slack, `0` is best-effort rather than absolute. Slack imposes hard structural
+limits on a message — 50 blocks per post, 3,000 characters per text object (a
+section body or a context note) and 150 for a header — and rejects the **whole**
+post if any is breached, so an uncapped table would cost the entire digest rather
+than merely overflowing. The digest therefore sizes itself to fit: repository
+name lists are trimmed first, then table rows, and whatever is left out is
+reported by the usual `… and N more` tally so the numbers on screen stay honest.
+Counts are never dropped, only names and rows. The other three surfaces have no
+Slack-style ceiling, but they still apply their own row limits — only the
+`report.json` artifact is unconditionally complete. The digest links to the
+GitHub Pages report whenever `pages_url` is set and short enough to render as a
+link.
+
 ### Per-category row ordering
 
 Each table ships a sensible default ordering — largest backlog first, stalest
