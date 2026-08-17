@@ -30,6 +30,7 @@ from github_security_report.cli.outputs import (
     most_generous,
     repo_outputs,
     show,
+    slack_limit,
     slack_show,
     write_org_files,
 )
@@ -173,6 +174,7 @@ def _write_pages(
             org_report,
             output_dir,
             top_n=limits.resolve(org_cfg, "report"),
+            limit=limits.resolver(org_cfg, "report"),
             report_cfg=org_cfg.report,
         )
     (output_dir / "index.html").write_text(
@@ -230,6 +232,7 @@ def _slack_digest(
             # A category shows in the channel digest when any contributing org
             # would show it on Slack (mirrors the most-generous top_n rule).
             show=slack_show(items),
+            limit=slack_limit(items, options.limits),
         )
         for channel, items in by_channel.items()
     ]
@@ -257,6 +260,7 @@ def _summary(pairs: list[OrgPair], limits: TopNLimits) -> str:
                 org_report,
                 top_n=limits.resolve(org_cfg, "report"),
                 show=show(org_cfg.report, "markdown"),
+                limit=limits.resolver(org_cfg, "report"),
             )
             for org_cfg, org_report in pairs
         ).rstrip()
@@ -280,6 +284,7 @@ async def _run_org(cfg: Config, options: OrgRunOptions, *, console: Console) -> 
             console,
             top_n=limits.resolve(org_cfg, "cli"),
             show=show(org_cfg.report, "cli"),
+            limit=limits.resolver(org_cfg, "cli"),
         )
     if options.output_dir:
         _write_pages(pairs, options.output_dir, console=console, limits=limits)

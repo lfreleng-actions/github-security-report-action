@@ -361,3 +361,85 @@ class TestExtraTables:
         out = markdown.render_org(org)
         assert "⏩ 1 Excluded" in out
         assert "**Excluded:** [opted-out](https://github.com/o/opted-out)" in out
+
+
+class TestPerCategoryLimit:
+    """The ``limit`` callable truncates each category independently."""
+
+    def _org_with_tables(self) -> report.OrgReport:
+        offenders = [
+            RepoSignal(
+                _repo(f"cq{i}"),
+                SignalType.CODEQL,
+                RepoState.OFFENDER,
+                SeverityCounts(high=1),
+            )
+            for i in range(5)
+        ]
+        org = _org(offenders, count=5)
+        org.releases = report.TableSection(
+            category=category_meta(CategoryKey.RELEASES),
+            columns=("Repository", "Last release", "Last tag"),
+            rows=[
+                report.TableRow(repo=_repo(f"rel{i}"), cells=("never", "never"))
+                for i in range(5)
+            ],
+            fail_count=5,
+        )
+        return org
+
+    def test_limit_applies_per_category(self) -> None:
+        org = self._org_with_tables()
+        out = markdown.render_org(
+            org,
+            top_n=2,
+            limit=lambda key: 0 if key is CategoryKey.RELEASES else 2,
+        )
+        # Releases asked for no limit, so every row is present and nothing is
+        # reported as hidden for it.
+        for i in range(5):
+            assert f"rel{i}" in out
+        # CodeQL keeps its own cap of 2, so the rest are hidden.
+        assert "cq0" in out and "cq1" in out
+        assert "cq4" not in out
+        assert "and 3 more" in out
+
+    def test_scalar_top_n_still_caps_every_category(self) -> None:
+        # Without a limit callable the shared top_n governs both, preserving
+        # the pre-per-category behaviour.
+        out = markdown.render_org(self._org_with_tables(), top_n=2)
+        assert "rel4" not in out
+        assert "cq4" not in out
+
+
+class TestTableTotalsRow:
+    def _issues_table(self) -> report.TableSection:
+        return report.TableSection(
+            category=category_meta(CategoryKey.GITHUB_ISSUES),
+            columns=("Repository", "Bug", "Untriaged", "Total", "Oldest"),
+            rows=[
+                report.TableRow(repo=_repo("a"), cells=("1", "2", "3", "9 days")),
+                report.TableRow(repo=_repo("b"), cells=("0", "4", "4", "2 days")),
+            ],
+            sum_columns=frozenset({1, 2, 3}),
+            fail_count=2,
+        )
+
+    def test_totals_row_rendered_in_bold(self) -> None:
+        out = markdown.render_table_section(self._issues_table(), level=2)
+        assert "| **Total** | **1** | **6** | **7** |  |" in out
+
+    def test_totals_reflect_truncation(self) -> None:
+        out = markdown.render_table_section(self._issues_table(), level=2, top_n=1)
+        # Only the first row is shown, so the totals describe just that row.
+        assert "| **Total** | **1** | **2** | **3** |  |" in out
+        assert "… and 1 more" in out
+
+    def test_table_without_sum_columns_has_no_totals_row(self) -> None:
+        section = report.TableSection(
+            category=category_meta(CategoryKey.RELEASES),
+            columns=("Repository", "Last release", "Last tag"),
+            rows=[report.TableRow(repo=_repo("z"), cells=("never", "never"))],
+            fail_count=1,
+        )
+        assert "**Total**" not in markdown.render_table_section(section, level=2)

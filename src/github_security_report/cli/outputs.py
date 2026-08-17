@@ -16,7 +16,7 @@ from github_security_report.config import OrgConfig, ReportConfig
 from github_security_report.models import RepoSignal
 from github_security_report.render import html as html_render
 from github_security_report.render import markdown as md_render
-from github_security_report.report import OrgReport
+from github_security_report.report import LimitFor, OrgReport
 from github_security_report.runner import should_fail
 
 # Keep filenames within output_dir: a channel value containing "/" or ".."
@@ -34,9 +34,14 @@ def _safe_component(value: str) -> str:
 class TopNLimits:
     """The offender-limit overrides supplied on the command line.
 
-    Resolution order for any one output: its category-specific override wins,
-    then the shared ``--top-n`` override, then the org's configured value for
-    that output. A value of 0 means "no limit".
+    Resolution order for one category on one output, most specific first: the
+    category-specific CLI override, then the shared ``--top-n`` override, then
+    the category's configured ``top_n``, then the org's configured value for
+    that output. A value of 0 means "no limit" at every level.
+
+    Command-line flags deliberately outrank the per-category configuration: a
+    flag is a decision about this one run, so ``--top-n 5`` caps every category
+    even where the config asked for an uncapped one.
     """
 
     shared: int | None = None
@@ -44,14 +49,31 @@ class TopNLimits:
     cli: int | None = None
     slack: int | None = None
 
-    def resolve(self, org_cfg: OrgConfig, output: str) -> int:
-        """The effective limit for ``output`` (``report``/``cli``/``slack``)."""
+    def resolve(
+        self, org_cfg: OrgConfig, output: str, category: CategoryKey | None = None
+    ) -> int:
+        """The effective limit for ``output`` (``report``/``cli``/``slack``).
+
+        With a ``category``, the category's own configured ``top_n`` is
+        consulted before the per-output value; without one, the per-output value
+        is used directly (the pre-category behaviour).
+        """
         override: int | None = getattr(self, output)
         if override is not None:
             return override
         if self.shared is not None:
             return self.shared
-        return int(getattr(org_cfg.report, f"{output}_top_n"))
+        if category is not None:
+            return org_cfg.report.category_top_n(category, output)
+        return org_cfg.report.output_top_n(output)
+
+    def resolver(self, org_cfg: OrgConfig, output: str) -> LimitFor:
+        """A per-category limit lookup for one org and output.
+
+        Renderers take this alongside the ``show`` predicate, so a category with
+        its own configured ``top_n`` truncates independently of the rest.
+        """
+        return lambda key: self.resolve(org_cfg, output, key)
 
 
 def most_generous(limits: list[int]) -> int:
@@ -84,11 +106,26 @@ def slack_show(
     return lambda key: any(oc.report.shows_category(key, "slack") for oc, _ in items)
 
 
+def slack_limit(
+    items: list[tuple[OrgConfig, OrgReport]], limits: TopNLimits
+) -> LimitFor:
+    """Per-category Slack limit for a channel: the most generous org's value.
+
+    Orgs sharing a Slack channel render into one digest, so each category takes
+    the most generous limit any contributing org configured for it -- the
+    per-category counterpart of :func:`slack_show`.
+    """
+    return lambda key: most_generous(
+        [limits.resolve(oc, "slack", key) for oc, _ in items]
+    )
+
+
 def write_org_files(
     org: OrgReport,
     output_dir: Path,
     *,
     top_n: int | None = None,
+    limit: LimitFor | None = None,
     report_cfg: ReportConfig,
 ) -> None:
     """Write one org's Markdown, HTML and JSON artifacts under ``output_dir``."""
@@ -96,11 +133,15 @@ def write_org_files(
     org_dir = output_dir / slug
     org_dir.mkdir(parents=True, exist_ok=True)
     (org_dir / "report.md").write_text(
-        md_render.render_org(org, top_n=top_n, show=show(report_cfg, "markdown")),
+        md_render.render_org(
+            org, top_n=top_n, show=show(report_cfg, "markdown"), limit=limit
+        ),
         encoding="utf-8",
     )
     (org_dir / "report.html").write_text(
-        html_render.render_org_html(org, top_n=top_n, show=show(report_cfg, "html")),
+        html_render.render_org_html(
+            org, top_n=top_n, show=show(report_cfg, "html"), limit=limit
+        ),
         encoding="utf-8",
     )
     # report.json is the complete machine-readable dataset, so the per-output

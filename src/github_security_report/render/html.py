@@ -23,12 +23,15 @@ from github_security_report.report import (
     ORG_SETUP_DOC_URL,
     SKIP_MESSAGE,
     SUMMARY_EMOJI,
+    LimitFor,
     OrgReport,
     SignalSection,
     SummaryLine,
     TableSection,
     build_summary,
+    limit_resolver,
     section_shows_informational,
+    table_column_totals,
     truncate,
 )
 
@@ -124,19 +127,23 @@ def _table_context(
     """Context for a generic posture/freshness table (Dependabot, releases)."""
     rows, hidden = truncate(section.rows, top_n)
     name_to_repo = {r.name: r for r in excluded}
+    totals = table_column_totals(section, rows)
     return {
         "title": section.title,
         "url": section.category.url,
         "description": section.resolved_description(),
         # Posture/freshness columns are textual (ecosystem lists, release/tag
         # strings), so they are left-aligned rather than the right-aligned
-        # tabular-nums treatment used for the severity-count tables.
-        "numeric": False,
+        # tabular-nums treatment used for the severity-count tables. A table
+        # declaring summable columns is counting, so it gets the numeric
+        # treatment and a totals row.
+        "numeric": bool(section.sum_columns),
         "columns": list(section.columns),
         "rows": [
             {"name": row.repo.name, "url": row.repo.html_url, "cells": list(row.cells)}
             for row in rows
         ],
+        "total_cells": list(totals) if totals is not None else None,
         "hidden": hidden,
         "summary": _summary_context(
             build_summary(section.summary_counts(excluded)),
@@ -211,23 +218,34 @@ def render_org_html(
     *,
     top_n: int | None = None,
     show: Callable[[CategoryKey], bool] | None = None,
+    limit: LimitFor | None = None,
 ) -> str:
     visible = show or (lambda _key: True)
+    limit_for = limit_resolver(top_n, limit)
     template = _env.get_template("report.html.j2")
     excluded = org.excluded_repos
+
+    def table(section: TableSection | None) -> dict | None:
+        """Context for one extra table, honouring its visibility and limit."""
+        if section is None or not visible(section.category.key):
+            return None
+        return _table_context(
+            section, excluded=excluded, top_n=limit_for(section.category.key)
+        )
+
+    def dependabot_tables() -> list[dict]:
+        return [ctx for t in org.dependabot_tables if (ctx := table(t)) is not None]
+
     sections: list[dict] = []
     for section in org.sections:
-        parent_visible = visible(section.signal.category_key)
+        key = section.signal.category_key
+        parent_visible = visible(key)
         if parent_visible:
-            ctx = _section_context(section, excluded=excluded, top_n=top_n)
+            ctx = _section_context(section, excluded=excluded, top_n=limit_for(key))
             # When the parent Dependabot Alerts signal is shown, its posture
             # sub-tables render beneath it inside the same card.
             if section.signal is SignalType.DEPENDABOT:
-                ctx["extra_tables"] = [
-                    _table_context(t, excluded=excluded, top_n=top_n)
-                    for t in org.dependabot_tables
-                    if visible(t.category.key)
-                ]
+                ctx["extra_tables"] = dependabot_tables()
             sections.append(ctx)
         elif section.signal is SignalType.DEPENDABOT:
             # The parent Dependabot Alerts signal is hidden, but the posture
@@ -237,11 +255,7 @@ def render_org_html(
             # honoured on the HTML surface too -- matching the terminal,
             # Markdown and Slack renderers, which decouple them from the
             # parent signal's visibility.
-            sections.extend(
-                _table_context(t, excluded=excluded, top_n=top_n)
-                for t in org.dependabot_tables
-                if visible(t.category.key)
-            )
+            sections.extend(dependabot_tables())
     return str(
         template.render(
             org=org.org,
@@ -249,26 +263,10 @@ def render_org_html(
             generated_at=org.generated_at.strftime("%Y-%m-%d %H:%M UTC"),
             partial=org.partial,
             sections=sections,
-            releases=(
-                _table_context(org.releases, excluded=excluded, top_n=top_n)
-                if org.releases and visible(org.releases.category.key)
-                else None
-            ),
-            mutable_releases=(
-                _table_context(org.mutable_releases, excluded=excluded, top_n=top_n)
-                if org.mutable_releases and visible(org.mutable_releases.category.key)
-                else None
-            ),
-            private_vulnerability_reporting=(
-                _table_context(
-                    org.private_vulnerability_reporting,
-                    excluded=excluded,
-                    top_n=top_n,
-                )
-                if org.private_vulnerability_reporting
-                and visible(org.private_vulnerability_reporting.category.key)
-                else None
-            ),
+            releases=table(org.releases),
+            mutable_releases=table(org.mutable_releases),
+            private_vulnerability_reporting=table(org.private_vulnerability_reporting),
+            issues=table(org.issues),
             datatables_version=DATATABLES_VERSION,
             datatables_css_sri=DATATABLES_CSS_SRI,
             datatables_js_sri=DATATABLES_JS_SRI,

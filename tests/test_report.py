@@ -38,6 +38,27 @@ class TestBuildSummary:
         lines = report.build_summary([report.SummaryCount("pass", 86, "Clean")])
         assert [(line.kind, line.text) for line in lines] == [("pass", "All Clean")]
 
+    def test_all_pass_uses_the_alternative_collapse_label(self) -> None:
+        # A counted label that is a noun phrase ("12 No open issues") does not
+        # parse after "All", so a category may supply adjectival wording for
+        # the collapsed line only.
+        lines = report.build_summary(
+            [report.SummaryCount("pass", 86, "No open issues", all_label="Clean")]
+        )
+        assert [line.text for line in lines] == ["All Clean"]
+
+    def test_alternative_collapse_label_is_unused_when_counted(self) -> None:
+        lines = report.build_summary(
+            [
+                report.SummaryCount("fail", 2, "With open issues"),
+                report.SummaryCount("pass", 84, "No open issues", all_label="Clean"),
+            ]
+        )
+        assert [line.text for line in lines] == [
+            "2 With open issues",
+            "84 No open issues",
+        ]
+
     def test_pass_keeps_number_when_excluded_present(self) -> None:
         lines = report.build_summary(
             [
@@ -260,3 +281,52 @@ class TestTruncate:
 
     def test_exact_limit_hides_nothing(self) -> None:
         assert report.truncate([1, 2, 3], 3) == ([1, 2, 3], 0)
+
+
+class TestTableColumnTotals:
+    """The shared trailing totals row for generic tables."""
+
+    def _section(self, rows: list[report.TableRow], **kwargs) -> report.TableSection:
+        from github_security_report.categories import CategoryKey, category_meta
+
+        return report.TableSection(
+            category=category_meta(CategoryKey.GITHUB_ISSUES),
+            columns=("Repository", "Bug", "Total", "Oldest"),
+            rows=rows,
+            **kwargs,
+        )
+
+    def _rows(self) -> list[report.TableRow]:
+        return [
+            report.TableRow(repo=_repo("a"), cells=("1", "4", "3 days")),
+            report.TableRow(repo=_repo("b"), cells=("2", "5", "9 days")),
+        ]
+
+    def test_no_sum_columns_means_no_totals_row(self) -> None:
+        section = self._section(self._rows())
+        assert report.table_column_totals(section, section.rows) is None
+
+    def test_sums_numeric_columns_and_blanks_the_rest(self) -> None:
+        section = self._section(self._rows(), sum_columns=frozenset({1, 2}))
+        assert report.table_column_totals(section, section.rows) == (
+            "Total",
+            "3",
+            "9",
+            "",
+        )
+
+    def test_totals_cover_only_the_displayed_rows(self) -> None:
+        # Callers pass the already-truncated set, so the totals must describe
+        # the visible table rather than the full row list.
+        section = self._section(self._rows(), sum_columns=frozenset({1, 2}))
+        shown, _hidden = report.truncate(section.rows, 1)
+        assert report.table_column_totals(section, shown) == ("Total", "1", "4", "")
+
+    def test_unparsable_cell_contributes_zero(self) -> None:
+        rows = [report.TableRow(repo=_repo("a"), cells=("n/a", "4", "3 days"))]
+        section = self._section(rows, sum_columns=frozenset({1, 2}))
+        assert report.table_column_totals(section, rows) == ("Total", "0", "4", "")
+
+    def test_empty_row_set_totals_to_zero(self) -> None:
+        section = self._section([], sum_columns=frozenset({1, 2}))
+        assert report.table_column_totals(section, []) == ("Total", "0", "0", "")

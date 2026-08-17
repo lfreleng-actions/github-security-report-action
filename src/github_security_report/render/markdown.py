@@ -20,14 +20,17 @@ from github_security_report.report import (
     ORG_SETUP_DOC_URL,
     SKIP_MESSAGE,
     SUMMARY_EMOJI,
+    LimitFor,
     OrgReport,
     Report,
     SignalSection,
     SummaryLine,
     TableSection,
     build_summary,
+    limit_resolver,
     offender_column_totals,
     section_shows_informational,
+    table_column_totals,
     truncate,
 )
 
@@ -235,6 +238,15 @@ def render_table_section(
         for row in rows:
             cells = [_link(row.repo), *row.cells]
             lines.append("| " + " | ".join(cells) + " |")
+        # A trailing totals row sums the numeric columns across the rows shown
+        # above, matching the offender tables.
+        totals = table_column_totals(section, rows)
+        if totals is not None:
+            lines.append(
+                "| "
+                + " | ".join(f"**{cell}**" if cell else "" for cell in totals)
+                + " |"
+            )
         lines.append("")
         if hidden:
             lines.append(f"_… and {hidden} more_")
@@ -256,8 +268,10 @@ def render_org(
     *,
     top_n: int | None = None,
     show: Callable[[CategoryKey], bool] | None = None,
+    limit: LimitFor | None = None,
 ) -> str:
     visible = show or (lambda _key: True)
+    limit_for = limit_resolver(top_n, limit)
     when = org.generated_at.strftime("%Y-%m-%d %H:%M UTC")
     parts = [
         f"# Security report: {org.org}",
@@ -272,10 +286,27 @@ def render_org(
         )
         parts.append("")
     excluded = org.excluded_repos
+
+    def table(section: TableSection | None, *, level: int = 2) -> None:
+        """Append one extra table, honouring its own visibility and limit."""
+        if section is None or not visible(section.category.key):
+            return
+        parts.append(
+            render_table_section(
+                section,
+                level=level,
+                excluded=excluded,
+                top_n=limit_for(section.category.key),
+            )
+        )
+
     for section in org.sections:
-        parent_visible = visible(section.signal.category_key)
+        key = section.signal.category_key
+        parent_visible = visible(key)
         if parent_visible:
-            parts.append(render_section(section, excluded=excluded, top_n=top_n))
+            parts.append(
+                render_section(section, excluded=excluded, top_n=limit_for(key))
+            )
         # The Dependabot configuration-posture sub-tables normally nest beneath
         # the Dependabot signal heading as level-3 sub-sections. When the parent
         # signal is hidden they would otherwise become orphaned ### headings
@@ -285,34 +316,12 @@ def render_org(
         # hidden.
         if section.signal is SignalType.DEPENDABOT:
             table_level = 3 if parent_visible else 2
-            parts.extend(
-                render_table_section(
-                    table, level=table_level, excluded=excluded, top_n=top_n
-                )
-                for table in org.dependabot_tables
-                if visible(table.category.key)
-            )
-    if org.releases is not None and visible(org.releases.category.key):
-        parts.append(
-            render_table_section(org.releases, level=2, excluded=excluded, top_n=top_n)
-        )
-    if org.mutable_releases is not None and visible(org.mutable_releases.category.key):
-        parts.append(
-            render_table_section(
-                org.mutable_releases, level=2, excluded=excluded, top_n=top_n
-            )
-        )
-    if org.private_vulnerability_reporting is not None and visible(
-        org.private_vulnerability_reporting.category.key
-    ):
-        parts.append(
-            render_table_section(
-                org.private_vulnerability_reporting,
-                level=2,
-                excluded=excluded,
-                top_n=top_n,
-            )
-        )
+            for dependabot_table in org.dependabot_tables:
+                table(dependabot_table, level=table_level)
+    table(org.releases)
+    table(org.mutable_releases)
+    table(org.private_vulnerability_reporting)
+    table(org.issues)
     return "\n".join(parts).rstrip() + "\n"
 
 

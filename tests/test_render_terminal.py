@@ -266,6 +266,25 @@ def test_top_n_limits_generic_table_and_name_lists() -> None:
     assert "… and 5 more" in out  # 7 rows, 2 shown
 
 
+def test_generic_table_escapes_rich_markup_in_headers_and_cells() -> None:
+    # Column names come from configuration and cells can carry arbitrary text
+    # (a release tag, say). Rich reads '[' as markup, so an unescaped value
+    # would raise MarkupError mid-render and take the whole report with it.
+    org = _org([], count=1)
+    org.releases = report.TableSection(
+        category=category_meta(CategoryKey.RELEASES),
+        columns=("Repository", "Bug [P1]", "Last tag"),
+        rows=[report.TableRow(repo=_repo("r0"), cells=("[/]", "v1.0[rc]"))],
+        fail_count=1,
+    )
+    console = Console(record=True, width=200, no_color=True)
+    terminal.render_org(org, console, top_n=0)
+    out = console.export_text()
+    assert "Bug [P1]" in out
+    assert "[/]" in out
+    assert "v1.0[rc]" in out
+
+
 def test_offender_table_has_totals_row() -> None:
     signals = [
         RepoSignal(

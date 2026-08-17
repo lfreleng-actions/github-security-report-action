@@ -136,6 +136,7 @@ organisation and **Repository access** set to *All repositories*, then grant:
 | Dependabot alerts | Open Dependabot vulnerability alerts |
 | Code scanning alerts | CodeQL / Scorecard / zizmor / aislop findings |
 | Secret scanning alerts | Open secret-scanning alerts |
+| Issues | Open issues and their labels (GitHub Issues table) |
 | Administration | Dependabot enablement + security-updates status, and effective branch rules |
 
 **Organization permissions:**
@@ -294,7 +295,8 @@ out of the terminal and Slack while still publishing it to the Markdown and HTML
 Pages output. The valid category keys are: `codeql`, `scorecard`, `zizmor`,
 `aislop`, `dependabot_alerts`, `secret_scanning`, `dependabot_alerts_enabled`,
 `dependabot_updates_enabled`, `dependabot_cooldown`, `releases`,
-`mutable_releases`, `private_vulnerability_reporting`. Like the other `report`
+`mutable_releases`, `private_vulnerability_reporting`, `github_issues`. Like the
+other `report`
 settings, `categories` can be set
 globally and overridden per organisation (overrides merge key-by-key, so
 flipping one output leaves the rest untouched). The machine-readable
@@ -308,6 +310,179 @@ Slack disable therefore does not suppress a category in a shared-channel digest
 unless every org sharing that channel also disables it (this mirrors the
 most-generous `top_n` rule applied to the same grouping). The terminal, Markdown
 and HTML surfaces are per-org and are not affected by this union.
+
+### Per-category row limits
+
+A category can also set its own `top_n`, capping that one table independently of
+every other. Reach for this when one category is worth showing in full while the
+rest stay short — set it to `0` for no limit at all:
+
+```json
+{
+  "report": {
+    "top_n": 10,
+    "categories": {
+      "releases": { "top_n": 0 },
+      "codeql": { "top_n": 3 }
+    }
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
+
+Here Releases / Tagging lists every repository, CodeQL shows its worst three, and
+every other category keeps the shared limit of 10. A category's `top_n` applies
+to all four surfaces at once; combine it with `top_n_report` / `top_n_cli` /
+`top_n_slack` to vary the fallback per surface.
+
+The resolution order for one category on one surface, most specific first:
+
+1. `--top-n-report` / `--top-n-cli` / `--top-n-slack` (command line)
+2. `--top-n` (command line)
+3. `report.categories.<key>.top_n` (config)
+4. `report.top_n_report` / `top_n_cli` / `top_n_slack` (config)
+5. `report.top_n` (config, default `10`)
+
+Command-line flags deliberately outrank the per-category configuration: a flag is
+a decision about a single run, so `--top-n 5` caps every category even where the
+config asked for an uncapped one. `0` means "no limit" at every level. In a
+shared Slack channel the most generous value any contributing org configured for
+that category wins, matching the visibility rule above.
+
+### Per-category row ordering
+
+Each table ships a sensible default ordering — largest backlog first, stalest
+release first, and so on. `report.categories.<key>.sort` overrides it with a list
+of column names, evaluated left to right:
+
+```json
+{
+  "report": {
+    "categories": {
+      "github_issues": { "sort": ["untriaged", "bug", "total", "oldest"] }
+    }
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
+
+That ranks the Issues table by untriaged count, breaking ties on Bug, then on
+total open issues, then on the oldest issue.
+
+- Names match column headers **case-insensitively**, so `untriaged` finds
+  `Untriaged` and a custom `issue_labels` column such as `Regression` works with
+  no extra configuration. `repository` sorts by repository name.
+- **Direction is implicit by type**: numeric columns descend (most first, which
+  is also oldest-first for an age column) and text columns ascend.
+- A leading **`-` forces descending** and **`+` forces ascending**, so
+  `["+total"]` lists the smallest backlogs first.
+- A cell with **no value to sort on** — an `Oldest` of `unknown`, say — stays at
+  the bottom whichever direction you choose. Missing is not the same as small.
+- The repository name is always applied as the final tiebreaker, so rows that
+  are equal under every configured term still order deterministically.
+- An unrecognised column name is logged and skipped rather than failing the run.
+- Omitting `sort` keeps the table's own default ordering. This matters: some
+  defaults rank on values that are never displayed as a column — Releases /
+  Tagging ranks on *missing* release and tag signals — so they cannot be
+  expressed as a column list.
+
+Ordering is resolved once, when the report is built, so every surface and
+`report.json` agree. It applies to the generic tables (GitHub Issues, Releases /
+Tagging, Mutable Releases, the Dependabot posture tables). The severity signal
+tables keep their own ranking, which encodes domain logic a column sort would
+flatten — Scorecard cascades through the worst populated severity rung so a lone
+Critical is never buried by a weaker repository with a lower score.
+
+### GitHub Issues
+
+The `github_issues` category counts each repository's **open issues**, split by
+label into columns. It reads from the same batched GraphQL prefetch as the
+release and Dependabot data, so it costs no extra API requests:
+
+```text
+GitHub Issues
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━┳━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━┓
+┃ Repository                    ┃ Bug ┃ Feature ┃ Docs ┃ Other ┃ Untriaged ┃ Total ┃  Oldest ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━╇━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━┩
+│ .github                       │   1 │       0 │    0 │     0 │        10 │    11 │ 16 days │
+│ tag-validate-action           │   0 │       0 │    0 │     0 │         8 │     8 │ 25 days │
+│ security-workflows            │   0 │       5 │    1 │     0 │         0 │     6 │   today │
+│ github-security-report-action │   0 │       0 │    0 │     3 │         1 │     4 │ 52 days │
+│ dependamerge                  │   0 │       1 │    0 │     1 │         1 │     3 │ 52 days │
+├───────────────────────────────┼─────┼─────────┼──────┼───────┼───────────┼───────┼─────────┤
+│ Total                         │   1 │       6 │    1 │     4 │        20 │    32 │         │
+└───────────────────────────────┴─────┴─────────┴──────┴───────┴───────────┴───────┴─────────┘
+  … and 11 more
+  ❌ 16 With open issues
+  ✅ 87 No open issues
+```
+
+That is a real run of `lfreleng-actions` under `top_n: 5`. The totals row sums
+the rows actually **displayed**, matching the offender tables, so it stays
+consistent with a truncated view; `… and 11 more` plus the five listed rows
+reconcile with the `❌ 16` in the footer.
+
+Two columns are always present and are not configurable:
+
+- **Other** — the issue is labelled, but with nothing you asked about.
+- **Untriaged** — the issue has no labels at all. This is the column to watch:
+  an unlabelled issue is one nobody has categorised.
+
+Both names are reserved, as are `Repository`, `Total` and `Oldest`: configuring a
+column with one of those names is rejected, because it would either share a
+counter with the implicit column — stopping the class columns summing to `Total`
+— or duplicate a header, which would also make `sort: ["repository"]` resolve to
+a count column instead of the repository name. Column names must additionally be
+non-blank, unpadded, distinct case-insensitively (`sort` matches them that way,
+and strips its terms), and free of `|`, backticks and control characters, which
+would corrupt the Markdown table or Slack code fence they are rendered into.
+
+The remaining columns come from `report.issue_labels`, which maps a column name
+to the issue labels that count towards it. An issue counts **once**, under the
+first column whose labels it carries, so the columns always sum to the classified
+total. Matching is case-insensitive on the whole label name, so `docs` does not
+swallow an unrelated `docs-needed`. The default is:
+
+```json
+{
+  "report": {
+    "issue_labels": {
+      "Bug": ["bug", "defect"],
+      "Feature": ["feature", "enhancement"],
+      "Docs": ["documentation", "docs"]
+    }
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
+
+Unlike `ruleset_workflows`, a configured `issue_labels` **replaces** the default
+rather than merging into it — the mapping defines a coherent set of table
+columns, so merging would leave behind default columns you deliberately left out.
+
+Repositories with no open issues are counted in the `✅ No open issues` footer
+rather than listed. Rows rank by total open issues, then by Untriaged. Pull
+requests are **not** counted: the GraphQL `issues` connection excludes them.
+
+> **Accuracy note.** `Total` is exact at any backlog size, as is `Oldest`
+> wherever an age is shown. The label columns are computed from a bounded,
+> oldest-first window of each repository's open issues (25 issues, 5 labels
+> each) that keeps the query well inside GitHub's GraphQL rate-limit budget. A
+> repository whose label breakdown is partial shows a trailing `+` on its
+> `Oldest` cell. That covers a backlog exceeding the issue window, and any issue
+> whose classification a label beyond the label window could have changed —
+> which is every classification except a match on the *first* configured column,
+> since columns are matched in declaration order and an unseen label could
+> belong to an earlier one. An issue whose labels could not be read at all is
+> left out of the class columns entirely rather than counted as `Untriaged`. An
+> `Oldest` of `unknown` means the oldest issue came back unreadable or undated;
+> it can still carry the `+`.
+
+**Permissions.** A fine-grained PAT needs **Issues: read** for this table; a
+classic PAT's `repo` scope already covers it. Without it GitHub serves the query
+with HTTP 200 and this one field null, so affected repositories are reported as
+`❓ Unknown` rather than counted as having no open issues — an unreadable backlog
+is never presented as a clean one.
 
 ### Organisation feature gating
 

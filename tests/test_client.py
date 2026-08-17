@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import socket
 from collections.abc import AsyncIterator, Coroutine, Sequence
 from typing import Any
@@ -873,6 +874,257 @@ async def test_repo_graph_batch_non_200_returns_defaults(client: GitHubClient) -
 async def test_repo_graph_batch_empty_names_no_request(client: GitHubClient) -> None:
     # No names means no HTTP call at all (respx is not even engaged here).
     assert await client.repo_graph_batch("o", []) == {}
+
+
+def _issue_node(
+    number: int,
+    title: str,
+    *,
+    created_at: str | None = "2025-01-01T00:00:00Z",
+    # A label connection (and its entries) can be null when a sub-object
+    # errored, so both are deliberately nullable here.
+    labels: Sequence[dict | None] | None = None,
+    label_total: int | None = None,
+) -> dict:
+    """Build one open-issue node as the batched query returns it.
+
+    ``label_total`` mirrors the ``totalCount`` the real query asks for, which
+    defaults to the number of labels supplied; pass a larger value to simulate
+    an issue carrying more labels than the window returned.
+    """
+    entries = list(labels or [])
+    return {
+        "number": number,
+        "title": title,
+        "createdAt": created_at,
+        "labels": {
+            "totalCount": len(entries) if label_total is None else label_total,
+            "nodes": entries,
+        },
+    }
+
+
+@respx.mock
+async def test_repo_graph_batch_parses_open_issues(client: GitHubClient) -> None:
+    # The issues connection is ordered oldest-first, so the window's first entry
+    # is the oldest open issue and labels arrive as a flat, ordered tuple.
+    node = _graph_repo_node()
+    node["issues"] = {
+        "totalCount": 3,
+        "nodes": [
+            _issue_node(
+                7,
+                "Oldest thing",
+                created_at="2023-03-04T05:06:07Z",
+                labels=[{"name": "bug"}, {"name": "help wanted"}],
+            ),
+            _issue_node(11, "Middle thing", created_at="2024-06-01T00:00:00Z"),
+            _issue_node(
+                12,
+                "Newest thing",
+                created_at="2025-09-09T00:00:00Z",
+                labels=[{"name": "enhancement"}],
+            ),
+        ],
+    }
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": {"r0": node}})
+    )
+    out = await client.repo_graph_batch("o", ["a"])
+
+    a = out["a"]
+    assert a.open_issues == 3
+    assert [i.number for i in a.issues] == [7, 11, 12]
+    assert [i.title for i in a.issues] == [
+        "Oldest thing",
+        "Middle thing",
+        "Newest thing",
+    ]
+    # Labels flatten to their names, preserving GraphQL's order.
+    assert a.issues[0].labels == ("bug", "help wanted")
+    assert a.issues[1].labels == ()
+    assert a.issues[2].labels == ("enhancement",)
+    oldest = a.issues[0].created_at
+    assert oldest is not None
+    assert (oldest.year, oldest.month, oldest.day) == (2023, 3, 4)
+
+
+@respx.mock
+async def test_repo_graph_batch_issue_window_is_bounded(client: GitHubClient) -> None:
+    # A large backlog exceeds the query's page size: totalCount stays
+    # authoritative while the parsed window is capped at what GitHub returned.
+    node = _graph_repo_node()
+    node["issues"] = {
+        "totalCount": 4321,
+        "nodes": [_issue_node(i, f"issue {i}") for i in range(1, 101)],
+    }
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": {"r0": node}})
+    )
+    out = await client.repo_graph_batch("o", ["a"])
+
+    a = out["a"]
+    assert a.open_issues == 4321
+    assert len(a.issues) == 100
+
+
+@respx.mock
+async def test_repo_graph_batch_null_issues_object(client: GitHubClient) -> None:
+    # A null issues connection (a failed sub-object) and a wholly absent one
+    # must both read as indeterminate rather than as zero open issues, so a
+    # backlog nobody could see is never reported as a clean one.
+    null_node = _graph_repo_node()
+    null_node["issues"] = None
+    missing_node = _graph_repo_node()  # no "issues" key at all
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(
+            200, json={"data": {"r0": null_node, "r1": missing_node}}
+        )
+    )
+    out = await client.repo_graph_batch("o", ["a", "b"])
+
+    # An unreadable issues connection is indeterminate, not "zero open issues":
+    # GitHub nulls this field for a token lacking Issues: read while serving the
+    # rest of the repository, so a 0 here would read as a clean backlog.
+    assert out["a"].open_issues is None
+    assert out["a"].issues == ()
+    assert out["b"].open_issues is None
+    assert out["b"].issues == ()
+
+
+@respx.mock
+async def test_repo_graph_batch_malformed_issue_entries(client: GitHubClient) -> None:
+    # A null node, a node with no usable number, a null labels connection and a
+    # null label entry must each be skipped without aborting the whole parse.
+    numberless = _issue_node(0, "numberless")
+    numberless["number"] = None
+    no_labels = _issue_node(9, "null labels")
+    no_labels["labels"] = None
+    node = _graph_repo_node()
+    node["issues"] = {
+        "totalCount": 4,
+        "nodes": [
+            None,
+            numberless,
+            no_labels,
+            _issue_node(10, "partial labels", labels=[None, {"name": "bug"}]),
+        ],
+    }
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": {"r0": node}})
+    )
+    out = await client.repo_graph_batch("o", ["a"])
+
+    a = out["a"]
+    # totalCount is GitHub's, not a count of what survived parsing.
+    assert a.open_issues == 4
+    assert [i.number for i in a.issues] == [9, 10]
+    assert a.issues[0].labels == ()
+    # An unreadable labels connection is not an issue without labels: it is
+    # indeterminate, so the classifier must treat it as possibly incomplete
+    # rather than counting it as a confident triage gap.
+    assert a.issues[0].labels_truncated is True
+    assert a.issues[1].labels == ("bug",)
+    # The two dropped nodes came before any survivor, so the issue now at
+    # entry 0 is only the oldest *readable* one -- its age is not the answer
+    # the Oldest column asks for.
+    assert a.oldest_issue_unreadable is True
+
+
+@respx.mock
+async def test_repo_graph_batch_keeps_oldest_when_a_later_node_is_dropped(
+    client: GitHubClient,
+) -> None:
+    # A gap after the first survivor costs detail, not the oldest-issue answer.
+    node = _graph_repo_node()
+    node["issues"] = {"totalCount": 2, "nodes": [_issue_node(1, "oldest"), None]}
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": {"r0": node}})
+    )
+    out = await client.repo_graph_batch("o", ["a"])
+
+    assert out["a"].oldest_issue_unreadable is False
+
+
+@respx.mock
+async def test_repo_graph_batch_unusable_issue_total_is_unknown(
+    client: GitHubClient,
+) -> None:
+    # A totalCount that is absent, null or the wrong type is no reading at all,
+    # not a reading of zero -- degrading it to 0 would report a repository whose
+    # nodes plainly came back as having no open issues.
+    node = _graph_repo_node()
+    node["issues"] = {"nodes": [_issue_node(1, "present")]}
+    other = _graph_repo_node()
+    other["issues"] = {"totalCount": None, "nodes": []}
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": {"r0": node, "r1": other}})
+    )
+    out = await client.repo_graph_batch("o", ["a", "b"])
+
+    assert out["a"].open_issues is None
+    assert len(out["a"].issues) == 1
+    assert out["b"].open_issues is None
+
+
+@respx.mock
+async def test_repo_graph_batch_unusable_label_total_marks_truncated(
+    client: GitHubClient,
+) -> None:
+    # Without a usable label totalCount there is no evidence the names we got
+    # are all of them, so classification must be treated as uncertain.
+    node = _graph_repo_node()
+    issue = _issue_node(1, "no label total", labels=[{"name": "bug"}])
+    del issue["labels"]["totalCount"]
+    node["issues"] = {"totalCount": 1, "nodes": [issue]}
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": {"r0": node}})
+    )
+    out = await client.repo_graph_batch("o", ["a"])
+
+    assert out["a"].issues[0].labels == ("bug",)
+    assert out["a"].issues[0].labels_truncated is True
+
+
+@respx.mock
+async def test_repo_graph_batch_marks_a_truncated_label_window(
+    client: GitHubClient,
+) -> None:
+    # totalCount exceeding the labels returned means the issue carries labels
+    # the window did not show, which could change how it is classified.
+    node = _graph_repo_node()
+    node["issues"] = {
+        "totalCount": 1,
+        "nodes": [
+            _issue_node(1, "many labels", labels=[{"name": "bug"}], label_total=9)
+        ],
+    }
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": {"r0": node}})
+    )
+    out = await client.repo_graph_batch("o", ["a"])
+
+    assert out["a"].issues[0].labels_truncated is True
+
+
+@respx.mock
+async def test_repo_graph_batch_pins_the_rate_limit_windows(
+    client: GitHubClient,
+) -> None:
+    # The two window sizes are this category's rate-limit safeguard, not a
+    # cosmetic cap: GitHub scores a query by the nodes it could return,
+    # multiplied down each level of nesting, so the issue window multiplies by
+    # the label window. At 100 x 20 a single 118-repository organisation costs
+    # about half the hourly budget; at 25 x 5, about 4%. Nothing else in the
+    # suite fails if they are widened, so the request payload is pinned here.
+    route = respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": {"r0": _graph_repo_node()}})
+    )
+    await client.repo_graph_batch("o", ["a"])
+
+    query = json.loads(route.calls.last.request.content)["query"]
+    assert "issues(states: OPEN, first: 25," in query
+    assert "labels(first: 5)" in query
 
 
 def test_https_endpoint_defaults_when_unset(

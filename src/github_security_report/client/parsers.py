@@ -16,7 +16,7 @@ from typing import cast
 
 import httpx
 
-from github_security_report.models import ReleaseRef, RepoGraphData
+from github_security_report.models import IssueRef, ReleaseRef, RepoGraphData
 
 
 def _parse_iso(value: object) -> dt.datetime | None:
@@ -131,6 +131,107 @@ def _last_published(refs: list[ReleaseRef]) -> ReleaseRef | None:
     return max(dated, key=lambda r: cast(dt.datetime, r.published_at))
 
 
+def _label_names(node: dict) -> tuple[tuple[str, ...], bool]:
+    """Label names from one issue node's ``labels`` connection, and truncation.
+
+    Returns the names in order alongside a flag saying whether the labels seen
+    might be incomplete -- either because the issue carries more than the
+    query's window returned, or because the connection could not be read at
+    all. The connection, its ``nodes`` list and each entry may legally be null
+    (or a non-dict) when a sub-object errors, so each level is guarded and
+    unusable entries are skipped rather than aborting the parse.
+    """
+    labels = node.get("labels")
+    if not isinstance(labels, dict):
+        # The connection itself was unreadable. That is *not* an issue with no
+        # labels: reporting it as such would fabricate a triage gap out of a
+        # sub-object error, so it is flagged indeterminate and the row it lands
+        # in is marked partial.
+        return (), True
+    names: list[str] = []
+    for label in labels.get("nodes") or []:
+        if not isinstance(label, dict):
+            continue
+        name = label.get("name")
+        if not name:
+            continue
+        names.append(str(name))
+    raw_total = labels.get("totalCount")
+    if not isinstance(raw_total, int) or isinstance(raw_total, bool):
+        # No usable count means no evidence that the names we got are all of
+        # them, so the issue is flagged as possibly incompletely labelled.
+        return tuple(names), True
+    return tuple(names), raw_total > len(names)
+
+
+def _issue_ref(node: object) -> IssueRef | None:
+    """One parsed issue, or None when the node is unusable.
+
+    GraphQL list entries may legally be null (e.g. when a sub-object errors),
+    and an entry without a usable number is not an issue we can report on, so
+    both are rejected rather than aborting the surrounding parse.
+    """
+    if not isinstance(node, dict):
+        return None
+    number = node.get("number")
+    if not isinstance(number, int) or isinstance(number, bool):
+        return None
+    labels, labels_truncated = _label_names(node)
+    return IssueRef(
+        number=number,
+        title=str(node.get("title") or ""),
+        labels=labels,
+        labels_truncated=labels_truncated,
+        created_at=_parse_iso(node.get("createdAt")),
+    )
+
+
+def _issue_refs(issues: object) -> tuple[int | None, tuple[IssueRef, ...], bool]:
+    """Open-issue total and window from an ``issues`` connection node.
+
+    Returns the authoritative ``totalCount`` alongside the bounded window of
+    parsed issues; the window may be shorter than the total on a repository with
+    a large backlog.
+
+    A missing or failed connection returns ``(None, ())`` -- **not** ``(0, ())``.
+    GitHub answers a query whose ``issues`` field it will not serve (a
+    fine-grained token without ``Issues: read``, say) with HTTP 200, the rest of
+    the repository populated, and this one sub-object null plus an entry in
+    ``errors``. Reporting that as zero open issues would render a confident
+    "no open issues" for an organisation whose backlog was never readable, so
+    the absence is preserved as indeterminate for the caller to surface as
+    unknown. A ``totalCount`` that is absent, null or not an integer is no
+    reading at all rather than a reading of zero, so it is preserved as
+    indeterminate too -- a repository whose nodes came back cannot be clean.
+
+    The third element reports whether the leading (oldest) node was dropped.
+    Skipping it silently would promote a newer issue to entry 0, whose age the
+    report would then present as the oldest -- plausible, and wrong.
+    """
+    if not isinstance(issues, dict):
+        return None, (), False
+    raw_total = issues.get("totalCount")
+    # ``bool`` is an ``int`` subclass; a boolean here would be a schema
+    # violation, so reject it rather than silently counting it as 0/1.
+    total = (
+        raw_total
+        if isinstance(raw_total, int) and not isinstance(raw_total, bool)
+        else None
+    )
+    refs: list[IssueRef] = []
+    lead_unreadable = False
+    for node in issues.get("nodes") or []:
+        ref = _issue_ref(node)
+        if ref is None:
+            # Only a gap *before* the first survivor changes which issue ends
+            # up at entry 0; a later gap costs detail, not the oldest-issue
+            # answer.
+            lead_unreadable = lead_unreadable or not refs
+            continue
+        refs.append(ref)
+    return total, tuple(refs), lead_unreadable
+
+
 def _parse_repo_node(node: dict) -> RepoGraphData:
     """Map one repository alias from the batched query to ``RepoGraphData``.
 
@@ -140,6 +241,9 @@ def _parse_repo_node(node: dict) -> RepoGraphData:
     ``isLatest`` release out of the window, dropping it from staleness and the
     Mutable Releases findings. The window still feeds the last-published
     computation, with the latest ref folded in (deduplicated by tag).
+
+    Open issues arrive as an authoritative ``totalCount`` plus a bounded,
+    oldest-first window of nodes, which may be shorter than that total.
     """
     enabled_raw = node.get("hasVulnerabilityAlertsEnabled")
     enabled = bool(enabled_raw) if enabled_raw is not None else None
@@ -157,6 +261,7 @@ def _parse_repo_node(node: dict) -> RepoGraphData:
     candidates = list(window)
     if latest is not None and all(r.tag != latest.tag for r in candidates):
         candidates.append(latest)
+    open_issues, issues, oldest_unreadable = _issue_refs(node.get("issues"))
     return RepoGraphData(
         dependabot_alerts_enabled=enabled,
         latest_tag_at=_tag_committed_date(node.get("tags")),
@@ -164,4 +269,7 @@ def _parse_repo_node(node: dict) -> RepoGraphData:
         latest_release=latest,
         last_published_release=_last_published(candidates),
         dependabot_config=config_text,
+        open_issues=open_issues,
+        issues=issues,
+        oldest_issue_unreadable=oldest_unreadable,
     )

@@ -15,9 +15,15 @@ import pytest
 import respx
 from typer.testing import CliRunner
 
+from github_security_report.categories import CategoryKey
 from github_security_report.cli import _safe_component, app
-from github_security_report.cli.outputs import TopNLimits, most_generous
-from github_security_report.config import OrgConfig, ReportConfig
+from github_security_report.cli.outputs import (
+    TopNLimits,
+    most_generous,
+    slack_limit,
+)
+from github_security_report.config import CategoryToggle, OrgConfig, ReportConfig
+from github_security_report.report import OrgReport, build_org_report
 
 API = "https://api.github.com"
 SCORECARD = "https://api.securityscorecards.dev"
@@ -594,3 +600,62 @@ def test_module_form_entry_point_still_runs() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert "github-security-report version" in result.stdout
+
+
+class TestPerCategoryLimits:
+    """CLI/config precedence for a category's own row limit."""
+
+    def _org(self, categories: dict, *, top_n_cli: int) -> OrgConfig:
+        toggles = {
+            key: CategoryToggle(top_n=value) for key, value in categories.items()
+        }
+        return OrgConfig(
+            name="o", report=ReportConfig(categories=toggles, top_n_cli=top_n_cli)
+        )
+
+    def test_category_config_beats_output_config(self) -> None:
+        org = self._org({"releases": 0}, top_n_cli=10)
+        limits = TopNLimits()
+        assert limits.resolve(org, "cli", CategoryKey.RELEASES) == 0
+        assert limits.resolve(org, "cli", CategoryKey.CODEQL) == 10
+
+    def test_shared_cli_flag_beats_category_config(self) -> None:
+        # A flag is a decision about this run, so it caps even an uncapped
+        # category configured with top_n 0.
+        org = self._org({"releases": 0}, top_n_cli=10)
+        assert TopNLimits(shared=5).resolve(org, "cli", CategoryKey.RELEASES) == 5
+
+    def test_output_flag_beats_category_config(self) -> None:
+        org = self._org({"releases": 0}, top_n_cli=10)
+        assert TopNLimits(cli=2).resolve(org, "cli", CategoryKey.RELEASES) == 2
+
+    def test_resolve_without_category_keeps_output_behaviour(self) -> None:
+        org = self._org({"releases": 0}, top_n_cli=10)
+        assert TopNLimits().resolve(org, "cli") == 10
+
+    def test_resolver_returns_per_category_lookup(self) -> None:
+        org = self._org({"releases": 0}, top_n_cli=7)
+        resolver = TopNLimits().resolver(org, "cli")
+        assert resolver(CategoryKey.RELEASES) == 0
+        assert resolver(CategoryKey.CODEQL) == 7
+
+
+class TestSlackLimit:
+    """Channel-sharing reconciliation happens per category."""
+
+    def _pair(self, top_n: int) -> tuple[OrgConfig, OrgReport]:
+        org = OrgConfig(
+            name="o",
+            report=ReportConfig(
+                top_n_slack=5, categories={"releases": CategoryToggle(top_n=top_n)}
+            ),
+        )
+        return (org, build_org_report("o", [], repo_count=0))
+
+    def test_most_generous_category_limit_wins_for_channel(self) -> None:
+        items = [self._pair(3), self._pair(0)]
+        limit = slack_limit(items, TopNLimits())
+        # 0 (no limit) is the most generous, so the shared channel is uncapped.
+        assert limit(CategoryKey.RELEASES) == 0
+        # A category neither org overrode still uses the per-output value.
+        assert limit(CategoryKey.CODEQL) == 5

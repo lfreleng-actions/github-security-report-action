@@ -89,6 +89,21 @@ CONFIG_SCHEMA: dict = {
                     "type": "object",
                     "additionalProperties": {"type": "string"},
                 },
+                # Column -> issue labels for the GitHub Issues table. Each key
+                # becomes a table column, in declaration order; the value lists
+                # the issue labels that count towards it. A configured mapping
+                # replaces the built-in default rather than merging with it.
+                # The loader rejects names the table supplies itself (all five
+                # of RESERVED_COLUMNS) plus blank, padded, case-duplicate and
+                # markup-breaking ones: JSON Schema cannot express those with a
+                # usable error message.
+                "issue_labels": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                    },
+                },
                 # Per-category render toggles. Each known category may set a
                 # global `enabled` switch (highest precedence: off hides the
                 # category on every surface) and, beneath it, a lower-precedence
@@ -117,6 +132,20 @@ CONFIG_SCHEMA: dict = {
                                 # failure for this category (severity signals
                                 # only). Overrides the category default.
                                 "fail_severity": {"enum": list(SEVERITY_NAMES)},
+                                # Rows this category shows before an "and N
+                                # more" tally, overriding the per-output limit
+                                # (0 = no limit, show every row).
+                                "top_n": {"type": "integer", "minimum": 0},
+                                # Row ordering for a generic table: column
+                                # names, most significant first. A leading '-'
+                                # forces descending and '+' forces ascending;
+                                # bare names take the direction implied by the
+                                # column's type. Ignored by the severity signal
+                                # tables, which keep their own ranking.
+                                "sort": {
+                                    "type": "array",
+                                    "items": {"type": "string", "minLength": 1},
+                                },
                             },
                         }
                         for meta in all_categories()

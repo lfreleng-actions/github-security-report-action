@@ -48,6 +48,19 @@ class SlackConfig:
 # keyword is treated as having that tool enabled (see :mod:`rulesets`).
 DEFAULT_RULESET_WORKFLOWS = {"zizmor": "zizmor", "aislop": "aislop"}
 
+# Default column -> issue-label mapping for the GitHub Issues table. Each key
+# becomes a column, in this order; an open issue counts towards the first column
+# whose labels it carries (matched case-insensitively against the whole label
+# name). Issues matching no column count as Other, and issues with no labels at
+# all count as Untriaged -- both columns are implicit and always present.
+DEFAULT_ISSUE_LABELS: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "Bug": ("bug", "defect"),
+        "Feature": ("feature", "enhancement"),
+        "Docs": ("documentation", "docs"),
+    }
+)
+
 
 @dataclass(frozen=True)
 class OutputToggles:
@@ -72,12 +85,19 @@ class CategoryToggle:
     map, consulted only when the category is enabled. The data is always
     collected regardless of these toggles; they govern presentation alone.
     ``fail_severity`` overrides the category's default failure cutoff (severity
-    signals only); ``None`` keeps the category default.
+    signals only); ``None`` keeps the category default. ``top_n`` overrides how
+    many rows this one category shows before an "and N more" tally, so a
+    high-volume category can be uncapped (``0``) while the rest stay limited;
+    ``None`` falls back to the per-output limit. ``sort`` overrides the row
+    ordering of a generic table with a list of column names; ``None`` keeps the
+    ordering the table's builder chose.
     """
 
     enabled: bool = True
     outputs: OutputToggles = field(default_factory=OutputToggles)
     fail_severity: Severity | None = None
+    top_n: int | None = None
+    sort: tuple[str, ...] | None = None
 
     def shows_on(self, output: str) -> bool:
         """Whether this category renders on ``output`` (cli/slack/markdown/html)."""
@@ -119,6 +139,14 @@ class ReportConfig:
     ruleset_workflows: Mapping[str, str] = field(
         default_factory=lambda: MappingProxyType(dict(DEFAULT_RULESET_WORKFLOWS))
     )
+    # Column -> issue labels for the GitHub Issues table. Unlike
+    # ``ruleset_workflows`` a configured value *replaces* the default rather
+    # than merging into it: the mapping defines a coherent set of table columns,
+    # so merging would leave behind default columns the operator did not ask
+    # for.
+    issue_labels: Mapping[str, tuple[str, ...]] = field(
+        default_factory=lambda: DEFAULT_ISSUE_LABELS
+    )
     # Per-category render toggles, keyed by category-key value. Absent keys fall
     # back to a fully-enabled default, so the empty default shows everything.
     categories: Mapping[str, CategoryToggle] = field(
@@ -158,6 +186,33 @@ class ReportConfig:
     def slack_top_n(self) -> int:
         """Offenders shown per signal in the Slack digest."""
         return self.top_n_slack if self.top_n_slack is not None else self.top_n
+
+    def output_top_n(self, output: str) -> int:
+        """The configured row limit for one output (``report``/``cli``/``slack``)."""
+        return int(getattr(self, f"{output}_top_n"))
+
+    def category_top_n(self, key: CategoryKey, output: str) -> int:
+        """The configured row limit for one category on one output.
+
+        A category's own ``top_n`` is the most specific configured value, so it
+        wins over the per-output limit; ``0`` means "no limit" here as it does
+        everywhere else. An unconfigured category falls back to the per-output
+        limit, so the default behaviour is unchanged.
+        """
+        toggle = self.categories.get(key.value)
+        if toggle is not None and toggle.top_n is not None:
+            return toggle.top_n
+        return self.output_top_n(output)
+
+    def category_sort(self, key: CategoryKey) -> tuple[str, ...] | None:
+        """The configured row ordering for ``key``, or ``None`` for the default.
+
+        ``None`` means "keep the ordering the table's builder chose", which is
+        not always expressible as a column list: the Releases table ranks on
+        missing release/tag signals that it never displays as a column.
+        """
+        toggle = self.categories.get(key.value)
+        return toggle.sort if toggle is not None else None
 
 
 @dataclass(frozen=True)
