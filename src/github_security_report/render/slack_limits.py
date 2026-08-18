@@ -28,7 +28,7 @@ measured rather than assumed.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 # Slack rejects a chat.postMessage with more than 50 blocks, so a digest
 # spanning many orgs must be capped or the whole message fails to deliver.
@@ -105,58 +105,54 @@ def clamp(text: str, budget: int = MAX_TEXT_CHARS) -> str:
     return cut + _CLAMP_NOTE
 
 
-def _largest_fitting_scan(render: Callable[[int], str], count: int, budget: int) -> int:
-    """Largest ``n <= count`` whose rendered text fits, by descending scan.
-
-    Assumes nothing about how length varies with ``n``, which the **name**
-    allowance requires. With two name lists of different lengths, the shorter
-    one's ``… (+N more)`` suffix vanishes once it is fully shown, and for short
-    repository names that suffix outweighs the entries the step adds -- so the
-    render genuinely *shortens* as the allowance rises. A binary search discards
-    everything above a rejected midpoint and would hide names that fit.
-
-    Descending means the first fit found is the largest, so the result is exact
-    regardless of those discontinuities. Affordable because this runs only when
-    the table already fits with no names at all (see :func:`fit_section_text`),
-    which bounds the size of each render.
-    """
-    for n in range(count, 0, -1):
-        if text_length(render(n)) <= budget:
-            return n
-    return 0
-
-
-def _largest_fitting(render: Callable[[int], str], count: int, budget: int) -> int:
+def _largest_fitting(
+    render: Callable[[int], str],
+    count: int,
+    budget: int,
+    breaks: Sequence[int] = (),
+) -> int:
     """Largest ``n <= count`` whose rendered text fits ``budget`` (or ``0``).
 
-    A binary search, valid only where rendered length is non-decreasing in
-    ``n``. **That is a precondition on the caller**, not a property of any
-    ``render``, and it is narrower than it looks -- see
-    :func:`_largest_fitting_scan` for the name allowance, which does *not*
-    satisfy it.
+    A binary search, which is valid only where rendered length is non-decreasing
+    in ``n``. ``breaks`` names the values where that fails, splitting the range
+    into windows that are individually monotonic; each is searched and the best
+    result wins. The answer is therefore exact without enumerating every
+    candidate -- a few binary searches rather than one linear scan.
 
-    It holds for the **row** count because :func:`fit_section_text` calls this
-    only after the render at ``count`` has been measured and rejected. Every
-    ``n`` probed therefore leaves rows hidden, so the single "… and N more" note
-    is present throughout the searched range; each additional row adds at least
-    a newline while that one note can only shrink by a single digit, so length
-    never falls as ``n`` rises. The step that could shorten the text -- the note
-    disappearing once nothing is left over -- occurs only at ``count`` itself,
-    which the precondition excludes. One note, one transition, and it is out of
-    range: the property the name allowance lacks, because it carries several
-    notes whose transitions fall *inside* the range.
+    **Rows need no breaks.** :func:`fit_section_text` searches them only after
+    the render at ``count`` has been measured and rejected, so every ``n``
+    probed leaves rows hidden and the single "… and N more" note is present
+    throughout. Each additional row adds at least a newline while that one note
+    can shrink by at most a digit, so length never falls. The step that would
+    shorten it -- the note vanishing once nothing is left over -- happens only
+    at ``count``, which the precondition excludes.
 
-    O(log n) renders rather than O(n) matters here because the row search is
-    the one that runs against a table too large to fit.
+    **Names do need them,** because that argument does not survive a second
+    list. Each name list carries its own note, and a list shorter than the
+    allowance completes *inside* the range: its ``… (+N more)`` suffix vanishes
+    while only one entry is added, so with short repository names the render
+    gets shorter as the allowance rises. Passing each list's length as a break
+    puts every such transition on a window boundary, where it cannot mislead the
+    search. Without them a rejected midpoint discards a fitting range above it
+    and hides names that would have fitted.
     """
-    lo, hi = 0, count
-    while lo < hi:
-        mid = (lo + hi + 1) // 2
-        if text_length(render(mid)) <= budget:
-            lo = mid
-        else:
-            hi = mid - 1
-    return lo
+    starts = sorted({0, *(b for b in breaks if 0 < b <= count)})
+    best = 0
+    for i, start in enumerate(starts):
+        end = starts[i + 1] - 1 if i + 1 < len(starts) else count
+        # Within a window length is non-decreasing, so if the smallest value
+        # does not fit then nothing above it in this window does either.
+        if text_length(render(start)) > budget:
+            continue
+        lo, hi = start, end
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if text_length(render(mid)) <= budget:
+                lo = mid
+            else:
+                hi = mid - 1
+        best = max(best, lo)
+    return best
 
 
 def fit_section_text(
@@ -164,6 +160,7 @@ def fit_section_text(
     *,
     rows: int,
     names: int,
+    name_breaks: Sequence[int] = (),
     budget: int = MAX_TEXT_CHARS,
 ) -> str:
     """Fit a section block's text into ``budget`` by shedding content.
@@ -195,16 +192,16 @@ def fit_section_text(
     will not fit with *no* names at all, then no name allowance can save it and
     the rows are the problem, so the name search is skipped entirely rather than
     rebuilding a large table across a range of allowances that cannot help.
-    That split also decides how each search is done: the row search runs against
-    an oversized table and gets a binary search it can justify, while the name
-    search runs only against a table that already fits and can afford an exact
-    scan (see :func:`_largest_fitting_scan` for why it needs one).
+
+    ``name_breaks`` carries the length of each repository name list, marking
+    where the name allowance stops behaving monotonically; see
+    :func:`_largest_fitting`.
     """
     text = render(rows, names)
     if text_length(text) <= budget:
         return text
     if text_length(render(rows, 0)) <= budget:
-        names = _largest_fitting_scan(lambda n: render(rows, n), names, budget)
+        names = _largest_fitting(lambda n: render(rows, n), names, budget, name_breaks)
         return render(rows, names)
     rows = _largest_fitting(lambda n: render(n, 0), rows, budget)
     return clamp(render(rows, 0), budget)

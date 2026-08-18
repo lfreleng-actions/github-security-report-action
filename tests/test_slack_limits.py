@@ -46,6 +46,11 @@ def _repo(name: str) -> Repo:
     return Repo(name, f"o/{name}", f"https://github.com/o/{name}")
 
 
+# The list lengths in _uneven_name_lists(), which are where the name allowance
+# stops behaving monotonically.
+_NAME_BREAKS = (3, 12)
+
+
 def _uneven_name_lists() -> list[report.SummaryLine]:
     """Two name lists of different lengths, with short repository names.
 
@@ -456,18 +461,24 @@ def test_name_allowance_is_genuinely_non_monotonic() -> None:
     assert drops, "expected the render to shorten as the allowance rises"
 
 
-def test_name_search_beats_a_binary_search_on_uneven_lists() -> None:
-    # The concrete case a binary search gets wrong: at this budget the full
-    # 12-name render fits, but a midpoint above it does not, so a binary search
-    # discards the fitting range and hides names unnecessarily.
+def test_name_search_needs_the_break_points() -> None:
+    # The concrete case a plain binary search gets wrong: at this budget the
+    # full 12-name render fits, but n=11 does not, so a search with no break
+    # points discards the fitting range above its rejected midpoint.
     lines = _uneven_name_lists()
 
     def render(n: int) -> str:
         return slack._summary_text(lines, names=n)
 
     assert limits.text_length(render(12)) <= 110 < limits.text_length(render(11))
-    assert limits._largest_fitting_scan(render, 12, 110) == 12
+    assert limits._largest_fitting(render, 12, 110, _NAME_BREAKS) == 12
     assert limits._largest_fitting(render, 12, 110) < 12  # the discarded range
+
+
+def test_name_breaks_are_the_list_lengths() -> None:
+    # The breaks handed to the budget must be exactly the rendered list
+    # lengths; a stale or missing one silently reintroduces the bad search.
+    assert slack._name_breaks(_uneven_name_lists()) == _NAME_BREAKS
 
 
 def test_name_search_matches_an_exhaustive_search_at_every_budget() -> None:
@@ -481,7 +492,9 @@ def test_name_search_matches_an_exhaustive_search_at_every_budget() -> None:
             (n for n in range(13) if limits.text_length(render(n)) <= budget),
             default=0,
         )
-        assert limits._largest_fitting_scan(render, 12, budget) == expected, budget
+        assert limits._largest_fitting(render, 12, budget, _NAME_BREAKS) == expected, (
+            budget
+        )
 
 
 def test_largest_fitting_matches_an_exhaustive_search() -> None:
