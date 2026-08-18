@@ -20,6 +20,7 @@ from collections.abc import Callable, Sequence
 
 from github_security_report.categories import CategoryKey
 from github_security_report.models import Repo, RepoSignal, SignalType
+from github_security_report.render.html import slugify
 from github_security_report.render.slack_limits import (
     MAX_TEXT_CHARS,
     context_block,
@@ -339,7 +340,10 @@ def render_org_blocks(
     add_table(org.private_vulnerability_reporting)
     add_table(org.issues)
     if pages_url:
-        link = f"<{pages_url}|View the full report>"
+        # Link straight to this organisation's latest report page rather than
+        # the Pages index: the digest is per-org, so the index is a detour.
+        org_url = f"{pages_url.rstrip('/')}/{slugify(org.org)}/report.html"
+        link = f"<{org_url}|View the full report>"
         # Omit the link rather than clamp it: a cut URL resolves elsewhere,
         # which is a wrong answer rather than a missing one.
         if text_length(link) <= MAX_TEXT_CHARS:

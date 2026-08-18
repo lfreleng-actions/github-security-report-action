@@ -60,13 +60,13 @@ class OrgCollectContext:
     probe_scorecard: bool
 
     def graph_for(self, name: str) -> RepoGraphData:
-        """Prefetched GraphQL data for a repository, or empty defaults.
+        """Prefetched GraphQL data for a repository, or unreadable defaults.
 
-        A repository missing from the prefetch (an unreadable alias, or a wholly
-        failed batch) degrades to defaults so it drops out of the dependent
-        tables instead of being mislabelled.
+        A repository missing from the prefetch entirely is marked
+        ``unreadable`` so the dependent tables report it as unknown instead of
+        mislabelling it with confident negatives (e.g. "never released").
         """
-        return self.graph.get(name, RepoGraphData())
+        return self.graph.get(name, RepoGraphData(unreadable=True))
 
     def ruleset_signals(self, name: str) -> set[str]:
         """Signals an org ruleset enforces for a repository (possibly none)."""

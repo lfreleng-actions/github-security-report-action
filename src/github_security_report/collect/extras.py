@@ -55,6 +55,7 @@ async def _posture_for_repo(repo: Repo, ctx: OrgCollectContext) -> RepoPosture:
     )
     return RepoPosture(
         repo=repo,
+        graph_unreadable=graph.unreadable,
         dependabot_alerts=graph.dependabot_alerts_enabled,
         security_updates=security_updates,
         private_vulnerability_reporting=pvr,

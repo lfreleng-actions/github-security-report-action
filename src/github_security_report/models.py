@@ -171,9 +171,16 @@ class RepoGraphData:
     ``open_issues``, and should present its own totals as covering the window
     rather than the whole backlog. The window is ordered oldest-first, so the
     oldest issue -- the one the age check reports -- is always present even when
-    the window truncates.
+    window truncates.
     """
 
+    # True when this repository's data could not be read at all (a ``null``
+    # GraphQL alias, or the repository missing from the prefetch entirely).
+    # Downstream tables must report such repositories as unknown: the other
+    # defaults below are indistinguishable from "feature absent" readings
+    # (e.g. ``latest_release_at is None`` also means "never released"), so
+    # without this flag a failed read silently renders as false negatives.
+    unreadable: bool = False
     dependabot_alerts_enabled: bool | None = None
     latest_tag_at: dt.datetime | None = None
     # Publish time of the "Latest" release, for release/tag staleness.

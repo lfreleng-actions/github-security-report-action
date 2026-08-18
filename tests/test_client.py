@@ -735,8 +735,11 @@ async def test_repo_graph_batch_parses_aliases(client: GitHubClient) -> None:
     assert a.last_published_release.tag == "v1.0.0-alpha1"
     assert a.latest_release_at is not None and a.latest_release_at.month == 1
 
-    # A null alias degrades to defaults rather than being mislabelled.
+    # A null alias degrades to unreadable defaults rather than being
+    # mislabelled with confident negatives (e.g. "never released").
     b = out["b"]
+    assert b.unreadable is True
+    assert a.unreadable is False
     assert b.dependabot_alerts_enabled is None
     assert b.latest_release is None
     assert b.dependabot_config is None
@@ -863,12 +866,70 @@ async def test_repo_graph_batch_null_immutable_is_indeterminate(
 
 
 @respx.mock
-async def test_repo_graph_batch_non_200_returns_defaults(client: GitHubClient) -> None:
-    respx.post(f"{API}/graphql").mock(return_value=httpx.Response(502))
-    out = await client.repo_graph_batch("o", ["a", "b"])
-    assert set(out) == {"a", "b"}
-    assert out["a"].dependabot_alerts_enabled is None
-    assert out["b"].latest_release is None
+async def test_repo_graph_batch_non_200_raises(
+    client: GitHubClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The prefetch is load-bearing for whole report sections whose defaults
+    # read as confident negatives ("never released"), so a non-200 answer that
+    # survives the shared retry/backoff policy must abort the run rather than
+    # silently fabricating defaults for the entire batch.
+    slept: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        slept.append(delay)
+
+    monkeypatch.setattr(
+        "github_security_report.client.transport.asyncio.sleep", _fake_sleep
+    )
+    route = respx.post(f"{API}/graphql")
+    route.mock(return_value=httpx.Response(502))
+    with pytest.raises(NetworkError) as excinfo:
+        await client.repo_graph_batch("o", ["a", "b"])
+    # Exhausted the retry budget with exponential backoff before aborting.
+    assert route.call_count == 1 + API_MAX_RETRIES
+    assert slept == [1.0, 2.0, 4.0]
+    assert "502" in str(excinfo.value)
+
+
+@respx.mock
+async def test_server_error_retried_then_succeeds(
+    client: GitHubClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A transient 5xx (GitHub infrastructure trouble) must be retried on the
+    # shared backoff schedule rather than returned un-retried: an un-retried
+    # 502 silently degraded (or falsified) whole report sections.
+    slept: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        slept.append(delay)
+
+    monkeypatch.setattr(
+        "github_security_report.client.transport.asyncio.sleep", _fake_sleep
+    )
+    node = _graph_repo_node(enabled=True)
+    route = respx.post(f"{API}/graphql")
+    route.side_effect = [
+        httpx.Response(502),
+        httpx.Response(200, json={"data": {"r0": node}}),
+    ]
+    out = await client.repo_graph_batch("o", ["a"])
+    assert out["a"].dependabot_alerts_enabled is True
+    assert out["a"].unreadable is False
+    assert slept == [1.0]
+
+
+@respx.mock
+async def test_repo_graph_batch_missing_data_raises(client: GitHubClient) -> None:
+    # HTTP 200 with no data object at all is a wholly failed query (e.g. a
+    # timed-out batch): same stakes as a non-200, so it must abort the run.
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(
+            200, json={"data": None, "errors": [{"message": "timedout"}]}
+        )
+    )
+    with pytest.raises(NetworkError) as excinfo:
+        await client.repo_graph_batch("o", ["a"])
+    assert "no data" in str(excinfo.value)
 
 
 async def test_repo_graph_batch_empty_names_no_request(client: GitHubClient) -> None:
@@ -1162,3 +1223,81 @@ def test_https_endpoint_normalises_whitespace_and_trailing_slash(
     assert _https_endpoint("GITHUB_API_URL", API) == API
     monkeypatch.setenv("GITHUB_API_URL", "  https://ghe.example.com/api/v3/  ")
     assert _https_endpoint("GITHUB_API_URL", API) == "https://ghe.example.com/api/v3"
+
+
+@respx.mock
+async def test_repo_graph_batch_field_error_marks_alias_unreadable(
+    client: GitHubClient,
+) -> None:
+    # GitHub reports a field-level failure with HTTP 200: the alias stays a
+    # populated dict, the failed field is null, and errors[].path names it.
+    # Parsing that node would turn a read failure into a confident negative
+    # ("never released"), which is the exact defect this PR exists to fix.
+    node = _graph_repo_node(enabled=True)
+    node["latestRelease"] = None
+    node["releases"] = None
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {"r0": node},
+                "errors": [
+                    {"path": ["r0", "latestRelease"], "message": "Something failed"}
+                ],
+            },
+        )
+    )
+    out = await client.repo_graph_batch("o", ["a"])
+    # Unreadable, so the releases table counts it unknown rather than
+    # listing it as never released.
+    assert out["a"].unreadable is True
+    assert out["a"].latest_release_at is None
+    # The alias is failed wholesale: no field of it is trusted.
+    assert out["a"].dependabot_alerts_enabled is None
+
+
+@respx.mock
+async def test_repo_graph_batch_field_error_does_not_taint_other_aliases(
+    client: GitHubClient,
+) -> None:
+    # An error attributable to one alias must not degrade its neighbours;
+    # over-reporting unknowns would hide real findings.
+    bad = _graph_repo_node(enabled=True)
+    bad["tags"] = None
+    good = _graph_repo_node(
+        enabled=True,
+        tag_target={"__typename": "Commit", "committedDate": "2026-01-01T00:00:00Z"},
+    )
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {"r0": bad, "r1": good},
+                "errors": [{"path": ["r0", "tags"], "message": "Something failed"}],
+            },
+        )
+    )
+    out = await client.repo_graph_batch("o", ["a", "b"])
+    assert out["a"].unreadable is True
+    assert out["b"].unreadable is False
+    assert out["b"].latest_tag_at is not None
+
+
+@respx.mock
+async def test_repo_graph_batch_unattributable_error_marks_all_unreadable(
+    client: GitHubClient,
+) -> None:
+    # An error carrying no usable path cannot be tied to a repository, so
+    # nothing in the batch can be claimed as successfully read.
+    node = _graph_repo_node(enabled=True)
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {"r0": node, "r1": node},
+                "errors": [{"message": "Something went wrong"}],
+            },
+        )
+    )
+    out = await client.repo_graph_batch("o", ["a", "b"])
+    assert [out["a"].unreadable, out["b"].unreadable] == [True, True]

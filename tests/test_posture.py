@@ -606,3 +606,46 @@ def test_mutable_releases_confirmed_mutable_alongside_unknown_is_flagged() -> No
     # Only the confirmed-mutable tag is listed; the unknown one is not.
     assert table.rows[0].cells == ("v2 (latest)",)
     assert (table.fail_count, table.pass_count) == (1, 0)
+
+
+# --------------------------------------------------------------------------- #
+# Unreadable GraphQL prefetch -> unknown, never confident negatives
+# --------------------------------------------------------------------------- #
+def test_releases_table_unreadable_counts_unknown() -> None:
+    # A repository whose GraphQL prefetch could not be read has unknown
+    # release/tag staleness: it must land in the unknown count, never be
+    # listed as "never released / never tagged" (a false negative).
+    postures = [
+        posture.RepoPosture(repo=_repo("unreadable"), graph_unreadable=True),
+        posture.RepoPosture(repo=_repo("truly-never")),
+    ]
+    table = posture.build_releases_table(
+        postures, generated_at=NOW, repo_min_age_days=28, exclude=()
+    )
+    assert [r.repo.name for r in table.rows] == ["truly-never"]
+    assert table.unknown_count == 1
+
+
+def test_mutable_releases_unreadable_counts_unknown() -> None:
+    postures = [
+        posture.RepoPosture(repo=_repo("unreadable"), graph_unreadable=True),
+    ]
+    table = posture.build_mutable_releases_table(postures)
+    assert table.rows == []
+    assert (table.fail_count, table.pass_count, table.unknown_count) == (0, 0, 1)
+
+
+def test_cooldown_table_unreadable_counts_unknown() -> None:
+    # An unreadable prefetch means the dependabot.yml itself is unknown, not
+    # absent: the repository must be counted as unknown, not silently dropped.
+    postures = [
+        posture.RepoPosture(repo=_repo("unreadable"), graph_unreadable=True),
+        posture.RepoPosture(
+            repo=_repo("with-cooldown"),
+            has_dependabot_config=True,
+            cooldown_missing=(),
+        ),
+    ]
+    table = posture.build_cooldown_table(postures)
+    assert table.rows == []
+    assert (table.fail_count, table.pass_count, table.unknown_count) == (0, 1, 1)
