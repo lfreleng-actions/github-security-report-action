@@ -19,10 +19,43 @@ from github_security_report.client.queries import (
     _DEPENDABOT_ENABLED_QUERY,
     _REPO_GRAPH_FRAGMENT,
 )
-from github_security_report.client.transport import Transport
+from github_security_report.client.transport import NetworkError, Transport
 from github_security_report.models import Repo, RepoGraphData
 
 log = logging.getLogger(__name__)
+
+
+def _aliases_with_errors(errors: object, alias_count: int) -> set[str]:
+    """Alias keys implicated by a batched query's ``errors`` array.
+
+    GitHub reports a *field-level* failure with HTTP 200: the alias is still a
+    populated dictionary, the field that failed is null, and an ``errors``
+    entry carries its path (e.g. ``["r3", "latestRelease"]``). Parsing such a
+    node would convert a read failure into a confident negative -- a nulled
+    ``latestRelease`` is indistinguishable from "never released" -- so the
+    whole alias is treated as unreadable rather than partially trusted.
+
+    The alias is failed wholesale rather than per field: a finer-grained flag
+    per field would have to be threaded through every table to be honest
+    about which half of a row is trustworthy, whereas one unknown repository
+    is already a state every table renders correctly.
+
+    An error whose path names no alias cannot be attributed, so it implicates
+    every alias in the batch: with no way to tell which repositories it
+    touched, treating any of them as successfully read would be a guess.
+    """
+    all_aliases = {f"r{i}" for i in range(alias_count)}
+    if not isinstance(errors, list):
+        return set()
+    affected: set[str] = set()
+    for entry in errors:
+        path = entry.get("path") if isinstance(entry, dict) else None
+        head = path[0] if isinstance(path, list) and path else None
+        if isinstance(head, str) and head in all_aliases:
+            affected.add(head)
+        else:
+            return all_aliases
+    return affected
 
 
 class ReadClient(Transport):
@@ -334,12 +367,21 @@ class ReadClient(Transport):
     ) -> dict[str, RepoGraphData]:
         """Prefetch per-repo data for many repositories in one GraphQL query.
 
-        Returns a ``RepoGraphData`` per requested name. Repositories that cannot
-        be read (a ``null`` alias) or a wholly failed query degrade to default
-        ``RepoGraphData``, so they drop out of the dependent tables rather than
-        being mislabelled. An empty ``names`` issues no request.
+        Returns a ``RepoGraphData`` per requested name. This data is
+        load-bearing for whole report sections (releases/tags, Dependabot
+        enablement, open issues), and its defaults are indistinguishable from
+        confident negatives ("never released"), so a wholly failed query --
+        a non-200 response that survived the shared retry/backoff policy, or
+        a 200 carrying no ``data`` object -- raises :class:`NetworkError` to
+        abort the run rather than fabricating results. A repository that
+        cannot be fully read -- a ``null`` alias, or a populated alias whose
+        ``errors`` entry shows a field failed to resolve -- degrades to
+        ``RepoGraphData(unreadable=True)`` so downstream tables report it as
+        unknown. An empty ``names`` issues no request.
         """
-        out = {name: RepoGraphData() for name in names}
+        # Seed every requested name as unreadable; only a successfully parsed
+        # alias replaces its entry, so nothing failed can masquerade as read.
+        out = {name: RepoGraphData(unreadable=True) for name in names}
         if not names:
             return out
         aliases = "\n".join(
@@ -360,17 +402,25 @@ class ReadClient(Transport):
             json={"query": query, "variables": variables},
         )
         if resp.status_code != 200:
+            status = resp.status_code
             await resp.aclose()  # unread body would leak a pooled connection
-            return out
+            raise NetworkError(
+                f"GraphQL prefetch for {org} failed with HTTP {status} after "
+                "exhausting retries; aborting because the release/tag, "
+                "Dependabot-enablement and open-issues data for "
+                f"{len(names)} repositories would otherwise be fabricated "
+                "from defaults (e.g. reported as never released)."
+            )
         body = resp.json()
-        data = body.get("data") or {}
+        data = body.get("data")
         await resp.aclose()  # release the connection once the body is read
         # GitHub answers a partially-refused query with HTTP 200: the readable
-        # aliases populated, the rest null, and an ``errors`` array explaining
-        # why. Silently dropping it hides exactly the case where a field was
-        # served as null because the token could not read it, so the paths are
-        # logged once per batch for diagnosis.
+        # aliases populated, the rest null or missing individual fields, and an
+        # ``errors`` array explaining why. The paths are both logged for
+        # diagnosis and used to fail the affected aliases, since a field nulled
+        # by a failed read is indistinguishable from a genuine absence.
         errors = body.get("errors")
+        errored_aliases = _aliases_with_errors(errors, len(names))
         if errors:
             log.warning(
                 "GraphQL prefetch for %s returned %d error(s); affected data is "
@@ -384,8 +434,32 @@ class ReadClient(Transport):
                     if isinstance(e, dict)
                 ),
             )
+        if not isinstance(data, dict):
+            # HTTP 200 with no data object at all: the whole batch failed
+            # (e.g. a timed-out or refused query). Same stakes as a non-200.
+            raise NetworkError(
+                f"GraphQL prefetch for {org} returned no data for any of "
+                f"{len(names)} repositories; aborting rather than reporting "
+                "fabricated defaults. "
+                f"errors={errors!r}"
+            )
         for i, name in enumerate(names):
-            node = data.get(f"r{i}")
+            alias = f"r{i}"
+            if alias in errored_aliases:
+                # A field of this alias failed to resolve, so its null fields
+                # cannot be told apart from genuine absences. Leave the
+                # pre-seeded unreadable default in place.
+                continue
+            node = data.get(alias)
             if isinstance(node, dict):
                 out[name] = _parse_repo_node(node)
+        unreadable = sorted(name for name, d in out.items() if d.unreadable)
+        if unreadable:
+            log.warning(
+                "GraphQL prefetch for %s could not read %d repositories "
+                "(reported as unknown): %s",
+                org,
+                len(unreadable),
+                ", ".join(unreadable),
+            )
         return out

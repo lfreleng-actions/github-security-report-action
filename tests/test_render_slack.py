@@ -299,3 +299,21 @@ def test_table_headers_are_title_case() -> None:
     )
     assert "Score" in scorecard["text"]["text"]
     assert " score " not in scorecard["text"]["text"]
+
+
+def test_full_report_link_targets_org_page() -> None:
+    # The digest is per-org, so the "View the full report" link must point at
+    # that organisation's latest report page, not the Pages site index.
+    blocks = slack.render_org_blocks(
+        _org([]), top_n=10, pages_url="https://x.github.io/r/"
+    )
+    link = blocks[-1]["elements"][0]["text"]
+    assert "<https://x.github.io/r/lfreleng-actions/report.html|" in link
+
+
+def test_full_report_link_handles_missing_trailing_slash() -> None:
+    blocks = slack.render_org_blocks(
+        _org([]), top_n=10, pages_url="https://x.github.io/r"
+    )
+    link = blocks[-1]["elements"][0]["text"]
+    assert "<https://x.github.io/r/lfreleng-actions/report.html|" in link

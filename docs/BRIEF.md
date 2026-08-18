@@ -84,11 +84,17 @@ vulnerability reporting, Security advisories, etc.
 
 **Resilience:** every section is **best-effort and independently degradable** —
 an unavailable individual signal renders "no data available" and **never fails
-the whole run**. The one exception is a **transport failure to the GitHub API
-itself** (DNS/connect/TLS/read timeout that outlives the shared retry budget):
-the run **hard-fails** with a network error, because a report built without any
-live GitHub data would read as falsely reassuring. A transport failure to the
-third-party Scorecard endpoint still degrades that one signal only.
+the whole run**. Two exceptions **hard-fail** the run, because a report built
+from missing GitHub data would read as falsely reassuring: a **transport
+failure to the GitHub API itself** (DNS/connect/TLS/read timeout that outlives
+the shared retry budget), and a **wholly failed batched GraphQL prefetch**
+(a persistent 5xx or a response with no data), whose release/tag,
+Dependabot-enablement and open-issues facts would otherwise be fabricated from
+defaults (e.g. active repositories reported as "never released"). Server
+errors (5xx) are retried with exponential backoff on the same shared schedule
+as rate limits before either giving up per-signal or aborting. A transport
+failure to the third-party Scorecard endpoint still degrades that one signal
+only.
 
 ### Deferred
 
@@ -423,9 +429,10 @@ Four presentation surfaces from one canonical dataset:
 - **GraphQL batching** (aliased multi-repo, paginated) for repo metadata +
   Dependabot.
 - **`httpx` with bounded async concurrency** (configurable, conservative
-  default ~4–8) + **exponential backoff honoring `Retry-After` and secondary
-  rate-limit** signals; respect `x-ratelimit-remaining`; surface budget in
-  logs. Borrow `project-reporting-tool`'s `concurrency/` shape.
+  default ~4–8) + **exponential backoff honoring `Retry-After`, secondary
+  rate-limit and server-error (5xx)** signals; respect `x-ratelimit-remaining`;
+  surface budget in logs. Borrow `project-reporting-tool`'s `concurrency/`
+  shape.
 
 ## 14. Distribution, CI and release
 

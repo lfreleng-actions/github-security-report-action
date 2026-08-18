@@ -161,3 +161,71 @@ jobs:
             echo ""
             echo "[${PAGE_URL}](${PAGE_URL})"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  notify-failure:
+    name: "Notify Slack of failure"
+    needs: [build, deploy]
+    # Runs when report generation or Pages deployment failed (a deploy skipped
+    # by a failed build still counts). Posts a notice pointing at the Actions
+    # page where the recent run history and the manual workflow_dispatch re-run
+    # live. The notice reports each job's own outcome rather than asserting
+    # which outputs exist: when only the deploy fails, the report has already
+    # been generated and the Slack digest may already have been posted, so a
+    # blanket "no report was produced" would itself be inaccurate.
+    if: failure()
+    runs-on: ubuntu-latest
+    # Same environment as the build job so the environment-scoped Slack
+    # credentials are available here too.
+    environment: 'production'
+    timeout-minutes: 5
+    steps:
+      - name: "Harden runner"
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
+        with:
+          egress-policy: audit
+
+      - name: "Check Slack configuration"
+        id: slack-config
+        shell: bash
+        env:
+          SLACK_BOT_TOKEN: "${{ secrets.SLACK_BOT_TOKEN }}"
+          SLACK_CHANNEL_ID: "${{ vars.SLACK_CHANNEL_ID }}"
+        run: |
+          # Slack needs both a bot token and a channel id. If either is
+          # missing, skip the notification gracefully rather than failing
+          # this job too, warning in the console and the step summary.
+          if [ -n "$SLACK_BOT_TOKEN" ] && [ -n "$SLACK_CHANNEL_ID" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            msg="⚠️ Slack integration not available; requires token/credentials"
+            echo "::warning::${msg}"
+            echo "${msg}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: "Send failure notification"
+        if: steps.slack-config.outputs.configured == 'true'
+        # yamllint disable-line rule:line-length
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d  # v4.0.0
+        with:
+          method: "chat.postMessage"
+          token: "${{ secrets.SLACK_BOT_TOKEN }}"
+          # Links are derived from the running repository so they are correct
+          # in forks as well as upstream. Both interpolated job results are
+          # enumerated values (success/failure/cancelled/skipped), so neither
+          # can carry characters that would break the JSON payload.
+          payload: |
+            {
+              "channel": "${{ vars.SLACK_CHANNEL_ID }}",
+              "text": "❌ The security report workflow failed (generate report: ${{ needs.build.result }}, deploy to Pages: ${{ needs.deploy.result }}). Failed run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "❌ *Security report workflow failed* for `${{ github.repository }}`.\n• Generate report: `${{ needs.build.result }}`\n• Deploy to Pages: `${{ needs.deploy.result }}`\n• <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|Failed run (logs)>\n• <${{ github.server_url }}/${{ github.repository }}/actions/workflows/reporting.yaml|Recent runs / manual re-run>"
+                  }
+                }
+              ]
+            }

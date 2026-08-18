@@ -35,15 +35,17 @@ _TransportT = TypeVar("_TransportT", bound="Transport")
 
 
 class NetworkError(RuntimeError):
-    """The GitHub API was unreachable after exhausting the retry budget.
+    """The GitHub API was unusable after exhausting the retry budget.
 
     Raised for transport-level failures (DNS, connection, TLS, or read
     timeout) against the GitHub API that persist across every retry within
-    ``API_MAX_TOTAL_WAIT_SECONDS``. The run aborts rather than rendering a
-    report from missing data: when the API itself cannot be reached, an empty
-    or "all clean / all unknown" report is actively misleading. Transport
-    failures against the third-party Scorecard endpoint do not raise this --
-    they degrade that one signal instead.
+    ``API_MAX_TOTAL_WAIT_SECONDS``, and by callers whose data is load-bearing
+    for the whole report (the batched GraphQL prefetch) when GitHub keeps
+    answering with server errors. The run aborts rather than rendering a
+    report from missing data: when the API itself cannot be relied on, an
+    empty or "all clean / all unknown" report is actively misleading.
+    Transport failures against the third-party Scorecard endpoint do not
+    raise this -- they degrade that one signal instead.
     """
 
 
@@ -163,8 +165,11 @@ class Transport:
         -- a report built without live data would be misleading. The same
         failure against the third-party Scorecard endpoint instead degrades to
         an indeterminate 503, so one flaky external API never aborts the report.
-        Rate-limit responses (403/429) back off on the same schedule and, once
-        exhausted, return the throttled response for per-signal degradation.
+        Server errors (5xx) and rate-limit responses (403/429) back off on the
+        same schedule and, once exhausted, return the response for the caller
+        to handle: per-signal probes degrade to unknown, while callers whose
+        data is load-bearing (the GraphQL prefetch) abort the run instead of
+        fabricating results.
         """
         http = client or self._client
         is_external = http is self._ext_client
@@ -216,10 +221,11 @@ class Transport:
                 waited += delay
                 attempt += 1
                 continue
-            if resp.status_code not in (403, 429):
+            if resp.status_code not in (403, 429) and resp.status_code < 500:
                 return resp
-            # Reachable but possibly rate limited: distinguish secondary/primary
-            # rate limiting from a genuine 403, then back off on the shared
+            # Reachable but degraded: a 5xx (GitHub infrastructure trouble) or
+            # a possible rate limit. Distinguish secondary/primary rate
+            # limiting from a genuine 403, then back off on the shared
             # schedule (honouring Retry-After) within the wait budget.
             retry_after = resp.headers.get("retry-after")
             remaining = resp.headers.get("x-ratelimit-remaining")
@@ -235,18 +241,35 @@ class Transport:
             rate_limited = (
                 resp.status_code == 429 or retry_after is not None or remaining == "0"
             )
+            # Any 5xx is retried: GitHub's infrastructure wobbles produce
+            # transient 500/502/503 responses that, if returned un-retried,
+            # would silently degrade (or falsify) whole report sections.
+            server_error = resp.status_code >= 500
             delay = (
                 retry_after_secs
                 if retry_after_secs is not None
                 else self._backoff_delay(attempt)
             )
             if (
-                not rate_limited
+                not (rate_limited or server_error)
                 or attempt >= self._max_retries
                 or waited + delay > API_MAX_TOTAL_WAIT_SECONDS
             ):
+                # Retries exhausted (or a genuine 403): hand the response back
+                # so the caller can degrade its signal to unknown -- or, when
+                # its data is load-bearing, abort the run.
                 return resp
-            log.warning("rate limited on %s; backing off %.0fs", url, delay)
+            if server_error:
+                log.warning(
+                    "server error %d on %s; retrying in %.0fs (retry %d of %d)",
+                    resp.status_code,
+                    url,
+                    delay,
+                    attempt + 1,
+                    self._max_retries,
+                )
+            else:
+                log.warning("rate limited on %s; backing off %.0fs", url, delay)
             # The discarded response must be closed; we are retrying and will
             # not read its body, so leaving it open would leak a pool connection.
             await resp.aclose()

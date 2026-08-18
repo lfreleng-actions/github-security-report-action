@@ -45,6 +45,11 @@ class RepoPosture:
     """Per-repository configuration/freshness facts for the extra sections."""
 
     repo: Repo
+    # True when the batched GraphQL prefetch could not read this repository at
+    # all: the release/tag and dependabot.yml facts below are then unknown, not
+    # absent, and the tables must count the repository as unknown rather than
+    # render confident negatives such as "never released".
+    graph_unreadable: bool = False
     # Dependabot repo-level feature flags (None = indeterminate).
     dependabot_alerts: bool | None = None
     security_updates: bool | None = None
@@ -217,12 +222,16 @@ def build_cooldown_table(postures: list[RepoPosture]) -> TableSection:
     with_cooldown = sum(
         1 for p in postures if p.has_dependabot_config and not p.cooldown_missing
     )
+    # An unreadable prefetch means the dependabot.yml itself is unknown, not
+    # absent -- count it as unknown rather than silently dropping the repo.
+    indeterminate = sum(1 for p in postures if p.graph_unreadable)
     return TableSection(
         category=category_meta(CategoryKey.DEPENDABOT_COOLDOWN),
         columns=("Repository", "Ecosystems without cooldown"),
         rows=rows,
         pass_count=with_cooldown,
         fail_count=missing,
+        unknown_count=indeterminate,
     )
 
 
@@ -283,6 +292,7 @@ def build_releases_table(
     excluded = frozenset(exclude)
     ranked: list[tuple[int, int, RepoPosture, int | None, int | None]] = []
     current_count = 0
+    unknown_count = 0
     for posture in postures:
         repo = posture.repo
         if is_release_excluded(
@@ -291,6 +301,12 @@ def build_releases_table(
             repo_min_age_days=repo_min_age_days,
             exclude=excluded,
         ):
+            continue
+        if posture.graph_unreadable:
+            # The release/tag data could not be read for this repository, so
+            # its staleness is unknown -- never "never released/tagged", which
+            # is a confident negative the evidence does not support.
+            unknown_count += 1
             continue
         release_age = _age_days(posture.latest_release_at, generated_at)
         tag_age = _age_days(posture.latest_tag_at, generated_at)
@@ -340,6 +356,7 @@ def build_releases_table(
         rows=rows,
         pass_count=current_count,
         fail_count=len(rows),
+        unknown_count=unknown_count,
         description=age_note + stale_note + meta.description,
     )
 
@@ -361,6 +378,11 @@ def build_mutable_releases_table(postures: list[RepoPosture]) -> TableSection:
     clean_count = 0
     indeterminate_count = 0
     for posture in postures:
+        if posture.graph_unreadable:
+            # The release data could not be read at all: whether any release
+            # exists (let alone is immutable) is unknown.
+            indeterminate_count += 1
+            continue
         seen: set[str] = set()
         candidates: list[ReleaseRef] = []
         for ref in (posture.latest_release, posture.last_published_release):
