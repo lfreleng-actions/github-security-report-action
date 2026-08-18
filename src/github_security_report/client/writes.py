@@ -2,11 +2,12 @@
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 """Remediation writes, and the public :class:`GitHubClient` façade.
 
-``GitHubClient`` completes the linear ``Transport -> ReadClient ->
-GitHubClient`` chain. The chain exists so each layer stays a readable size --
-connection/retry mechanics, reporting reads, and remediation writes are
-separable concerns -- while callers still get a single object, because one
-client instance serves both the reporting reads and the remediation writes.
+``GitHubClient`` completes the linear ``Transport -> OrgReadClient ->
+ReadClient -> GitHubClient`` chain. The chain exists so each layer stays a
+readable size -- connection/retry mechanics, org-scope reads, per-repository
+reads, and remediation writes are separable concerns -- while callers still get
+a single object, because one client instance serves both the reporting reads
+and the remediation writes.
 """
 
 from __future__ import annotations
