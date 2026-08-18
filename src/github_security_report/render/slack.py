@@ -176,6 +176,25 @@ def _summary_text(lines: Sequence[SummaryLine], *, names: int) -> str:
     return "\n".join(out)
 
 
+def _name_breaks(lines: Sequence[SummaryLine]) -> tuple[int, ...]:
+    """Lengths of the rendered name lists, where the allowance stops being
+    monotonic.
+
+    A list completing mid-range drops its "… (+N more)" suffix, which can
+    shorten the block even as the allowance rises. Handing these to
+    :func:`fit_section_text` puts each transition on a search boundary.
+    """
+    return tuple(
+        sorted(
+            {
+                len(line.names)
+                for line in lines
+                if line.kind in _NAME_LIST_LABEL and line.names
+            }
+        )
+    )
+
+
 def _name_cap(lines: Sequence[SummaryLine], top_n: int) -> int:
     """Resolve the configured limit into an absolute name-list allowance.
 
@@ -249,7 +268,12 @@ def _table_block(
         "type": "section",
         "text": {
             "type": "mrkdwn",
-            "text": fit_section_text(build, rows=row_cap, names=name_cap),
+            "text": fit_section_text(
+                build,
+                rows=row_cap,
+                names=name_cap,
+                name_breaks=_name_breaks(lines),
+            ),
         },
     }
 
@@ -274,7 +298,12 @@ def _signal_block(
         return text
 
     row_cap = len(truncate(section.offenders, top_n)[0])
-    text = fit_section_text(build, rows=row_cap, names=_name_cap(lines, top_n))
+    text = fit_section_text(
+        build,
+        rows=row_cap,
+        names=_name_cap(lines, top_n),
+        name_breaks=_name_breaks(lines),
+    )
     return {"type": "section", "text": {"type": "mrkdwn", "text": text}}
 
 
