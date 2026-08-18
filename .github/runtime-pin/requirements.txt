@@ -7,4 +7,4 @@
 # static default in action.yaml) lets Dependabot's pip ecosystem propose
 # version bumps through a cooldown-gated PR instead of a hand-edited
 # default that silently drifts each release.
-github-security-report==0.10.0
+github-security-report==0.11.0
