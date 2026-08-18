@@ -11,8 +11,9 @@ See ``docs/BRIEF.md`` sections 9, 13 and ``docs/phase0-findings.md``.
 The implementation is split across ``endpoints`` (environment-resolved API URLs
 and the shared retry/backoff policy), ``queries`` (GraphQL documents),
 ``parsers`` (pure header/node parsing), ``transport`` (connection lifecycle and
-the retrying request primitives), ``reads`` (the reporting reads) and ``writes``
-(the remediation writes plus the public :class:`GitHubClient`). This module
+the retrying request primitives), ``org_reads`` (the reads issued once per
+organisation), ``reads`` (the per-repository reads) and ``writes`` (the
+remediation writes plus the public :class:`GitHubClient`). This module
 re-exports the public surface, so importing from
 ``github_security_report.client`` is unchanged.
 """
@@ -32,6 +33,7 @@ from github_security_report.client.endpoints import (
     SCORECARD_API,
     _https_endpoint,
 )
+from github_security_report.client.org_reads import OrgReadClient
 from github_security_report.client.parsers import (
     _last_published,
     _next_page_url,
@@ -66,6 +68,7 @@ __all__ = [
     "SCORECARD_API",
     "GitHubClient",
     "NetworkError",
+    "OrgReadClient",
     "ReadClient",
     "Transport",
     "_CODE_SCANNING_SIGNAL_TOOLS",
