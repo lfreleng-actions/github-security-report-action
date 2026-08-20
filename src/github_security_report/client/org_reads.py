@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 
-from github_security_report.authors import normalise_members
+from github_security_report.authors import is_automation_author, normalise_members
 from github_security_report.client.endpoints import BULK_KINDS
 from github_security_report.client.parsers import _parse_iso, _parse_repo_node
 from github_security_report.client.queries import (
@@ -27,9 +27,45 @@ from github_security_report.models import Repo, RepoGraphData
 
 log = logging.getLogger(__name__)
 
+# Pages of organisation membership to read before giving up. 100 pages is
+# 10,000 members; beyond that the membership is reported as unknown rather than
+# silently truncated.
+_MEMBER_PAGE_LIMIT = 100
 
-def _aliases_with_errors(errors: object, alias_count: int) -> set[str]:
+# Fields whose failure can be isolated to the data they feed instead of failing
+# the whole repository. Only fields the model already carries a dedicated
+# "unknown" for qualify: ``pullRequests`` has ``open_pull_requests=None``, which
+# every pull-request table already renders as unknown, so a token that cannot
+# read pull requests loses that one table rather than the repository's releases,
+# issues, tags and Dependabot posture as well.
+_ISOLABLE_FIELDS = frozenset({"pullRequests"})
+
+
+def _log_unreadable_membership(org: str, *, outside: bool = False) -> None:
+    """Report that membership could not be read in full, once per attempt."""
+    reason = (
+        "the account this run authenticated as is not a member of it, so "
+        "GitHub served only its public members"
+        if outside
+        else "it could not be read in full"
+    )
+    log.warning(
+        "organisation membership for %s is incomplete (%s); "
+        "externally-raised contributions cannot be identified reliably and "
+        "are reported as a lower bound rather than guessed from GitHub's "
+        "per-item author association, which reports private members as "
+        "outsiders to a token without organisation visibility",
+        org,
+        reason,
+    )
+
+
+def _alias_errors(errors: object, alias_count: int) -> tuple[set[str], set[str]]:
     """Alias keys implicated by a batched query's ``errors`` array.
+
+    Returns ``(unreadable, pull_requests_only)``: aliases that must be failed
+    wholesale, and aliases whose only failures were confined to fields in
+    :data:`_ISOLABLE_FIELDS`.
 
     GitHub reports a *field-level* failure with HTTP 200: the alias is still a
     populated dictionary, the field that failed is null, and an ``errors``
@@ -38,10 +74,14 @@ def _aliases_with_errors(errors: object, alias_count: int) -> set[str]:
     ``latestRelease`` is indistinguishable from "never released" -- so the
     whole alias is treated as unreadable rather than partially trusted.
 
-    The alias is failed wholesale rather than per field: a finer-grained flag
-    per field would have to be threaded through every table to be honest
-    about which half of a row is trustworthy, whereas one unknown repository
-    is already a state every table renders correctly.
+    The alias is failed wholesale rather than per field, because a per-field
+    flag would have to be threaded through every table to be honest about which
+    half of a row is trustworthy, whereas one unknown repository is already a
+    state every table renders correctly. The exception is a field the model
+    *already* carries a dedicated unknown for: failing the whole repository for
+    one of those would let an optional, permission-sensitive section take the
+    rest of the report down with it -- a token without pull-request access would
+    lose its releases, issues and Dependabot posture too.
 
     An error whose path names no alias cannot be attributed, so it implicates
     every alias in the batch: with no way to tell which repositories it
@@ -49,16 +89,24 @@ def _aliases_with_errors(errors: object, alias_count: int) -> set[str]:
     """
     all_aliases = {f"r{i}" for i in range(alias_count)}
     if not isinstance(errors, list):
-        return set()
-    affected: set[str] = set()
+        return set(), set()
+    unreadable: set[str] = set()
+    isolated: set[str] = set()
     for entry in errors:
         path = entry.get("path") if isinstance(entry, dict) else None
-        head = path[0] if isinstance(path, list) and path else None
-        if isinstance(head, str) and head in all_aliases:
-            affected.add(head)
+        if not isinstance(path, list) or not path:
+            return all_aliases, set()
+        head = path[0]
+        if not isinstance(head, str) or head not in all_aliases:
+            return all_aliases, set()
+        field = path[1] if len(path) > 1 else None
+        if isinstance(field, str) and field in _ISOLABLE_FIELDS:
+            isolated.add(head)
         else:
-            return all_aliases
-    return affected
+            unreadable.add(head)
+    # An alias with failures on both sides is unreadable: the isolable one is
+    # the lesser problem, and the other still poisons the rest of the node.
+    return unreadable, isolated - unreadable
 
 
 class OrgReadClient(Transport):
@@ -141,24 +189,28 @@ class OrgReadClient(Transport):
     # ------------------------------------------------------------------ #
     # Organisation membership (who counts as an insider)
     # ------------------------------------------------------------------ #
-    async def org_members(self, org: str) -> frozenset[str]:
-        """Every organisation member's login, normalised, or an empty set.
+    async def org_members(self, org: str) -> frozenset[str] | None:
+        """Every organisation member's login, normalised, or ``None``.
 
         Collected once per organisation and reused for every repository, so
         deciding whether a contribution came from outside the organisation costs
         one query rather than a probe per author.
 
-        Degrades to an empty set rather than raising: a token without
-        ``read:org`` cannot list membership, and the caller falls back to
-        GitHub's per-item ``authorAssociation``. An empty result is therefore
-        "membership unknown", which is why the caller must not read it as
-        "nobody is a member".
+        Returns ``None`` -- never a partial set -- when membership cannot be
+        read in full: a token without ``read:org``, a viewer outside the
+        organisation, a failed page, or a membership larger than the pagination
+        guard. A partial set is worse than none, because every member missing
+        from it reads as an outsider, and the caller cannot tell an absent
+        member from a genuine one. The caller degrades those authors to
+        indeterminate instead.
         """
         logins: set[str] = set()
         after: str | None = None
-        # Bounded so a malformed or hostile ``pageInfo`` cannot spin forever;
-        # 100 pages is 10,000 members, far beyond any real organisation.
-        for _ in range(100):
+        # Bounded so a malformed or hostile ``pageInfo`` cannot spin forever.
+        # 100 pages is 10,000 members, far beyond any real organisation; an
+        # organisation that somehow exceeds it is reported as unknown rather
+        # than silently classified against its first 10,000 members.
+        for _ in range(_MEMBER_PAGE_LIMIT):
             resp = await self._request(
                 "POST",
                 self._graphql_url,
@@ -169,33 +221,54 @@ class OrgReadClient(Transport):
             )
             if resp.status_code != 200:
                 await resp.aclose()  # unread body would leak a pooled connection
-                break
+                _log_unreadable_membership(org)
+                return None
             body = resp.json()
             await resp.aclose()  # release the connection once the body is read
-            members = ((body.get("data") or {}).get("organization") or {}).get(
-                "membersWithRole"
-            )
-            if not isinstance(members, dict):
+            if body.get("errors"):
+                # GraphQL answers a partially-failed query with HTTP 200,
+                # populating what it could alongside an ``errors`` array. A
+                # shortened member list is indistinguishable from a complete
+                # one, so any error at all condemns the whole read.
+                _log_unreadable_membership(org)
+                return None
+            organization = (body.get("data") or {}).get("organization")
+            if not isinstance(organization, dict):
                 # A token lacking organisation visibility gets HTTP 200 with a
                 # null organisation and an ``errors`` entry; that is an unknown
                 # membership, not an empty one.
-                log.info(
-                    "organisation membership for %s could not be read; external "
-                    "contribution counts fall back to GitHub's per-item author "
-                    "association",
-                    org,
-                )
-                break
+                _log_unreadable_membership(org)
+                return None
+            if organization.get("viewerIsAMember") is not True:
+                # The connection is visibility-filtered, not refused: a viewer
+                # outside the organisation is served its *public* members with
+                # no error at all. Trusting that would report every private
+                # member as an outsider.
+                _log_unreadable_membership(org, outside=True)
+                return None
+            members = organization.get("membersWithRole")
+            if not isinstance(members, dict):
+                _log_unreadable_membership(org)
+                return None
             for node in members.get("nodes") or []:
-                if isinstance(node, dict) and (login := node.get("login")):
-                    logins.add(str(login))
+                # An unusable node is a member we cannot name, and a member
+                # missing from the set reads as an outsider. There is no way to
+                # tell a dropped entry from a genuine absence afterwards, so the
+                # whole read is condemned rather than quietly shortened.
+                login = node.get("login") if isinstance(node, dict) else None
+                if not login:
+                    _log_unreadable_membership(org)
+                    return None
+                logins.add(str(login))
             page = members.get("pageInfo")
             if not isinstance(page, dict) or not page.get("hasNextPage"):
-                break
+                return normalise_members(logins)
             after = page.get("endCursor")
             if not isinstance(after, str):
-                break
-        return normalise_members(logins)
+                _log_unreadable_membership(org)
+                return None
+        _log_unreadable_membership(org)
+        return None
 
     async def viewer_login(self) -> str:
         """The authenticated account's login, lower-cased, or ``""``.
@@ -204,10 +277,12 @@ class OrgReadClient(Transport):
         it is the token's owner rather than a configured identity: a report run
         with someone else's token legitimately answers a different question.
 
-        Returns ``""`` when the account cannot be read, in which case callers
-        must treat every assignment as somebody else's rather than as theirs --
-        a scheduled run under a bot or App token has no personal inbox, and
-        inventing one would put another person's review queue under "mine".
+        Returns ``""`` for an automation identity as well as for an unreadable
+        account. A bot or App has no personal review queue, and its login can
+        legitimately appear as an assignee, so returning it would populate
+        "Mine" and the Assigned to Me table for an account that has no inbox --
+        contradicting the documented behaviour of exactly the scheduled runs
+        that are most likely to authenticate this way.
         """
         resp = await self._request(
             "POST", self._graphql_url, json={"query": _VIEWER_QUERY}
@@ -221,7 +296,18 @@ class OrgReadClient(Transport):
         if not isinstance(viewer, dict):
             return ""
         login = viewer.get("login")
-        return str(login).lower() if login else ""
+        if not login:
+            return ""
+        typename = viewer.get("__typename")
+        if is_automation_author(str(login), str(typename) if typename else None):
+            log.info(
+                "this run authenticated as the automation account %s, which has "
+                "no personal review queue; the assignment breakdown reports "
+                'nothing as "mine" and the Assigned to Me table is empty',
+                login,
+            )
+            return ""
+        return str(login).lower()
 
     # ------------------------------------------------------------------ #
     # Batched per-repo prefetch (one query for many repositories)
@@ -284,7 +370,7 @@ class OrgReadClient(Transport):
         # diagnosis and used to fail the affected aliases, since a field nulled
         # by a failed read is indistinguishable from a genuine absence.
         errors = body.get("errors")
-        errored_aliases = _aliases_with_errors(errors, len(names))
+        errored_aliases, pull_request_errors = _alias_errors(errors, len(names))
         if errors:
             log.warning(
                 "GraphQL prefetch for %s returned %d error(s); affected data is "
@@ -316,7 +402,14 @@ class OrgReadClient(Transport):
                 continue
             node = data.get(alias)
             if isinstance(node, dict):
-                out[name] = _parse_repo_node(node)
+                parsed = _parse_repo_node(node)
+                if alias in pull_request_errors:
+                    # Only the pull-request connection failed. Its own unknown
+                    # state is already modelled, so report that rather than
+                    # discarding this repository's other, readable data.
+                    parsed.open_pull_requests = None
+                    parsed.pull_requests = ()
+                out[name] = parsed
         unreadable = sorted(name for name, d in out.items() if d.unreadable)
         if unreadable:
             log.warning(

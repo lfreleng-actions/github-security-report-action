@@ -147,9 +147,10 @@ class TestBuildConfig:
 
     def test_dependabot_thresholds_default_and_override(self) -> None:
         report = config.build_config(MINIMAL).report
-        assert report.dependabot_warn_threshold == 12
-        # 15 is GitHub's default per-repository open-PR cap for Dependabot.
-        assert report.dependabot_error_threshold == 15
+        # The defaults track GitHub's own open-pull-requests-limit, which
+        # defaults to 5: red at the limit, yellow on the approach to it.
+        assert report.dependabot_warn_threshold == 2
+        assert report.dependabot_error_threshold == 5
         data = {
             "report": {
                 "dependabot_warn_threshold": 8,
@@ -175,6 +176,35 @@ class TestBuildConfig:
             "organizations": [{"name": "o"}],
         }
         with pytest.raises(ConfigError, match="dependabot_error_threshold"):
+            config.build_config(data)
+
+    def test_a_disabled_error_level_is_not_an_inversion(self) -> None:
+        # 0 is the documented way to switch the error level off, so a
+        # warning-only configuration must load rather than tripping the
+        # ordering check against a threshold that is not in play.
+        data = {
+            "report": {
+                "dependabot_warn_threshold": 12,
+                "dependabot_error_threshold": 0,
+            },
+            "organizations": [{"name": "o"}],
+        }
+        report = config.build_config(data).report
+        assert report.dependabot_warn_threshold == 12
+        assert report.dependabot_error_threshold == 0
+
+    def test_equal_thresholds_are_rejected(self) -> None:
+        # The error level is checked first and inclusively (>= error), so an
+        # equal warning threshold can never be reached -- the warning colour
+        # would be dead configuration rather than a second level.
+        data = {
+            "report": {
+                "dependabot_warn_threshold": 12,
+                "dependabot_error_threshold": 12,
+            },
+            "organizations": [{"name": "o"}],
+        }
+        with pytest.raises(ConfigError, match="greater than"):
             config.build_config(data)
 
     def test_org_override_cannot_invert_the_thresholds(self) -> None:

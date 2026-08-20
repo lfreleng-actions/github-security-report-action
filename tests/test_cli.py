@@ -21,8 +21,14 @@ from github_security_report.cli.outputs import (
     TopNLimits,
     most_generous,
     slack_limit,
+    slack_show,
 )
-from github_security_report.config import CategoryToggle, OrgConfig, ReportConfig
+from github_security_report.config import (
+    CategoryToggle,
+    OrgConfig,
+    OutputToggles,
+    ReportConfig,
+)
 from github_security_report.report import OrgReport, build_org_report
 
 API = "https://api.github.com"
@@ -270,6 +276,81 @@ def test_unknown_hide_category_is_rejected() -> None:
 
 
 @respx.mock
+def test_hide_keeps_a_category_out_of_report_json(tmp_path: Path) -> None:
+    # report.json is written into the published Pages directory, so ignoring an
+    # explicit --hide there would publish exactly what the operator asked to
+    # keep out of shared output -- however the rendered pages behave.
+    _mock_org_o_r()
+    data = json.dumps({"organizations": [{"name": "o", "token_env": "GITHUB_TOKEN"}]})
+    result = cli.invoke(
+        app,
+        [
+            "report",
+            "--config-data",
+            data,
+            "--output-dir",
+            str(tmp_path),
+            "--hide",
+            "pull_requests_assigned",
+            "--no-color",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads((tmp_path / "o" / "report.json").read_text())
+    assert payload["assigned_pull_requests"] is None
+    # Everything else is still the complete dataset: --hide is the only thing
+    # that removes data, and only what it names.
+    assert payload["pull_requests"] is not None
+    assert payload["issues"] is not None
+
+
+@respx.mock
+def test_report_json_omits_terminal_only_categories(tmp_path: Path) -> None:
+    # report.json is written into the published Pages directory, so a category
+    # no published surface carries has no business in it either -- serialising
+    # the terminal-only personal queue would publish one account's review
+    # backlog through the back door while every rendered surface omitted it.
+    _mock_org_o_r()
+    data = json.dumps({"organizations": [{"name": "o", "token_env": "GITHUB_TOKEN"}]})
+    result = cli.invoke(
+        app,
+        ["report", "--config-data", data, "--output-dir", str(tmp_path), "--no-color"],
+    )
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads((tmp_path / "o" / "report.json").read_text())
+    assert payload["assigned_pull_requests"] is None
+    # Everything a published surface does carry is still there in full: the
+    # per-surface toggles do not otherwise filter the JSON.
+    assert payload["pull_requests"] is not None
+    assert payload["issues"] is not None
+
+
+@respx.mock
+def test_report_json_keeps_a_category_any_published_surface_shows(
+    tmp_path: Path,
+) -> None:
+    # Opting the personal queue into one published surface puts it back in the
+    # JSON: the exclusion is "nothing published carries this", not "the
+    # terminal shows it".
+    _mock_org_o_r()
+    data = json.dumps(
+        {
+            "report": {
+                "categories": {"pull_requests_assigned": {"outputs": {"html": True}}}
+            },
+            "organizations": [{"name": "o", "token_env": "GITHUB_TOKEN"}],
+        }
+    )
+    result = cli.invoke(
+        app,
+        ["report", "--config-data", data, "--output-dir", str(tmp_path), "--no-color"],
+    )
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads((tmp_path / "o" / "report.json").read_text())
+    assert payload["assigned_pull_requests"] is not None
+
+
+@respx.mock
 def test_rejected_credentials_abort_instead_of_reporting_no_data() -> None:
     # A rotated, expired or revoked token used to produce a full report saying
     # "0 repositories analysed" with every section "No data" / "All Clean".
@@ -368,6 +449,28 @@ def test_repo_mode_fail_threshold(tmp_path: Path) -> None:
         ],
     )
     assert ok.exit_code == 0, ok.stdout
+
+    # --hide promises suppression on "every output", so it has to reach repo
+    # mode too. A flag accepted and validated but then ignored is worse than
+    # one rejected: nothing tells the caller it did nothing.
+    assert "CodeQL" in ok.stdout
+    hidden = cli.invoke(
+        app,
+        [
+            "report",
+            "--repo",
+            "o/r",
+            "--scope",
+            "repo",
+            "--hide",
+            "codeql",
+            "--no-color",
+        ],
+    )
+    assert hidden.exit_code == 0, hidden.stdout
+    assert "CodeQL" not in hidden.stdout
+    # Only the named category goes; the rest of the report is untouched.
+    assert "Secret Scanning" in hidden.stdout
 
 
 def test_unresolvable_scope_errors() -> None:
@@ -749,3 +852,42 @@ class TestSlackLimit:
         assert limit(CategoryKey.RELEASES) == 0
         # A category neither org overrode still uses the per-output value.
         assert limit(CategoryKey.CODEQL) == 5
+
+
+class TestSlackShow:
+    """Channel visibility stays attached to the report that produced it."""
+
+    def _pair(self, *, shows: bool) -> tuple[OrgConfig, OrgReport]:
+        org = OrgConfig(
+            name="o",
+            report=ReportConfig(
+                categories={
+                    "pull_requests_assigned": CategoryToggle(
+                        outputs=OutputToggles(slack=shows)
+                    )
+                }
+            ),
+        )
+        return (org, build_org_report("o", [], repo_count=0))
+
+    def test_duplicate_org_names_keep_their_own_toggles(self) -> None:
+        # Nothing in the schema makes organisation names unique, so a run can
+        # carry two entries called "o". A name-keyed lookup would collapse them
+        # onto the last configuration and publish the opted-out report's
+        # reader-specific queue under its namesake's opt-in.
+        opted_out = self._pair(shows=False)
+        opted_in = self._pair(shows=True)
+        visible = slack_show([opted_out, opted_in])
+        key = CategoryKey.PULL_REQUESTS_ASSIGNED
+        assert visible(opted_in[1], key) is True
+        assert visible(opted_out[1], key) is False
+
+    def test_hidden_categories_are_suppressed_for_every_report(self) -> None:
+        opted_in = self._pair(shows=True)
+        visible = slack_show([opted_in], [CategoryKey.PULL_REQUESTS_ASSIGNED])
+        assert visible(opted_in[1], CategoryKey.PULL_REQUESTS_ASSIGNED) is False
+
+    def test_unconfigured_report_falls_back_to_visible(self) -> None:
+        stranger = build_org_report("other", [], repo_count=0)
+        visible = slack_show([self._pair(shows=False)])
+        assert visible(stranger, CategoryKey.CODEQL) is True

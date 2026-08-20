@@ -82,7 +82,7 @@
       <tr><td>{{ item.total_cells[0] }}</td>{% for cell in item.total_cells[1:] %}<td class="num">{{ cell }}</td>{% endfor %}</tr>
       {% endif %}
       {% for footer in item.footer_rows %}
-      <tr class="breakdown"><td>{{ footer.label }}</td><td class="num">{{ footer.value }}</td>{% for _ in item.columns[2:] %}<td></td>{% endfor %}</tr>
+      <tr class="breakdown"><td>{{ footer[0] }}</td>{% for cell in footer[1:] %}<td class="num">{{ cell }}</td>{% endfor %}</tr>
       {% endfor %}
     </tfoot>
     {% endif %}

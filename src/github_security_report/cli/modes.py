@@ -252,8 +252,10 @@ def _slack_digest(
                 [options.limits.resolve(oc, "slack") for oc, _ in items]
             ),
             pages_url=options.pages_url,
-            # A category shows in the channel digest when any contributing org
-            # would show it on Slack (mirrors the most-generous top_n rule).
+            # Visibility is resolved per organisation, so each org's rows obey
+            # its own Slack toggles. Unlike the row limits above, it is
+            # deliberately not pooled: one org's opt-in must never publish
+            # another's data into the shared channel.
             show=slack_show(items, options.hidden),
             limit=slack_limit(items, options.limits),
         )
@@ -338,6 +340,7 @@ async def _run_repo(
     console: Console,
     fail_threshold: str,
     ruleset_workflows: Mapping[str, str] | None = None,
+    hidden: frozenset[CategoryKey] = frozenset(),
 ) -> int:
     token = os.environ.get(token_env, "").strip()
     if not token:
@@ -354,9 +357,15 @@ async def _run_repo(
     org = build_org_report(
         f"{owner}/{repo_name}", signals, repo_count=1, generated_at=now
     )
-    term_render.render_org(org, console)
+    # ``--hide`` promises suppression on every output, so it has to reach repo
+    # mode too: a flag accepted, validated and then ignored is worse than one
+    # rejected, because nothing tells the caller it did nothing.
+    visible = show(ReportConfig(), "cli", hidden)
+    term_render.render_org(org, console, show=visible)
 
-    runner.append_step_summary(md_render.render_org(org))
+    runner.append_step_summary(
+        md_render.render_org(org, show=show(ReportConfig(), "markdown", hidden))
+    )
     outputs = repo_outputs(signals, fail_threshold)
     # Keep the action's declared outputs stable across modes.
     outputs["should_notify"] = "false"

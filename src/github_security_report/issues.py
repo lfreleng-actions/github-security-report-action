@@ -105,7 +105,7 @@ def _classification_is_certain(
     return column == next(iter(label_columns), None)
 
 
-def _is_external(issue: IssueRef, members: Set[str]) -> bool:
+def _is_external(issue: IssueRef, members: Set[str] | None) -> bool:
     """Whether an issue was raised from outside the organisation.
 
     An author who cannot be classified is *not* counted: the column reports
@@ -160,7 +160,7 @@ def _oldest_cell(age: int | None, truncated: bool) -> str:
     return f"{text} {TRUNCATED_MARKER}" if truncated else text
 
 
-def _describe(base: str, age_cells: list[str]) -> str:
+def _describe(base: str, age_cells: list[str], members: Set[str] | None) -> str:
     """Extend the category description with the caveats the table earned.
 
     Each caveat is appended only when a row actually shows it, so a report with
@@ -170,15 +170,24 @@ def _describe(base: str, age_cells: list[str]) -> str:
     description = base
     if any(cell.endswith(TRUNCATED_MARKER) for cell in age_cells):
         description += (
-            f" A trailing '{TRUNCATED_MARKER}' marks a repository whose label "
-            "breakdown is partial -- its open issues exceed the collected "
-            "window, or an issue carries more labels than were fetched. Total "
+            f" A trailing '{TRUNCATED_MARKER}' marks a repository whose "
+            "window-scoped columns are partial -- its open issues exceed the "
+            "collected window, or an issue carries more labels than were "
+            "fetched -- so the label classes and Ext each describe only the "
+            "issues collected, and Ext in particular can undercount. Total "
             "stays exact either way, as does Oldest wherever an age is shown."
         )
     if any(cell.startswith(UNKNOWN_AGE) for cell in age_cells):
         description += (
             f" An Oldest of '{UNKNOWN_AGE}' means the oldest open issue came "
             "back unreadable or undated, so its age could not be determined."
+        )
+    if members is None:
+        description += (
+            " Organisation membership could not be read for this run, so an "
+            "author can only be placed outside the organisation when GitHub "
+            "says so unambiguously; Ext therefore undercounts and should be "
+            "read as a lower bound."
         )
     return description
 
@@ -189,7 +198,7 @@ def build_issues_table(
     *,
     generated_at: dt.datetime,
     label_columns: Mapping[str, tuple[str, ...]],
-    members: Set[str] = frozenset(),
+    members: Set[str] | None = frozenset(),
 ) -> TableSection:
     """The GitHub Issues table, largest backlog first.
 
@@ -237,7 +246,10 @@ def build_issues_table(
         cells = (
             *(str(counts[column]) for column in columns),
             str(data.open_issues),
-            str(external),
+            # Ext is window-scoped like the label classes, so it carries the
+            # same partial-breakdown marker: without it an undercount reads as
+            # an exact zero.
+            f"{external} {TRUNCATED_MARKER}" if partial else str(external),
             _oldest_cell(oldest, partial),
         )
         # An unknown age has no value to rank on, so it is published as None:
@@ -269,7 +281,9 @@ def build_issues_table(
         EXTERNAL_COLUMN,
         OLDEST_COLUMN,
     )
-    description = _describe(meta.description, [row.cells[-1] for *_, row in rows])
+    description = _describe(
+        meta.description, [row.cells[-1] for *_, row in rows], members
+    )
     return TableSection(
         category=meta,
         columns=all_columns,

@@ -159,6 +159,50 @@ class TestIsExternalAuthor:
         assert authors.is_external_author("alice", association=association) is None
 
 
+class TestIsExternalAuthorWithUnknownMembership:
+    def test_unknown_membership_reports_outsiders_as_indeterminate(self) -> None:
+        # This is the whole point of collecting membership: a token without
+        # organisation visibility reports private members as CONTRIBUTOR/NONE,
+        # so trusting that would recreate the misclassification the collected
+        # membership exists to prevent.
+        for association in ("NONE", "CONTRIBUTOR", "FIRST_TIMER"):
+            assert (
+                authors.is_external_author(
+                    "someone", association=association, members=None
+                )
+                is None
+            )
+
+    def test_unknown_membership_still_trusts_a_named_insider(self) -> None:
+        # Positive evidence: only a token that can see the relationship reports
+        # it, so MEMBER is trustworthy even when the member list is not.
+        for association in sorted(authors.INSIDER_ASSOCIATIONS):
+            assert (
+                authors.is_external_author(
+                    "someone", association=association, members=None
+                )
+                is False
+            )
+
+    def test_unknown_membership_still_recognises_automation(self) -> None:
+        assert (
+            authors.is_external_author(
+                "dependabot[bot]", association="NONE", members=None
+            )
+            is False
+        )
+
+    def test_known_empty_membership_still_finds_outsiders(self) -> None:
+        # An organisation that genuinely has no members is not the same as one
+        # whose membership could not be read.
+        assert (
+            authors.is_external_author(
+                "someone", association="NONE", members=frozenset()
+            )
+            is True
+        )
+
+
 class TestNormaliseMembers:
     def test_entries_are_normalised_and_lower_cased(self) -> None:
         assert authors.normalise_members(["Dependabot[bot]", "Alice"]) == frozenset(

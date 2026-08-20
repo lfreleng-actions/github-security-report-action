@@ -411,13 +411,21 @@ def table_column_totals(
 
 def table_footer_rows(
     section: TableSection, rows: Sequence[TableRow]
-) -> tuple[tuple[str, str], ...]:
-    """Aggregate ``(label, value)`` rows drawn beneath a table's totals row.
+) -> tuple[tuple[str, ...], ...]:
+    """Aggregate rows drawn beneath a table's totals row, full width.
 
     A breakdown *of* the rows rather than *within* them: the Pull Requests table
     uses it to split its backlog by who each pull request is assigned to, which
     is a partition of the same pull requests the columns already count and so
     cannot be another column without double-counting them.
+
+    Each row is returned at the table's full width, with the label in the
+    repository column and the value under the **last** column. That placement
+    is the point: these values partition the whole row -- automation included --
+    so aligning them under ``Total`` says what they total, whereas the second
+    column would file an unassigned bot pull request under ``Human``. Returning
+    complete rows also keeps every renderer from padding them itself, which is
+    where that misalignment came from.
 
     Summed over the rows passed in -- the displayed, already-truncated set --
     for the same reason :func:`table_column_totals` is: a footer the reader
@@ -426,9 +434,12 @@ def table_footer_rows(
     """
     if not section.footer_labels:
         return ()
+    # One label cell, one value cell, and blanks for whatever lies between.
+    gap = max(len(section.columns) - 2, 0)
     return tuple(
         (
             label,
+            *([""] * gap),
             str(
                 sum(
                     row.footer_values[index]

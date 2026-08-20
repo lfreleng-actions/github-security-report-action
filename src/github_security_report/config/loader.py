@@ -182,16 +182,22 @@ def _report_from(data: dict, base: ReportConfig) -> ReportConfig:
             result,
             categories=_categories_from(data["categories"], base.categories),
         )
-    if result.dependabot_error_threshold < result.dependabot_warn_threshold:
-        # An error threshold below the warning one is unsatisfiable as written:
-        # every value that warns would already have errored, so the warning
-        # colour could never appear. Rejecting beats silently ignoring one of
-        # the two knobs the operator deliberately set.
+    if (
+        result.dependabot_error_threshold
+        and result.dependabot_error_threshold <= result.dependabot_warn_threshold
+    ):
+        # The error level is checked first and inclusively (``>= error``), so a
+        # warning threshold at or above it can never be reached: every value
+        # that would warn has already errored. Rejecting beats silently
+        # ignoring one of the two knobs the operator deliberately set. A zero
+        # error threshold is exempt -- that is the documented way to turn the
+        # error level off, leaving a warning-only configuration.
         raise ConfigError(
             "report.dependabot_error_threshold "
-            f"({result.dependabot_error_threshold}) must be greater than or "
-            "equal to report.dependabot_warn_threshold "
-            f"({result.dependabot_warn_threshold})"
+            f"({result.dependabot_error_threshold}) must be greater than "
+            "report.dependabot_warn_threshold "
+            f"({result.dependabot_warn_threshold}), or 0 to disable the error "
+            "level; otherwise the warning level can never be reached"
         )
     return result
 

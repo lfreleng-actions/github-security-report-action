@@ -276,6 +276,7 @@ def report(
                     console=console,
                     fail_threshold=fail_threshold,
                     ruleset_workflows=rw,
+                    hidden=hidden,
                 )
             )
         except AuthError as exc:

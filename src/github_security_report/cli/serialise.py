@@ -9,6 +9,9 @@ toggles deliberately do not filter it.
 
 from __future__ import annotations
 
+from collections.abc import Collection
+
+from github_security_report.categories import CategoryKey
 from github_security_report.report import OrgReport, TableSection, table_footer_rows
 
 
@@ -33,14 +36,32 @@ def _table_to_dict(section: TableSection) -> dict:
         "description": section.resolved_description(),
         # Aggregate rows beneath the totals, over every row (report.json is the
         # unconditionally complete artifact, so nothing here is truncated).
+        # Emitted as label/value rather than the renderers' padded row, since a
+        # JSON consumer wants the pair, not the table's column alignment.
         "footer_rows": [
-            {"label": label, "value": value}
-            for label, value in table_footer_rows(section, section.rows)
+            {"label": row[0], "value": row[-1]}
+            for row in table_footer_rows(section, section.rows)
         ],
     }
 
 
-def _org_to_dict(org: OrgReport) -> dict:
+def _org_to_dict(org: OrgReport, hidden: Collection[CategoryKey] = ()) -> dict:
+    """One organisation's report as JSON-ready data.
+
+    ``hidden`` names the categories to omit. ``report.json`` is otherwise the
+    complete dataset and deliberately ignores the per-surface render toggles,
+    so a category merely hidden from one surface is still published in full.
+    The caller decides what to suppress; it is written into the published Pages
+    directory, so it excludes both an explicit ``--hide`` and any category no
+    published surface carries at all.
+    """
+    suppressed = frozenset(hidden)
+
+    def table(section: TableSection | None) -> dict | None:
+        if section is None or section.category.key in suppressed:
+            return None
+        return _table_to_dict(section)
+
     return {
         "org": org.org,
         "repo_count": org.repo_count,
@@ -78,25 +99,16 @@ def _org_to_dict(org: OrgReport) -> dict:
                 "description": s.resolved_description(),
             }
             for s in org.sections
+            if s.signal.category_key not in suppressed
         ],
         # Extra reporting categories outside the four-state per-signal model.
-        "dependabot_tables": [_table_to_dict(t) for t in org.dependabot_tables],
-        "releases": _table_to_dict(org.releases) if org.releases else None,
-        "mutable_releases": (
-            _table_to_dict(org.mutable_releases) if org.mutable_releases else None
-        ),
-        "private_vulnerability_reporting": (
-            _table_to_dict(org.private_vulnerability_reporting)
-            if org.private_vulnerability_reporting
-            else None
-        ),
-        "issues": _table_to_dict(org.issues) if org.issues else None,
-        "pull_requests": (
-            _table_to_dict(org.pull_requests) if org.pull_requests else None
-        ),
-        "assigned_pull_requests": (
-            _table_to_dict(org.assigned_pull_requests)
-            if org.assigned_pull_requests
-            else None
-        ),
+        "dependabot_tables": [
+            entry for t in org.dependabot_tables if (entry := table(t)) is not None
+        ],
+        "releases": table(org.releases),
+        "mutable_releases": table(org.mutable_releases),
+        "private_vulnerability_reporting": table(org.private_vulnerability_reporting),
+        "issues": table(org.issues),
+        "pull_requests": table(org.pull_requests),
+        "assigned_pull_requests": table(org.assigned_pull_requests),
     }

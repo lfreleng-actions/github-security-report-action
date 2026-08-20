@@ -255,11 +255,10 @@ def _table_block(
             totals = table_column_totals(section, shown)
             if totals is not None:
                 cells.append(list(totals))
-            # Aggregate rows beneath the totals, padded to the table's width so
-            # the fixed-width column alignment still holds.
-            blanks = [""] * (len(section.columns) - 2)
-            for label, value in table_footer_rows(section, shown):
-                cells.append([label, value, *blanks])
+            # Aggregate rows beneath the totals, already full width so the
+            # fixed-width column alignment holds.
+            for footer_row in table_footer_rows(section, shown):
+                cells.append(list(footer_row))
             table = _fixed_table_generic(section.columns, cells)
             hidden = len(section.rows) - len(shown)
             if hidden:
@@ -394,15 +393,25 @@ def render_payload(
     channel: str,
     top_n: int = 10,
     pages_url: str | None = None,
-    show: Callable[[CategoryKey], bool] | None = None,
+    show: Callable[[OrgReport, CategoryKey], bool] | None = None,
     limit: LimitFor | None = None,
 ) -> dict:
-    """Build a ``chat.postMessage`` payload across one or more organisations."""
+    """Build a ``chat.postMessage`` payload across one or more organisations.
+
+    ``show`` is resolved per organisation rather than once for the channel:
+    visibility is a property of each organisation's own data, so one
+    organisation opting a category into Slack must not publish another's. The
+    ``limit`` stays channel-wide, since a row cap is a property of the shared
+    digest rather than of the data in it.
+    """
     blocks: list[dict] = []
     for org in orgs:
+        org_show = (
+            None if show is None else (lambda key, org=org: show(org, key))  # type: ignore[misc]
+        )
         blocks.extend(
             render_org_blocks(
-                org, top_n=top_n, pages_url=pages_url, show=show, limit=limit
+                org, top_n=top_n, pages_url=pages_url, show=org_show, limit=limit
             )
         )
     blocks = enforce_block_limit(blocks, pages_url)

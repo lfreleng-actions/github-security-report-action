@@ -247,15 +247,13 @@ def render_table_section(
         if totals is not None:
             table.add_section()
             table.add_row(*totals, style="bold")
-        # Aggregate rows beneath the totals: a breakdown of the same rows, so
-        # only the label and its value are filled and the count columns are
-        # left blank rather than repeating numbers that do not apply.
+        # Aggregate rows beneath the totals: a breakdown of the same rows,
+        # arriving full width with the value under the final column.
         footer = table_footer_rows(section, rows)
         if footer:
             table.add_section()
-            blanks = [""] * (len(section.columns) - 2)
-            for label, value in footer:
-                table.add_row(escape(label), value, *blanks)
+            for cells in footer:
+                table.add_row(*(escape(cell) for cell in cells))
         console.print(table)
         if hidden:
             console.print(f"  [dim]\u2026 and {hidden} more[/dim]")

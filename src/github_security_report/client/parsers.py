@@ -267,12 +267,20 @@ def _issue_refs(issues: object) -> tuple[int | None, tuple[IssueRef, ...], bool]
 
 
 def _check_rollup_failed(node: dict) -> bool | None:
-    """Whether the head commit's combined check rollup failed.
+    """Whether the head commit's combined check rollup reports a failure.
 
     ``None`` means no rollup at all -- a pull request whose checks have not run
     (or a repository with no CI) has not passed, so it must not be folded in
     with the successes. Only the states GitHub documents as terminal failures
     count; ``PENDING`` and ``EXPECTED`` are still in flight.
+
+    The rollup combines *every* check and status on the commit, required or
+    not, so a failure here means "something failed" rather than "the merge is
+    blocked": an optional check can fail while the pull request stays
+    mergeable. Establishing the stronger claim would need each repository's
+    branch-protection rules, which is a request per repository for a column
+    that reads the same either way -- so the column reports the weaker,
+    accurate fact and is named and described accordingly.
     """
     commits = node.get("commits")
     if not isinstance(commits, dict):

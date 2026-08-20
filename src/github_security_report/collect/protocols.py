@@ -31,11 +31,12 @@ class ClientProtocol(Protocol):
         """Fetch the organisation's workflow rulesets."""
         raise NotImplementedError
 
-    async def org_members(self, org: str) -> frozenset[str]:
+    async def org_members(self, org: str) -> frozenset[str] | None:
         """Return the organisation's member logins, normalised.
 
-        An empty set means membership could not be read, not that the
-        organisation has no members.
+        ``None`` means membership could not be read in full, which is not the
+        same as an organisation with no members: the caller must not treat a
+        missing member as evidence that an author is an outsider.
         """
         raise NotImplementedError
 

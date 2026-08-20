@@ -107,7 +107,8 @@ async def attach_extra_tables(
     # as, read once here rather than assumed from configuration.
     viewer = await ctx.client.viewer_login()
     # Open issues and pull requests come from the same batched GraphQL prefetch
-    # as the release and Dependabot data, so these tables cost no extra request.
+    # as the release and Dependabot data, so the per-repository data costs no
+    # extra request; the two identity reads above are the run's only additions.
     report.issues = build_issues_table(
         ctx.graph,
         in_scope,

@@ -86,7 +86,7 @@ def _is_automation(pull: PullRequestRef) -> bool:
     return is_automation_author(author.login, author.typename)
 
 
-def _is_external(pull: PullRequestRef, members: Set[str]) -> bool:
+def _is_external(pull: PullRequestRef, members: Set[str] | None) -> bool:
     """Whether a pull request came from a human outside the organisation.
 
     An author who cannot be classified is not counted: the column reports
@@ -108,7 +108,7 @@ def _is_external(pull: PullRequestRef, members: Set[str]) -> bool:
 
 
 def count_pull_requests(
-    pulls: tuple[PullRequestRef, ...], members: Set[str]
+    pulls: tuple[PullRequestRef, ...], members: Set[str] | None
 ) -> dict[str, int]:
     """Per-column counts for one repository's collected pull requests.
 
@@ -162,6 +162,18 @@ def assignment_counts(pulls: tuple[PullRequestRef, ...], viewer: str) -> dict[st
     return counts
 
 
+def _blocked_count(pulls: tuple[PullRequestRef, ...]) -> int:
+    """Pull requests that are failing *or* conflicting, counted once each.
+
+    The ranking tie-breaker, and deliberately a union rather than the sum of
+    the two columns: those overlap, so adding them would count a pull request
+    that is both as two, letting one stuck pull request outrank two separately
+    stuck ones. The table already says the two columns overlap; the ranking has
+    to agree with it.
+    """
+    return sum(1 for pull in pulls if pull.failing is True or pull.conflicting is True)
+
+
 def _total_cell(total: int, truncated: bool) -> str:
     """The total, marked when the collected window did not cover it."""
     return f"{total} {TRUNCATED_MARKER}" if truncated else str(total)
@@ -172,12 +184,17 @@ def automation_level(
 ) -> str | None:
     """Emphasis for an automation backlog of ``value`` open pull requests.
 
-    An organisation caps how many pull requests automation may hold open per
-    repository; at the cap, Dependabot stops raising them and the repository
-    quietly stops receiving dependency updates. That makes a large automation
-    backlog an outage in waiting rather than a tidiness problem, so it is
-    flagged before it arrives: warning *above* the warn threshold, error *at or
-    above* the error threshold, which is the cap itself.
+    Dependabot stops raising pull requests once a repository reaches its
+    open-pull-request limit, so the repository quietly stops receiving
+    dependency updates. That makes a large automation backlog an outage in
+    waiting rather than a tidiness problem, so it is flagged before it arrives:
+    warning *above* the warn threshold, error *at or above* the error one.
+
+    The thresholds are the operator's policy; the defaults track GitHub's own
+    limit of 5. ``value`` counts every automation author rather than Dependabot
+    alone, and GitHub applies its limit per package ecosystem, so the colour is
+    a prompt to look at a backlog worth looking at, not a verdict that
+    Dependabot is stalled.
 
     Either threshold of ``0`` turns that level off, matching the ``0 = no
     limit`` idiom the row limits already use.
@@ -224,20 +241,47 @@ def _cell_levels(
     return (*levels, None)
 
 
-def _describe(base: str, total_cells: list[str]) -> str:
-    """Extend the category description with the caveat the table earned.
+def _describe(
+    base: str, total_cells: list[str], members: Set[str] | None, *, filtered: bool
+) -> str:
+    """Extend the category description with the caveats the table earned.
 
     Appended only when a row actually shows it, so a report whose windows all
     covered their backlogs carries no unexplained qualification.
+
+    ``filtered`` distinguishes the two tables, whose truncation means different
+    things. Unfiltered, Total is the authoritative ``totalCount`` and stays
+    exact however short the window is; filtered, it can only be the matches
+    *within* the window, so it is a lower bound too -- and that table has no
+    assignment breakdown to qualify.
     """
+    description = base
     if any(cell.endswith(TRUNCATED_MARKER) for cell in total_cells):
-        return base + (
-            f" A trailing '{TRUNCATED_MARKER}' marks a repository whose "
-            "breakdown is partial -- its open pull requests exceed the "
-            "collected window, so the columns sum to less than Total. Total "
-            "stays exact either way."
+        if filtered:
+            description += (
+                f" A trailing '{TRUNCATED_MARKER}' marks a repository whose "
+                "open pull requests exceed the collected window. Every figure "
+                "on that row, Total included, then describes only the pull "
+                "requests collected, so it is a lower bound: a match may sit "
+                "in the pull requests this run never saw."
+            )
+        else:
+            description += (
+                f" A trailing '{TRUNCATED_MARKER}' marks a repository whose "
+                "open pull requests exceed the collected window. Every column "
+                "except Total then describes only the pull requests "
+                "collected, as does the assignment breakdown beneath the "
+                "table, so neither reconciles with that repository's Total. "
+                "Total itself stays exact."
+            )
+    if members is None:
+        description += (
+            " Organisation membership could not be read for this run, so an "
+            "author can only be placed outside the organisation when GitHub "
+            "says so unambiguously; Ext therefore undercounts and should be "
+            "read as a lower bound."
         )
-    return base
+    return description
 
 
 def _build_table(
@@ -245,7 +289,7 @@ def _build_table(
     repos: list[Repo],
     *,
     category: CategoryKey,
-    members: Set[str],
+    members: Set[str] | None,
     warn_threshold: int,
     error_threshold: int,
     viewer: str = "",
@@ -265,22 +309,36 @@ def _build_table(
     unknown_count = 0
     for repo in repos:
         data = graph.get(repo.name, RepoGraphData())
+        if select is not None and not viewer:
+            # No account to match, so nothing can be assigned to the caller in
+            # this repository or any other. That is certain regardless of what
+            # was collected -- even an unreadable connection cannot hide a
+            # match -- so a bot or App run gets the documented empty table
+            # rather than a wall of unknowns.
+            clean_count += 1
+            continue
         if data.open_pull_requests is None:
             # The connection could not be read for this repository, so its
             # backlog is unknown -- never "none open".
             unknown_count += 1
             continue
         collected = data.pull_requests
+        truncated = data.open_pull_requests > len(collected)
         selected = (
             collected if select is None else tuple(p for p in collected if select(p))
         )
         total = data.open_pull_requests if select is None else len(selected)
         if total <= 0:
+            if select is not None and truncated:
+                # Nothing matched, but the window did not cover the backlog, so
+                # a match may sit in the pull requests we never collected.
+                # "None of yours" is a claim this run cannot support.
+                unknown_count += 1
+                continue
             clean_count += 1
             continue
         counts = count_pull_requests(selected, members)
-        truncated = data.open_pull_requests > len(collected)
-        blocked = counts[FAILING_COLUMN] + counts[CONFLICT_COLUMN]
+        blocked = _blocked_count(selected)
         cells = (
             *(str(counts[column]) for column in BREAKDOWN_COLUMNS),
             _total_cell(total, truncated),
@@ -315,7 +373,12 @@ def _build_table(
     rows.sort(key=lambda item: (-item[0], -item[1], item[2]))
 
     meta = category_meta(category)
-    description = _describe(meta.description, [row.cells[-1] for *_, row in rows])
+    description = _describe(
+        meta.description,
+        [row.cells[-1] for *_, row in rows],
+        members,
+        filtered=select is not None,
+    )
     return TableSection(
         category=meta,
         columns=ALL_COLUMNS,
@@ -338,7 +401,7 @@ def build_pull_requests_table(
     graph: Mapping[str, RepoGraphData],
     repos: list[Repo],
     *,
-    members: Set[str] = frozenset(),
+    members: Set[str] | None = frozenset(),
     warn_threshold: int = 0,
     error_threshold: int = 0,
     viewer: str = "",
@@ -348,9 +411,9 @@ def build_pull_requests_table(
     Only repositories with at least one open pull request are listed; the rest
     are counted as the healthy (pass) total in the standardised footer, matching
     every other table in the report. Ranking leads on the total -- the headline
-    the table exists to report -- then on the pull requests that are actually
-    blocked (failing checks or conflicting), so two repositories with equal
-    backlogs surface the more stuck one first.
+    the table exists to report -- then on the pull requests that are failing
+    checks or conflicting, so two repositories with equal backlogs surface the
+    more stuck one first.
 
     The thresholds colour the Auto column (see :func:`automation_level`); both
     default to ``0`` (off), so a caller that does not care about the automation
@@ -374,7 +437,7 @@ def build_assigned_pull_requests_table(
     graph: Mapping[str, RepoGraphData],
     repos: list[Repo],
     *,
-    members: Set[str] = frozenset(),
+    members: Set[str] | None = frozenset(),
     warn_threshold: int = 0,
     error_threshold: int = 0,
     viewer: str = "",

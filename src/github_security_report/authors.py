@@ -123,20 +123,31 @@ def is_external_author(
     login: str | None,
     *,
     association: str | None,
-    members: Set[str] = frozenset(),
+    members: Set[str] | None = frozenset(),
     typename: str | None = None,
 ) -> bool | None:
     """Whether an author contributed from outside the organisation.
 
-    Returns ``None`` when the question cannot be answered: no login, or an
-    association GitHub has newly introduced. ``None`` is not ``False`` -- an
-    unclassifiable author must not be quietly counted as an insider, which would
-    under-report exactly the contributions the column exists to surface.
+    Returns ``None`` when the question cannot be answered: no login, an
+    association GitHub has newly introduced, or membership that could not be
+    read at all. ``None`` is not ``False`` -- an unclassifiable author must not
+    be quietly counted as an insider, which would under-report exactly the
+    contributions the column exists to surface.
 
     ``members`` is the organisation's collected membership (normalised logins),
     which is authoritative and token-independent; ``association`` is GitHub's
     per-item verdict, consulted afterwards so a repository-level collaborator
     who holds no organisation membership still counts as an insider.
+
+    ``members`` of ``None`` means membership was never readable, which is
+    materially different from an organisation with no members. In that state an
+    association naming an insider is still trusted -- it is positive evidence,
+    and only a token that *can* see the relationship reports it -- but an
+    association naming an outsider proves nothing, because a token without
+    organisation visibility reports private members exactly that way. Such
+    authors are reported as indeterminate rather than external, so the very
+    misclassification this function exists to avoid is not reintroduced through
+    the fallback path.
     """
     if not login:
         return None
@@ -144,10 +155,14 @@ def is_external_author(
     # outsiders by association, so this test must precede the association check.
     if is_automation_author(login, typename):
         return False
-    if normalise_login(login) in members:
+    if members and normalise_login(login) in members:
         return False
     if association in INSIDER_ASSOCIATIONS:
         return False
+    if members is None:
+        # Membership unknown, and the association cannot distinguish a genuine
+        # outsider from a private member seen by an under-privileged token.
+        return None
     if association in KNOWN_ASSOCIATIONS:
         return True
     return None

@@ -69,12 +69,17 @@ inputs:
   hide:
     # Space- or comma-separated category keys. Outranks the configuration and
     # is one-way: it can suppress a category the config would show, but cannot
-    # re-enable one the config disabled. Defaults to the personal review queue,
-    # which is keyed to whichever account the run authenticated as and so has
-    # no business in a published, organisation-wide artifact.
+    # re-enable one the config disabled.
+    #
+    # Deliberately empty by default. The personal review-queue table it would
+    # most obviously name is already terminal-only, so no published surface
+    # renders it and report.json omits it too (a category no published surface
+    # carries is left out of that file). A non-empty default would also be
+    # passed to whichever published version the runtime pin installs, which
+    # fails with "No such option" on any release predating the flag.
     description: "Category keys to suppress on every output (space- or comma-separated; overrides config)"
     required: false
-    default: "pull_requests_assigned"
+    default: ""
   tool_version:
     description: "Published PyPI version to run; ignored on pull_request or when use_local_source is true (both run from the checked-out source). Empty (the default) uses the Dependabot-managed pin in .github/runtime-pin/requirements.txt"
     required: false

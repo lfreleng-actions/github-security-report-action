@@ -4,9 +4,10 @@
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Set
 
-from github_security_report import pulls
+from github_security_report import config, pulls
 from github_security_report.categories import CategoryKey
 from github_security_report.models import (
     AuthorRef,
@@ -65,7 +66,7 @@ def _graph(**repos: RepoGraphData) -> dict[str, RepoGraphData]:
 def _build(
     graph: dict[str, RepoGraphData],
     names: list[str],
-    members: Set[str] = frozenset(),
+    members: Set[str] | None = frozenset(),
     warn_threshold: int = 0,
     error_threshold: int = 0,
     viewer: str = "",
@@ -93,13 +94,18 @@ def _build_assigned(
 def _count(
     collected: tuple[PullRequestRef, ...], members: Set[str] = frozenset()
 ) -> dict[str, int]:
-    return pulls.count_pull_requests(collected, members)
+    # Annotated rather than returned directly: the pre-commit mypy sandbox
+    # sees only the changed files, so the package import degrades to Any and a
+    # bare return trips no-any-return depending on what else is staged.
+    counts: dict[str, int] = pulls.count_pull_requests(collected, members)
+    return counts
 
 
 def _cell(row: TableRow, column: str) -> str:
     # `cells` excludes the leading repository cell each renderer supplies from
     # `row.repo`, so a column's table index is one ahead of its cell index.
-    return row.cells[pulls.ALL_COLUMNS.index(column) - 1]
+    cell: str = row.cells[pulls.ALL_COLUMNS.index(column) - 1]
+    return cell
 
 
 class TestCountPullRequests:
@@ -360,6 +366,34 @@ class TestBuildPullRequestsTable:
         # by Fail+Conflict, so the more stuck one surfaces first.
         assert [r.repo.name for r in table.rows] == ["stuck", "calm", "small"]
 
+    def test_blocked_tiebreaker_counts_each_pull_request_once(self) -> None:
+        # Fail and Conflict overlap, so summing the two columns would count a
+        # pull request that is both as two -- letting one stuck pull request
+        # outrank two separately stuck ones. The ranking has to agree with the
+        # table's own statement that the columns overlap.
+        graph = _graph(
+            two_stuck=RepoGraphData(
+                open_pull_requests=3,
+                pull_requests=(
+                    _pull(1, failing=True),
+                    _pull(2, conflicting=True),
+                    _pull(3),
+                ),
+            ),
+            one_doubly_stuck=RepoGraphData(
+                open_pull_requests=3,
+                pull_requests=(
+                    _pull(1, failing=True, conflicting=True),
+                    _pull(2),
+                    _pull(3),
+                ),
+            ),
+        )
+        table = _build(graph, ["one_doubly_stuck", "two_stuck"])
+        # Both total 3. two_stuck has two affected pull requests against one,
+        # so it must rank first however many flags that one carries.
+        assert [r.repo.name for r in table.rows] == ["two_stuck", "one_doubly_stuck"]
+
     def test_tie_on_total_and_blocked_is_broken_by_name(self) -> None:
         graph = _graph(
             zeta=RepoGraphData(open_pull_requests=2, pull_requests=(_pull(1),)),
@@ -421,19 +455,45 @@ class TestBuildPullRequestsTable:
 
 class TestAutomationLevel:
     def _level(self, value: int) -> str | None:
-        return pulls.automation_level(value, warn_threshold=12, error_threshold=15)
+        """Emphasis under an explicit 12/15 policy, not the shipped defaults."""
+        level: str | None = pulls.automation_level(
+            value, warn_threshold=12, error_threshold=15
+        )
+        return level
 
-    def test_comfortably_below_the_cap_is_unemphasised(self) -> None:
+    def test_the_default_thresholds_track_githubs_own_limit(self) -> None:
+        # GitHub's open-pull-requests-limit defaults to 5, so the shipped
+        # defaults put red at the limit and yellow on the approach to it.
+        # Pinned here because the boundaries are the whole feature: an
+        # off-by-one silently moves where the report raises its voice.
+        defaults = config.ReportConfig()
+        level = functools.partial(
+            pulls.automation_level,
+            warn_threshold=defaults.dependabot_warn_threshold,
+            error_threshold=defaults.dependabot_error_threshold,
+        )
+        assert [level(n) for n in range(0, 7)] == [
+            None,  # 0
+            None,  # 1
+            None,  # 2
+            CELL_WARN,  # 3
+            CELL_WARN,  # 4
+            CELL_BAD,  # 5 -- GitHub's default limit
+            CELL_BAD,  # 6
+        ]
+
+    def test_below_the_warn_threshold_is_unemphasised(self) -> None:
         assert self._level(0) is None
+        # The warn threshold is exclusive: it takes strictly more to warn.
         assert self._level(12) is None
 
     def test_above_the_warn_threshold_warns(self) -> None:
         assert self._level(13) == CELL_WARN
         assert self._level(14) == CELL_WARN
 
-    def test_at_the_cap_is_an_error(self) -> None:
-        # At the cap Dependabot stops raising pull requests, so the repository
-        # silently stops receiving updates -- an outage, not a warning.
+    def test_at_the_error_threshold_is_an_error(self) -> None:
+        # The error threshold is inclusive, so the configured value itself
+        # errors rather than warning.
         assert self._level(15) == CELL_BAD
         assert self._level(40) == CELL_BAD
 
@@ -510,8 +570,8 @@ class TestCellLevels:
             assert self._levels(table)[pulls.AUTOMATION_COLUMN] == expected
 
     def test_thresholds_default_to_off(self) -> None:
-        # A caller that never configured the cap gets a plainly rendered table
-        # rather than one coloured against a number it did not choose.
+        # A caller that never configured thresholds gets a plainly rendered
+        # table rather than one coloured against numbers it did not choose.
         bots = tuple(
             _pull(i, _author("dependabot[bot]", typename="Bot", association="NONE"))
             for i in range(40)
@@ -560,11 +620,28 @@ class TestAssignmentBreakdown:
     def test_footer_rows_are_declared_and_populated(self) -> None:
         table = _build(self._mixed(), ["a"], viewer="me")
         assert table.footer_labels == pulls.ASSIGNMENT_ROWS
-        assert table_footer_rows(table, table.rows) == (
+        rows = table_footer_rows(table, table.rows)
+        # Full width, so every renderer places the value under the final
+        # column. Anything narrower lands it under Human, which would file an
+        # unassigned bot pull request as a human one.
+        assert all(len(r) == len(table.columns) for r in rows)
+        assert [(r[0], r[-1]) for r in rows] == [
             (pulls.UNASSIGNED_ROW, "1"),
             (pulls.OTHERS_ROW, "1"),
             (pulls.MINE_ROW, "2"),
-        )
+        ]
+        # The cells between are blank: the partition totals the row, it does
+        # not break down by column.
+        assert all(set(r[1:-1]) == {""} for r in rows)
+
+    def test_the_value_aligns_under_the_total_column(self) -> None:
+        # The buckets partition every collected pull request, automation
+        # included, so Total is the only column they are a breakdown of.
+        table = _build(self._mixed(), ["a"], viewer="me")
+        row = table_footer_rows(table, table.rows)[0]
+        assert table.columns[-1] == pulls.TOTAL_COLUMN
+        assert row[-1] == "1"
+        assert row[table.columns.index(pulls.HUMAN_COLUMN)] == ""
 
     def test_footer_sums_only_the_displayed_rows(self) -> None:
         # Like the totals row: a footer the reader cannot reconcile against the
@@ -583,11 +660,11 @@ class TestAssignmentBreakdown:
         )
         table = _build(graph, ["big", "small"], viewer="me")
         shown = table.rows[:1]
-        assert table_footer_rows(table, shown) == (
+        assert [(r[0], r[-1]) for r in table_footer_rows(table, shown)] == [
             (pulls.UNASSIGNED_ROW, "0"),
             (pulls.OTHERS_ROW, "0"),
             (pulls.MINE_ROW, "2"),
-        )
+        ]
 
 
 class TestBuildAssignedPullRequestsTable:
@@ -628,6 +705,30 @@ class TestBuildAssignedPullRequestsTable:
         assert table.rows == []
         assert table.pass_count == 2
 
+    def test_unknown_viewer_stays_clean_on_a_truncated_window(self) -> None:
+        # With no account to match, the selector cannot match anything
+        # anywhere, so an empty result is certain rather than merely
+        # unobserved. A bot or App run must get the documented empty table, not
+        # a wall of unknowns as soon as a repository exceeds the window.
+        graph = _graph(
+            busy=RepoGraphData(
+                open_pull_requests=40,
+                pull_requests=(_pull(1, assignees=("someone-else",)),),
+            )
+        )
+        table = _build_assigned(graph, ["busy"], viewer="")
+        assert table.unknown_count == 0
+        assert table.pass_count == 1
+
+    def test_unknown_viewer_stays_clean_on_an_unreadable_backlog(self) -> None:
+        # Same certainty, and for the same reason: an unreadable connection
+        # cannot be hiding a match for an account that does not exist. Without
+        # this, a bot run on a token lacking Pull requests access reports every
+        # repository as unknown instead of the documented empty queue.
+        table = _build_assigned(_graph(ghost=RepoGraphData()), ["ghost"], viewer="")
+        assert table.unknown_count == 0
+        assert table.pass_count == 1
+
     def test_shares_the_column_shape_of_the_main_table(self) -> None:
         # The two tables sit next to each other, so they must read alike.
         table = _build_assigned(self._graph(), ["mine"], viewer="me")
@@ -643,3 +744,71 @@ class TestBuildAssignedPullRequestsTable:
         table = _build_assigned(_graph(ghost=RepoGraphData()), ["ghost"], viewer="me")
         assert table.unknown_count == 1
         assert table.pass_count == 0
+
+    def test_no_match_in_a_truncated_window_is_unknown_not_clean(self) -> None:
+        # None of the collected pull requests is the viewer's, but the window
+        # did not cover the backlog, so one of the uncollected ones may be.
+        # "Nothing of yours here" is a claim this run cannot support.
+        graph = _graph(
+            busy=RepoGraphData(
+                open_pull_requests=40,
+                pull_requests=(_pull(1, assignees=("someone-else",)),),
+            )
+        )
+        table = _build_assigned(graph, ["busy"], viewer="me")
+        assert table.rows == []
+        assert table.unknown_count == 1
+        assert table.pass_count == 0
+
+    def test_no_match_in_a_complete_window_is_clean(self) -> None:
+        graph = _graph(
+            quiet=RepoGraphData(
+                open_pull_requests=1,
+                pull_requests=(_pull(1, assignees=("someone-else",)),),
+            )
+        )
+        table = _build_assigned(graph, ["quiet"], viewer="me")
+        assert table.pass_count == 1
+        assert table.unknown_count == 0
+
+
+class TestTruncationAndMembershipCaveats:
+    def test_truncated_rows_qualify_the_assignment_breakdown(self) -> None:
+        # The footer sums the collected window while Total stays exact, so a
+        # breakdown that cannot reconcile must say why rather than looking
+        # like arithmetic that does not add up.
+        graph = _graph(
+            busy=RepoGraphData(
+                open_pull_requests=40,
+                pull_requests=(_pull(1, assignees=("me",)),),
+            )
+        )
+        described = _build(graph, ["busy"], viewer="me").resolved_description()
+        assert pulls.TRUNCATED_MARKER in described
+        assert "assignment breakdown" in described
+
+    def test_unknown_membership_is_declared_in_the_description(self) -> None:
+        graph = _graph(
+            a=RepoGraphData(
+                open_pull_requests=1,
+                pull_requests=(_pull(1, _author("mystery", association="NONE")),),
+            )
+        )
+        table = _build(graph, ["a"], members=None)
+        assert "lower bound" in table.resolved_description()
+
+    def test_the_assigned_table_calls_its_own_total_a_lower_bound(self) -> None:
+        # The filtered table's Total is len(selected) from the window, not the
+        # authoritative totalCount, so the unfiltered table's "Total stays
+        # exact" would be false here -- and it has no assignment breakdown to
+        # qualify either.
+        graph = _graph(
+            busy=RepoGraphData(
+                open_pull_requests=40,
+                pull_requests=(_pull(1, assignees=("me",)),),
+            )
+        )
+        described = _build_assigned(graph, ["busy"], viewer="me").resolved_description()
+        assert "lower bound" in described
+        assert "Total itself stays exact" not in described
+        assert "assignment breakdown" not in described

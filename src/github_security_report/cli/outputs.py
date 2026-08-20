@@ -89,6 +89,12 @@ def most_generous(limits: list[int]) -> int:
     return max(limits)
 
 
+# Render surfaces whose output is published rather than read locally. A
+# category none of them carries has no business in the published report.json
+# either, however complete that file is meant to be.
+_PUBLISHED_OUTPUTS = ("markdown", "html", "slack")
+
+
 def show(
     report_cfg: ReportConfig,
     output: str,
@@ -110,20 +116,39 @@ def show(
 def slack_show(
     items: list[tuple[OrgConfig, OrgReport]],
     hidden: Collection[CategoryKey] = (),
-) -> Callable[[CategoryKey], bool]:
-    """Slack visibility for a channel: show a category if any org would.
+) -> Callable[[OrgReport, CategoryKey], bool]:
+    """Slack visibility for a channel, resolved **per organisation**.
 
-    Orgs sharing a Slack channel render into one digest, so a category appears
-    when any contributing org would show it on Slack -- mirroring the
-    most-generous ``top_n`` rule for the same grouping. An explicitly hidden
-    category is suppressed for the whole digest regardless, since the request
-    was made of the run rather than of one organisation.
+    Deliberately not pooled the way the row limits are. A limit is a property
+    of the shared digest, so taking the most generous value across contributing
+    organisations is right; visibility is a property of each organisation's own
+    data, and pooling it would let one organisation's opt-in publish another's.
+    For a reader-specific category that is a leak rather than an inconsistency:
+    an organisation that kept the personal queue terminal-only would have it
+    posted to the channel because a different organisation enabled the table.
+
+    An explicitly hidden category is suppressed for the whole digest, since the
+    request was made of the run rather than of one organisation.
     """
     suppressed = frozenset(hidden)
-    return lambda key: (
-        key not in suppressed
-        and any(oc.report.shows_category(key, "slack") for oc, _ in items)
-    )
+
+    def visible(org: OrgReport, key: CategoryKey) -> bool:
+        if key in suppressed:
+            return False
+        # Matched by identity rather than by name. The schema does not make
+        # organisation names unique within a run, and a name-keyed lookup would
+        # collapse two entries for the same org onto one configuration -- so a
+        # report that opted out would be rendered under its duplicate's toggles,
+        # which is the very leak this function exists to prevent. A channel
+        # holds a handful of reports, so the scan costs nothing.
+        for org_cfg, report in items:
+            if report is org:
+                return org_cfg.report.shows_category(key, "slack")
+        # A report absent from the list was never configured here, so it falls
+        # back to the default-visible rule the rest of the tool uses.
+        return True
+
+    return visible
 
 
 def slack_limit(
@@ -169,9 +194,32 @@ def write_org_files(
         encoding="utf-8",
     )
     # report.json is the complete machine-readable dataset, so the per-output
-    # render toggles deliberately do not filter it.
+    # render toggles deliberately do not filter it -- a category hidden from
+    # the terminal is still published in full for a JSON consumer.
+    #
+    # Two exceptions, both because this file is written into the *published*
+    # Pages directory alongside the HTML rather than kept locally:
+    #
+    #  * an explicit ``--hide``, whose whole purpose is keeping a category out
+    #    of shared output for this run; and
+    #  * a category no published surface carries at all. "Assigned to Me" is
+    #    terminal-only by default, so serialising it here would publish one
+    #    account's review queue through the back door while every rendered
+    #    surface correctly omitted it.
+    #
+    # A category shown on *any* published surface stays in the JSON, so this
+    # subtracts only what is genuinely local-only.
+    terminal_only = frozenset(
+        key
+        for key in CategoryKey
+        if not any(
+            report_cfg.shows_category(key, output) for output in _PUBLISHED_OUTPUTS
+        )
+    )
     (org_dir / "report.json").write_text(
-        json.dumps(_org_to_dict(org), indent=2) + "\n", encoding="utf-8"
+        json.dumps(_org_to_dict(org, frozenset(hidden) | terminal_only), indent=2)
+        + "\n",
+        encoding="utf-8",
     )
 
 

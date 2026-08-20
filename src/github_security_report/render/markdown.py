@@ -254,12 +254,10 @@ def render_table_section(
                 + " | ".join(f"**{cell}**" if cell else "" for cell in totals)
                 + " |"
             )
-        # Aggregate rows beneath the totals: a breakdown of the same rows, so
-        # the count columns are left blank rather than repeating numbers that
-        # do not apply to them.
-        blanks = [""] * (len(section.columns) - 2)
-        for label, value in table_footer_rows(section, rows):
-            lines.append("| " + " | ".join([label, value, *blanks]) + " |")
+        # Aggregate rows beneath the totals: a breakdown of the same rows,
+        # arriving full width with the value under the final column.
+        for footer_row in table_footer_rows(section, rows):
+            lines.append("| " + " | ".join(footer_row) + " |")
         lines.append("")
         if hidden:
             lines.append(f"_… and {hidden} more_")

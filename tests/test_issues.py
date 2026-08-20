@@ -11,7 +11,7 @@ from github_security_report import issues
 from github_security_report.categories import CategoryKey
 from github_security_report.config import DEFAULT_ISSUE_LABELS
 from github_security_report.models import AuthorRef, IssueRef, Repo, RepoGraphData
-from github_security_report.report import TableSection
+from github_security_report.report import TableSection, table_column_totals
 
 WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.timezone.utc)
 
@@ -53,7 +53,7 @@ def _build(
     graph: dict[str, RepoGraphData],
     names: list[str],
     label_columns: Mapping[str, tuple[str, ...]] = DEFAULT_ISSUE_LABELS,
-    members: frozenset[str] = frozenset(),
+    members: frozenset[str] | None = frozenset(),
 ) -> TableSection:
     return issues.build_issues_table(
         graph,
@@ -164,6 +164,38 @@ class TestExternalColumn:
             )
         )
         assert _ext_cell(_build(graph, ["a"])) == "2"
+
+    def test_a_truncated_window_marks_ext_as_partial(self) -> None:
+        # Ext is computed from the collected window, so on a large backlog it
+        # is a lower bound. Rendering it as a bare number would present an
+        # undercount as exact -- 25 internal issues ahead of the external ones
+        # would read as a confident zero.
+        graph = _graph(
+            a=RepoGraphData(
+                open_issues=40,
+                issues=(_authored(1, "staffer", association="MEMBER"),),
+            )
+        )
+        table = _build(graph, ["a"])
+        assert _ext_cell(table).endswith(issues.TRUNCATED_MARKER)
+        # The marked cell must still sum: the totals row reads a cell's
+        # leading numeric token rather than requiring the whole string.
+        totals = table_column_totals(table, table.rows)
+        assert totals is not None
+        assert totals[table.columns.index(issues.EXTERNAL_COLUMN)] == "0"
+
+    def test_unknown_membership_is_declared_in_the_description(self) -> None:
+        # An Ext of 0 that only means "we could not tell" must say so, or a
+        # reader will take it for a clean result.
+        graph = _graph(
+            a=RepoGraphData(
+                open_issues=1,
+                issues=(_authored(1, "mystery", association="NONE"),),
+            )
+        )
+        table = _build(graph, ["a"], members=None)
+        assert _ext_cell(table).startswith("0")
+        assert "lower bound" in table.resolved_description()
 
 
 class TestBuildIssuesTable:

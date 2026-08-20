@@ -80,8 +80,9 @@ CONFIG_SCHEMA: dict = {
                 "release_max_age_days": {"type": "integer", "minimum": 0},
                 # Automation-backlog thresholds colouring the Pull Requests
                 # table's Auto column: warn above the first, error at or above
-                # the second (the per-repository open-PR cap, beyond which
-                # Dependabot stops raising new pull requests).
+                # the second. The defaults track GitHub's own
+                # open-pull-requests-limit (5), which it applies per package
+                # ecosystem while Auto counts every automation author.
                 "dependabot_warn_threshold": {"type": "integer", "minimum": 0},
                 "dependabot_error_threshold": {"type": "integer", "minimum": 0},
                 # Organisation feature gating: when true (the default) the

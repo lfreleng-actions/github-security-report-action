@@ -148,18 +148,25 @@ class ReportConfig:
     # gives every repository a 60-day window: one tagged or released inside that
     # window is treated as recently maintained and omitted from the table.
     release_max_age_days: int = 60
-    # Open-automation thresholds for the Pull Requests table's Auto column,
-    # which colour a repository's automation backlog on the terminal. Named for
-    # Dependabot because the limit that matters is its own: an organisation
-    # caps how many pull requests Dependabot may hold open per repository, and
-    # once that cap is reached it stops raising them, so the repository silently
-    # stops receiving dependency updates. The column counts every automation
-    # author, which is the number to watch against that cap.
-    # Warn (yellow) above this many; the default leaves headroom below the cap.
-    dependabot_warn_threshold: int = 12
-    # Error (red) at or above this many: GitHub's own default per-repository
-    # limit, and the point at which new Dependabot pull requests stop arriving.
-    dependabot_error_threshold: int = 15
+    # Open-automation thresholds colouring the Pull Requests table's Auto
+    # column. The defaults track GitHub's own behaviour: Dependabot's
+    # ``open-pull-requests-limit`` defaults to 5, so 5 is where updates stop
+    # arriving and 3-4 is the approach to it. An organisation that raises that
+    # limit should raise these to match -- they describe your policy, and the
+    # defaults are only the most useful guess in the absence of one.
+    #
+    # One deliberate imprecision, since the column is a proxy rather than a
+    # measurement: GitHub applies its limit per package ecosystem, while Auto
+    # counts every automation author across all of them. A repository can
+    # therefore be stalled in one ecosystem below the threshold, or sit above
+    # it on Renovate pull requests alone. The count is still the right thing to
+    # watch -- a large automation backlog is worth attention however it
+    # accumulated -- but the colour is a prompt to look, not a verdict.
+    # Warn (yellow) above this many: 3 or 4 open, approaching the default limit.
+    dependabot_warn_threshold: int = 2
+    # Error (red) at or above this many: GitHub's default open-pull-requests
+    # limit, at which no further updates arrive for that ecosystem.
+    dependabot_error_threshold: int = 5
     # Organisation feature gating for the workflow-driven signals (Scorecard,
     # zizmor, aislop): when true, each is collected only after a cheap check
     # finds organisation support (an org ruleset requiring the workflow,

@@ -145,10 +145,7 @@ def _table_context(
             for row in rows
         ],
         "total_cells": list(totals) if totals is not None else None,
-        "footer_rows": [
-            {"label": label, "value": value}
-            for label, value in table_footer_rows(section, rows)
-        ],
+        "footer_rows": [list(row) for row in table_footer_rows(section, rows)],
         "hidden": hidden,
         "summary": _summary_context(
             build_summary(section.summary_counts(excluded)),
