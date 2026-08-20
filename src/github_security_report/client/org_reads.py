@@ -14,9 +14,13 @@ from __future__ import annotations
 
 import logging
 
+from github_security_report.authors import normalise_members
 from github_security_report.client.endpoints import BULK_KINDS
 from github_security_report.client.parsers import _parse_iso, _parse_repo_node
-from github_security_report.client.queries import _REPO_GRAPH_FRAGMENT
+from github_security_report.client.queries import (
+    _ORG_MEMBERS_QUERY,
+    _REPO_GRAPH_FRAGMENT,
+)
 from github_security_report.client.transport import NetworkError, Transport
 from github_security_report.models import Repo, RepoGraphData
 
@@ -132,6 +136,65 @@ class OrgReadClient(Transport):
                 details.append(resp.json())
             await resp.aclose()  # release the connection once the body is read
         return 200, details
+
+    # ------------------------------------------------------------------ #
+    # Organisation membership (who counts as an insider)
+    # ------------------------------------------------------------------ #
+    async def org_members(self, org: str) -> frozenset[str]:
+        """Every organisation member's login, normalised, or an empty set.
+
+        Collected once per organisation and reused for every repository, so
+        deciding whether a contribution came from outside the organisation costs
+        one query rather than a probe per author.
+
+        Degrades to an empty set rather than raising: a token without
+        ``read:org`` cannot list membership, and the caller falls back to
+        GitHub's per-item ``authorAssociation``. An empty result is therefore
+        "membership unknown", which is why the caller must not read it as
+        "nobody is a member".
+        """
+        logins: set[str] = set()
+        after: str | None = None
+        # Bounded so a malformed or hostile ``pageInfo`` cannot spin forever;
+        # 100 pages is 10,000 members, far beyond any real organisation.
+        for _ in range(100):
+            resp = await self._request(
+                "POST",
+                self._graphql_url,
+                json={
+                    "query": _ORG_MEMBERS_QUERY,
+                    "variables": {"org": org, "after": after},
+                },
+            )
+            if resp.status_code != 200:
+                await resp.aclose()  # unread body would leak a pooled connection
+                break
+            body = resp.json()
+            await resp.aclose()  # release the connection once the body is read
+            members = ((body.get("data") or {}).get("organization") or {}).get(
+                "membersWithRole"
+            )
+            if not isinstance(members, dict):
+                # A token lacking organisation visibility gets HTTP 200 with a
+                # null organisation and an ``errors`` entry; that is an unknown
+                # membership, not an empty one.
+                log.info(
+                    "organisation membership for %s could not be read; external "
+                    "contribution counts fall back to GitHub's per-item author "
+                    "association",
+                    org,
+                )
+                break
+            for node in members.get("nodes") or []:
+                if isinstance(node, dict) and (login := node.get("login")):
+                    logins.add(str(login))
+            page = members.get("pageInfo")
+            if not isinstance(page, dict) or not page.get("hasNextPage"):
+                break
+            after = page.get("endCursor")
+            if not isinstance(after, str):
+                break
+        return normalise_members(logins)
 
     # ------------------------------------------------------------------ #
     # Batched per-repo prefetch (one query for many repositories)

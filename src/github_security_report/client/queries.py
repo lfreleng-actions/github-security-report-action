@@ -14,6 +14,34 @@ query($owner: String!, $name: String!) {
 }
 """
 
+# Organisation membership, collected once per organisation and reused for every
+# repository. This is the authoritative, token-independent basis for deciding
+# whether a contribution came from outside the organisation.
+#
+# It cannot be replaced by the per-item ``authorAssociation``: that field is
+# computed relative to the viewing token, so an organisation whose members keep
+# their membership private (GitHub's default) has them reported as ``MEMBER`` to
+# a token with organisation visibility and as ``CONTRIBUTOR``/``NONE`` to one
+# without. Collecting membership once costs a single query (measured: 1 point,
+# one page per 100 members) and makes the external-contribution counts the same
+# whichever token produced the report.
+#
+# ``membersWithRole`` covers every role, including members whose repository
+# access arrives via a team rather than a direct grant -- which is how access is
+# normally organised, and why per-repository collaborator enumeration adds
+# nothing for most organisations.
+_ORG_MEMBERS_QUERY = """
+query($org: String!, $after: String) {
+  organization(login: $org) {
+    membersWithRole(first: 100, after: $after) {
+      totalCount
+      pageInfo { hasNextPage endCursor }
+      nodes { login }
+    }
+  }
+}
+"""
+
 # The code-scanning-derived signal tools whose enablement we probe per repo.
 # Each is checked via the analyses ``tool_name`` filter (a definitive presence
 # test) rather than scanning the analysis history, which a busy repo could push

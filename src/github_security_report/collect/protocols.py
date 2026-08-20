@@ -31,6 +31,14 @@ class ClientProtocol(Protocol):
         """Fetch the organisation's workflow rulesets."""
         raise NotImplementedError
 
+    async def org_members(self, org: str) -> frozenset[str]:
+        """Return the organisation's member logins, normalised.
+
+        An empty set means membership could not be read, not that the
+        organisation has no members.
+        """
+        raise NotImplementedError
+
     async def code_scanning_tools(
         self, org: str, repo: str, tools: tuple[str, ...] | None = None
     ) -> tuple[int, set[str]]:
