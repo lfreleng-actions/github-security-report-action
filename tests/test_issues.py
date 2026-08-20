@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from github_security_report import issues
 from github_security_report.categories import CategoryKey
 from github_security_report.config import DEFAULT_ISSUE_LABELS
-from github_security_report.models import IssueRef, Repo, RepoGraphData
+from github_security_report.models import AuthorRef, IssueRef, Repo, RepoGraphData
 from github_security_report.report import TableSection
 
 WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.timezone.utc)
@@ -29,6 +29,22 @@ def _issue(number: int, *labels: str, age_days: int = 0) -> IssueRef:
     )
 
 
+def _authored(
+    number: int,
+    login: str,
+    *,
+    association: str = "NONE",
+    typename: str = "User",
+) -> IssueRef:
+    return IssueRef(
+        number=number,
+        title=f"issue {number}",
+        labels=("bug",),
+        created_at=WHEN,
+        author=AuthorRef(login=login, typename=typename, association=association),
+    )
+
+
 def _graph(**repos: RepoGraphData) -> dict[str, RepoGraphData]:
     return dict(repos)
 
@@ -37,13 +53,20 @@ def _build(
     graph: dict[str, RepoGraphData],
     names: list[str],
     label_columns: Mapping[str, tuple[str, ...]] = DEFAULT_ISSUE_LABELS,
+    members: frozenset[str] = frozenset(),
 ) -> TableSection:
     return issues.build_issues_table(
         graph,
         [_repo(n) for n in names],
         generated_at=WHEN,
         label_columns=label_columns,
+        members=members,
     )
+
+
+def _ext_cell(table: TableSection) -> str:
+    """The Ext cell of the first row (cells omit the leading repository)."""
+    return table.rows[0].cells[table.columns.index(issues.EXTERNAL_COLUMN) - 1]
 
 
 class TestClassifyIssue:
@@ -88,6 +111,61 @@ class TestClassifyIssue:
         )
 
 
+class TestExternalColumn:
+    def _one(self, issue: IssueRef, members: frozenset[str] = frozenset()) -> str:
+        graph = _graph(a=RepoGraphData(open_issues=1, issues=(issue,)))
+        return _ext_cell(_build(graph, ["a"], members=members))
+
+    def test_outsider_is_counted(self) -> None:
+        assert self._one(_authored(1, "drive-by", association="NONE")) == "1"
+
+    def test_organisation_member_is_not_counted(self) -> None:
+        assert self._one(_authored(1, "staffer", association="MEMBER")) == "0"
+
+    def test_collected_membership_overrides_the_association(self) -> None:
+        # An organisation whose members keep their membership private has them
+        # reported as outsiders by the per-item association, so the collected
+        # membership has to win or the column counts the whole org as external.
+        assert (
+            self._one(
+                _authored(1, "Staffer", association="NONE"),
+                members=frozenset({"staffer"}),
+            )
+            == "0"
+        )
+
+    def test_automation_is_never_external(self) -> None:
+        # Bots really do report CONTRIBUTOR/NONE, so counting on the association
+        # alone would file every automated issue as an outside contribution.
+        assert (
+            self._one(
+                _authored(1, "dependabot[bot]", association="NONE", typename="Bot")
+            )
+            == "0"
+        )
+
+    def test_unclassifiable_author_is_not_counted(self) -> None:
+        # Indeterminate must understate rather than invent an outsider.
+        assert self._one(_authored(1, "mystery", association="")) == "0"
+
+    def test_missing_author_does_not_raise(self) -> None:
+        # GitHub renders the author null for a deleted account.
+        assert self._one(_issue(1, "bug")) == "0"
+
+    def test_counts_only_the_outsiders(self) -> None:
+        graph = _graph(
+            a=RepoGraphData(
+                open_issues=3,
+                issues=(
+                    _authored(1, "outsider", association="CONTRIBUTOR"),
+                    _authored(2, "staffer", association="MEMBER"),
+                    _authored(3, "another-outsider", association="NONE"),
+                ),
+            )
+        )
+        assert _ext_cell(_build(graph, ["a"])) == "2"
+
+
 class TestBuildIssuesTable:
     def test_repos_without_issues_count_as_clean(self) -> None:
         table = _build(_graph(b=RepoGraphData(open_issues=0)), ["b"])
@@ -128,6 +206,7 @@ class TestBuildIssuesTable:
             "Other",
             "Untriaged",
             "Total",
+            "Ext",
             "Oldest",
         )
         # Bug, Feature, Docs, Other, Untriaged, Total
@@ -167,7 +246,7 @@ class TestBuildIssuesTable:
             )
         )
         table = _build(graph, ["a"])
-        assert table.rows[0].cells[-2] == "40"
+        assert table.rows[0].cells[-3] == "40"
         assert table.rows[0].cells[-1].endswith(issues.TRUNCATED_MARKER)
         assert issues.TRUNCATED_MARKER in table.resolved_description()
 
@@ -189,6 +268,7 @@ class TestBuildIssuesTable:
             "Other",
             "Untriaged",
             "Total",
+            "Ext",
             "Oldest",
         )
         assert table.rows[0].cells[:4] == ("1", "0", "0", "1")
@@ -317,7 +397,7 @@ class TestBuildIssuesTable:
         untriaged = table.columns.index(issues.UNTRIAGED_COLUMN)
         assert table.rows[0].cells[untriaged - 1] == "0"
         # Total stays authoritative even though nothing could be classified.
-        assert table.rows[0].cells[-2] == "1"
+        assert table.rows[0].cells[-3] == "1"
 
     def test_undated_oldest_entry_is_unknown_not_the_next_issue(self) -> None:
         # The window is ordered oldest-first, so entry 0 is the only evidence of

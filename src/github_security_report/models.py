@@ -135,12 +135,29 @@ class ReleaseRef:
 
 
 @dataclass(frozen=True)
+class AuthorRef:
+    """The identity facts needed to classify who made a contribution.
+
+    Deliberately raw: the transport layer records what GitHub said, and the
+    table builders apply the policy (see :mod:`authors`). ``association`` is
+    GitHub's ``authorAssociation``, which is computed relative to the viewing
+    token and so is evidence rather than a verdict.
+    """
+
+    login: str = ""
+    # GraphQL ``__typename`` of the actor: "User", "Bot", "Organization", ...
+    typename: str = ""
+    association: str = ""
+
+
+@dataclass(frozen=True)
 class IssueRef:
     """One open issue's triage-relevant facts.
 
     Carries only what the open-issues reporting needs: the label set, so issues
-    can be classified into buckets (bug, enhancement, and so on), and the
-    creation time, so the oldest outstanding issue and its age can be reported.
+    can be classified into buckets (bug, enhancement, and so on), the creation
+    time, so the oldest outstanding issue and its age can be reported, and the
+    author, so contributions from outside the organisation can be counted.
     ``created_at`` is ``None`` when GitHub supplied no usable timestamp, in
     which case the issue cannot contribute to the oldest-issue age.
     """
@@ -152,6 +169,9 @@ class IssueRef:
     # so ``labels`` may omit the one that would have classified it.
     labels_truncated: bool = False
     created_at: dt.datetime | None = None
+    # None when GitHub returned no usable author (a deleted account renders the
+    # ``author`` field null), which is distinct from a known insider.
+    author: AuthorRef | None = None
 
 
 @dataclass

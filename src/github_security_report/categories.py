@@ -275,6 +275,7 @@ _CATEGORIES: dict[CategoryKey, CategoryMeta] = {
             "classes. Issues carrying none of the configured labels count as "
             "Other; issues with no labels at all count as Untriaged, which is "
             "the column to watch -- an unlabelled issue has not been triaged. "
+            "Ext counts issues raised from outside the organisation. "
             "Ranked by total open issues, then by Untriaged."
         ),
     ),

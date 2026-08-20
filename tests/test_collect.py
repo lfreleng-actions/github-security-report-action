@@ -57,9 +57,13 @@ class FakeClient:
             "git-configure-action": {"CodeQL"},
         }
         self.scores = {"dependamerge": 8.2}
+        self.members: set[str] = {"insider"}
 
     async def list_org_repos(self, org: str) -> tuple[int, list[Repo]]:
         return 200, self.repos
+
+    async def org_members(self, org: str) -> frozenset[str]:
+        return frozenset(self.members)
 
     async def org_bulk_alerts(self, org: str, kind: str) -> tuple[int, list[dict]]:
         return 200, self.bulk[kind]

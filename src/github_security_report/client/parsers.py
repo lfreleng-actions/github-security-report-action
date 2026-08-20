@@ -16,7 +16,7 @@ from typing import cast
 
 import httpx
 
-from github_security_report.models import IssueRef, ReleaseRef, RepoGraphData
+from github_security_report.models import AuthorRef, IssueRef, ReleaseRef, RepoGraphData
 
 
 def _parse_iso(value: object) -> dt.datetime | None:
@@ -164,6 +164,28 @@ def _label_names(node: dict) -> tuple[tuple[str, ...], bool]:
     return tuple(names), raw_total > len(names)
 
 
+def _author_ref(node: dict) -> AuthorRef | None:
+    """The author facts from an issue or pull-request node, or None.
+
+    GitHub renders ``author`` as null for a deleted account, which is not the
+    same as an author we chose not to classify, so the absence is preserved.
+    ``authorAssociation`` lives on the item rather than the actor, so it is read
+    from the enclosing node.
+    """
+    author = node.get("author")
+    if not isinstance(author, dict):
+        return None
+    login = author.get("login")
+    if not login:
+        return None
+    association = node.get("authorAssociation")
+    return AuthorRef(
+        login=str(login),
+        typename=str(author.get("__typename") or ""),
+        association=str(association or ""),
+    )
+
+
 def _issue_ref(node: object) -> IssueRef | None:
     """One parsed issue, or None when the node is unusable.
 
@@ -183,6 +205,7 @@ def _issue_ref(node: object) -> IssueRef | None:
         labels=labels,
         labels_truncated=labels_truncated,
         created_at=_parse_iso(node.get("createdAt")),
+        author=_author_ref(node),
     )
 
 

@@ -93,6 +93,12 @@ async def attach_extra_tables(
     )
     report.mutable_releases = posture.build_mutable_releases_table(postures)
     report.private_vulnerability_reporting = posture.build_pvr_table(postures)
+    # Organisation membership is collected once and reused for every
+    # repository, so classifying contributions costs one query rather than a
+    # probe per author. It is the token-independent basis for "outside the
+    # organisation"; see ``authors`` for why the per-item association alone is
+    # not enough.
+    members = await ctx.client.org_members(ctx.org)
     # Open issues come from the same batched GraphQL prefetch as the release and
     # Dependabot data, so this table costs no extra requests.
     report.issues = build_issues_table(
@@ -100,6 +106,7 @@ async def attach_extra_tables(
         in_scope,
         generated_at=report.generated_at,
         label_columns=report_cfg.issue_labels,
+        members=members,
     )
     # The Dependabot alerts enablement sub-table carries the repositories with
     # Dependabot alerts disabled, so drop them from the Dependabot signal

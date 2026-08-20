@@ -28,8 +28,9 @@ Two accuracy notes, both stemming from the bounded GraphQL window
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Mapping
+from collections.abc import Mapping, Set
 
+from github_security_report.authors import is_external_author
 from github_security_report.categories import CategoryKey, category_meta
 from github_security_report.models import IssueRef, Repo, RepoGraphData
 from github_security_report.report import TableRow, TableSection
@@ -44,6 +45,7 @@ UNTRIAGED_COLUMN = "Untriaged"
 # The remaining fixed headers, framing the configured ones.
 REPOSITORY_COLUMN = "Repository"
 TOTAL_COLUMN = "Total"
+EXTERNAL_COLUMN = "Ext"
 OLDEST_COLUMN = "Oldest"
 
 # Every header the table supplies itself. A configured column may not reuse one:
@@ -54,6 +56,7 @@ RESERVED_COLUMNS = (
     OTHER_COLUMN,
     UNTRIAGED_COLUMN,
     TOTAL_COLUMN,
+    EXTERNAL_COLUMN,
     OLDEST_COLUMN,
 )
 
@@ -100,6 +103,27 @@ def _classification_is_certain(
     if not issue.labels_truncated:
         return True
     return column == next(iter(label_columns), None)
+
+
+def _is_external(issue: IssueRef, members: Set[str]) -> bool:
+    """Whether an issue was raised from outside the organisation.
+
+    An author who cannot be classified is *not* counted: the column reports
+    contributions confirmed to come from outside, so an indeterminate author
+    understates it rather than inventing an outsider.
+    """
+    author = issue.author
+    if author is None:
+        return False
+    return (
+        is_external_author(
+            author.login,
+            association=author.association,
+            members=members,
+            typename=author.typename,
+        )
+        is True
+    )
 
 
 def _age_days(when: dt.datetime | None, now: dt.datetime) -> int | None:
@@ -165,6 +189,7 @@ def build_issues_table(
     *,
     generated_at: dt.datetime,
     label_columns: Mapping[str, tuple[str, ...]],
+    members: Set[str] = frozenset(),
 ) -> TableSection:
     """The GitHub Issues table, largest backlog first.
 
@@ -173,6 +198,9 @@ def build_issues_table(
     every other table in the report. Ranking leads on total open issues -- the
     headline the table exists to report -- then on Untriaged, so two repositories
     with equal backlogs surface the less-triaged one first.
+
+    ``members`` is the organisation's membership, used to count the issues
+    raised from outside it (see :mod:`authors`).
     """
     columns = (*label_columns, OTHER_COLUMN, UNTRIAGED_COLUMN)
     rows: list[tuple[int, int, str, TableRow]] = []
@@ -189,8 +217,11 @@ def build_issues_table(
             clean_count += 1
             continue
         counts = dict.fromkeys(columns, 0)
+        external = 0
         partial = data.open_issues > len(data.issues)
         for issue in data.issues:
+            if _is_external(issue, members):
+                external += 1
             if issue.labels_truncated and not issue.labels:
                 # Not one label was readable, so there is nothing to classify
                 # on. Counting it as Untriaged would invent a triage gap out of
@@ -206,6 +237,7 @@ def build_issues_table(
         cells = (
             *(str(counts[column]) for column in columns),
             str(data.open_issues),
+            str(external),
             _oldest_cell(oldest, partial),
         )
         # An unknown age has no value to rank on, so it is published as None:
@@ -214,6 +246,7 @@ def build_issues_table(
         sort_values: tuple[float | str | None, ...] = (
             *(float(counts[column]) for column in columns),
             float(data.open_issues),
+            float(external),
             float(oldest) if oldest is not None else None,
         )
         rows.append(
@@ -229,7 +262,13 @@ def build_issues_table(
     rows.sort(key=lambda item: (-item[0], -item[1], item[2]))
 
     meta = category_meta(CategoryKey.GITHUB_ISSUES)
-    all_columns = (REPOSITORY_COLUMN, *columns, TOTAL_COLUMN, OLDEST_COLUMN)
+    all_columns = (
+        REPOSITORY_COLUMN,
+        *columns,
+        TOTAL_COLUMN,
+        EXTERNAL_COLUMN,
+        OLDEST_COLUMN,
+    )
     description = _describe(meta.description, [row.cells[-1] for *_, row in rows])
     return TableSection(
         category=meta,

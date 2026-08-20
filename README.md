@@ -451,17 +451,17 @@ release and Dependabot data, so it costs no extra API requests:
 
 ```text
 GitHub Issues
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━┳━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━┓
-┃ Repository                    ┃ Bug ┃ Feature ┃ Docs ┃ Other ┃ Untriaged ┃ Total ┃  Oldest ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━╇━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━┩
-│ .github                       │   1 │       0 │    0 │     0 │        10 │    11 │ 16 days │
-│ tag-validate-action           │   0 │       0 │    0 │     0 │         8 │     8 │ 25 days │
-│ security-workflows            │   0 │       5 │    1 │     0 │         0 │     6 │   today │
-│ github-security-report-action │   0 │       0 │    0 │     3 │         1 │     4 │ 52 days │
-│ dependamerge                  │   0 │       1 │    0 │     1 │         1 │     3 │ 52 days │
-├───────────────────────────────┼─────┼─────────┼──────┼───────┼───────────┼───────┼─────────┤
-│ Total                         │   1 │       6 │    1 │     4 │        20 │    32 │         │
-└───────────────────────────────┴─────┴─────────┴──────┴───────┴───────────┴───────┴─────────┘
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━┳━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━━━━┳━━━━━━━┳━━━━━┳━━━━━━━━━┓
+┃ Repository                    ┃ Bug ┃ Feature ┃ Docs ┃ Other ┃ Untriaged ┃ Total ┃ Ext ┃  Oldest ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━╇━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━━━━╇━━━━━━━╇━━━━━╇━━━━━━━━━┩
+│ .github                       │   1 │       0 │    0 │     0 │        10 │    11 │   0 │ 16 days │
+│ tag-validate-action           │   0 │       0 │    0 │     0 │         8 │     8 │   0 │ 25 days │
+│ security-workflows            │   0 │       5 │    1 │     0 │         0 │     6 │   0 │   today │
+│ github-security-report-action │   0 │       0 │    0 │     3 │         1 │     4 │   0 │ 52 days │
+│ dependamerge                  │   0 │       1 │    0 │     1 │         1 │     3 │   0 │ 52 days │
+├───────────────────────────────┼─────┼─────────┼──────┼───────┼───────────┼───────┼─────┼─────────┤
+│ Total                         │   1 │       6 │    1 │     4 │        20 │    32 │   0 │         │
+└───────────────────────────────┴─────┴─────────┴──────┴───────┴───────────┴───────┴─────┴─────────┘
   … and 11 more
   ❌ 16 With open issues
   ✅ 87 No open issues
@@ -478,7 +478,11 @@ Two columns are always present and are not configurable:
 - **Untriaged** — the issue has no labels at all. This is the column to watch:
   an unlabelled issue is one nobody has categorised.
 
-Both names are reserved, as are `Repository`, `Total` and `Oldest`: configuring a
+A third, **Ext**, counts the issues raised from **outside the organisation** —
+see [Inside or outside the organisation](#inside-or-outside-the-organisation).
+
+All three names are reserved, as are `Repository`, `Total` and `Oldest`:
+configuring a
 column with one of those names is rejected, because it would either share a
 counter with the implicit column — stopping the class columns summing to `Total`
 — or duplicate a header, which would also make `sort: ["repository"]` resolve to
@@ -533,6 +537,40 @@ classic PAT's `repo` scope already covers it. Without it GitHub serves the query
 with HTTP 200 and this one field null, so affected repositories are reported as
 `❓ Unknown` rather than counted as having no open issues — an unreadable backlog
 is never presented as a clean one.
+
+### Inside or outside the organisation
+
+The `Ext` column counts contributions from **outside the organisation**. Two
+pieces of evidence decide it, in this order:
+
+1. **The organisation's membership**, collected once per organisation in a
+   single GraphQL query (one page per 100 members) and reused for every
+   repository.
+2. **GitHub's per-item `authorAssociation`**, consulted when the author is not a
+   known member. This is what recognises a repository-level *collaborator* who
+   holds no organisation membership.
+
+The membership query is not redundant, and this ordering is deliberate.
+`authorAssociation` is computed **relative to the requesting token**: where an
+organisation's members keep their membership private — GitHub's default — the
+same issue reports `MEMBER` to a token with organisation visibility and
+`CONTRIBUTOR` to one without. Classifying on that field alone would make the
+counts depend on which token produced the report, and a token lacking
+`read:org` would file an entire organisation as outsiders.
+
+**Automation is never counted as external.** Bots are outsiders by association —
+`dependabot[bot]` genuinely reports `CONTRIBUTOR` or `NONE` — so counting on
+association alone would file every automated contribution as an external one and
+bury the genuine outside contributors the column exists to surface.
+
+An author who cannot be classified at all — a deleted account, or an
+association value GitHub has newly introduced — is **not** counted as external.
+The column understates rather than inventing an outsider.
+
+**Permissions.** Reading organisation membership needs `read:org` (classic) or
+**Members: read** (fine-grained). Without it the tool logs a single line and
+falls back to `authorAssociation` alone, which still works but is subject to the
+private-membership caveat above.
 
 ### Organisation feature gating
 

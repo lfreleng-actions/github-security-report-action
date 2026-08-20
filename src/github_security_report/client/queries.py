@@ -109,6 +109,8 @@ fragment RepoData on Repository {{
       number
       title
       createdAt
+      authorAssociation
+      author {{ __typename login }}
       labels(first: {_ISSUE_LABEL_WINDOW}) {{ totalCount nodes {{ name }} }}
     }}
   }}
