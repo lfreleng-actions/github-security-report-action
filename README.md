@@ -401,10 +401,47 @@ total open issues, then on the oldest issue.
 
 Ordering is resolved once, when the report is built, so every surface and
 `report.json` agree. It applies to the generic tables (GitHub Issues, Releases /
-Tagging, Mutable Releases, the Dependabot posture tables). The severity signal
-tables keep their own ranking, which encodes domain logic a column sort would
-flatten — Scorecard cascades through the worst populated severity rung so a lone
-Critical is never buried by a weaker repository with a lower score.
+Tagging, Mutable Releases, the Dependabot posture tables) **and** to the severity
+signal tables (CodeQL, OpenSSF Scorecard, zizmor, AI Slop, Dependabot alerts,
+secret scanning).
+
+The signal tables resolve their terms against a fixed vocabulary rather than a
+rendered column list, because their columns vary by surface and by data (Slack
+abbreviates the headers and drops `Total`, and `Info` appears only when some
+repository carries note-level findings):
+
+| Signal | Accepted sort names |
+| ------ | ------------------- |
+| OpenSSF Scorecard | `repository`, `score`, `critical`, `high`, `medium`, `low`, `info`, `total` |
+| CodeQL, zizmor, AI Slop, Dependabot alerts | `repository`, `critical`, `high`, `medium`, `low`, `info`, `total` |
+| Secret Scanning | `repository`, `open` |
+
+`informational` is accepted for `info`, and `total` for secret scanning's `open`.
+
+A bare `score` sorts **ascending**, because the rule is "worst first" and a lower
+Scorecard score is the weaker repository — so `sort: ["score"]` agrees with the
+default ranking instead of contradicting it. Every count sorts descending. A
+repository with no published score sorts last in either direction: unknown health
+is not bad health.
+
+Ranking by remediation volume rather than by score is the common case, since the
+score is a health rating and not a count of work:
+
+```json
+{
+  "report": {
+    "categories": {
+      "scorecard": { "sort": ["total", "score"] }
+    }
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
+
+Omitting `sort` keeps each signal's default ranking, which is not expressible as
+a column list — Scorecard cascades through the worst severity rung any offender
+actually carries, so a lone Critical is never buried by a weaker repository with
+a lower score.
 
 ### GitHub Issues
 

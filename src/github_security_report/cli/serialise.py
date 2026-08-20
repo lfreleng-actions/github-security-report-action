@@ -69,6 +69,7 @@ def _org_to_dict(org: OrgReport) -> dict:
                 # True when organisation feature gating skipped this signal
                 # (no supporting workflows found), so nothing was collected.
                 "skipped": s.skipped,
+                "description": s.resolved_description(),
             }
             for s in org.sections
         ],

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
-"""Tests for configured row ordering of the generic report tables."""
+"""Tests for configured row ordering of the report tables."""
 
 from __future__ import annotations
 
@@ -10,8 +10,18 @@ import pytest
 
 from github_security_report import config, ordering
 from github_security_report.categories import CategoryKey, category_meta
-from github_security_report.models import Repo
-from github_security_report.report import TableRow, TableSection
+from github_security_report.models import (
+    Repo,
+    RepoSignal,
+    RepoState,
+    SeverityCounts,
+    SignalType,
+)
+from github_security_report.report import (
+    SignalSection,
+    TableRow,
+    TableSection,
+)
 
 
 def _repo(name: str) -> Repo:
@@ -242,3 +252,240 @@ class TestApplyConfiguredOrder:
     def test_none_sections_are_skipped(self) -> None:
         # Repo mode leaves the extra tables unset; that must not raise.
         ordering.apply_configured_order([None], self._cfg(["untriaged"]))
+
+
+def _signal(
+    name: str,
+    signal: SignalType,
+    *,
+    critical: int = 0,
+    high: int = 0,
+    medium: int = 0,
+    low: int = 0,
+    informational: int = 0,
+    score: float | None = None,
+) -> RepoSignal:
+    return RepoSignal(
+        repo=_repo(name),
+        signal=signal,
+        state=RepoState.OFFENDER,
+        counts=SeverityCounts(
+            critical=critical,
+            high=high,
+            medium=medium,
+            low=low,
+            informational=informational,
+        ),
+        score=score,
+    )
+
+
+class TestSortOffenders:
+    def _scorecard(self) -> list[RepoSignal]:
+        # Mirrors the shape the real report produces: the weakest score carries
+        # the *fewest* findings, so score order and finding-count order disagree.
+        return [
+            _signal("weakest", SignalType.SCORECARD, high=1, medium=1, score=6.7),
+            _signal("middling", SignalType.SCORECARD, high=2, medium=2, score=7.5),
+            _signal("strongest", SignalType.SCORECARD, high=2, medium=10, score=8.2),
+        ]
+
+    def _names(self, offenders: list[RepoSignal], order: list[str]) -> list[str]:
+        return [
+            sig.repo.name
+            for sig in ordering.sort_offenders(SignalType.SCORECARD, offenders, order)
+        ]
+
+    def test_total_ranks_the_biggest_backlog_first(self) -> None:
+        # The point of the Total column: remediation effort follows the volume
+        # of findings, which the Scorecard score actively misreports here.
+        assert self._names(self._scorecard(), ["total"]) == [
+            "strongest",
+            "middling",
+            "weakest",
+        ]
+
+    def test_score_ascends_by_default_because_lower_is_weaker(self) -> None:
+        # "Worst first" for a health rating runs the opposite way to a count, so
+        # a bare `score` must agree with the default ranking, not contradict it.
+        assert self._names(self._scorecard(), ["score"]) == [
+            "weakest",
+            "middling",
+            "strongest",
+        ]
+
+    def test_direction_prefixes_apply(self) -> None:
+        assert self._names(self._scorecard(), ["-score"]) == [
+            "strongest",
+            "middling",
+            "weakest",
+        ]
+        assert self._names(self._scorecard(), ["+total"]) == [
+            "weakest",
+            "middling",
+            "strongest",
+        ]
+
+    def test_terms_apply_left_to_right(self) -> None:
+        offenders = [
+            _signal("a", SignalType.SCORECARD, high=2, medium=1, score=9.0),
+            _signal("b", SignalType.SCORECARD, high=2, medium=5, score=8.0),
+        ]
+        # Tied on High, so Medium breaks the tie.
+        assert self._names(offenders, ["high", "medium"]) == ["b", "a"]
+
+    def test_score_breaks_ties_on_total_weakest_first(self) -> None:
+        # The documented remediation-first ordering: volume of findings leads,
+        # and repositories carrying the same volume surface weakest-score first.
+        offenders = [
+            _signal("beta", SignalType.SCORECARD, high=3, score=8.9),
+            _signal("alpha", SignalType.SCORECARD, high=3, score=6.7),
+            _signal("gamma", SignalType.SCORECARD, high=3, score=7.5),
+            _signal("delta", SignalType.SCORECARD, high=5, score=9.9),
+        ]
+        assert self._names(offenders, ["total", "score"]) == [
+            "delta",
+            "alpha",
+            "gamma",
+            "beta",
+        ]
+
+    def test_missing_score_sorts_last_in_both_directions(self) -> None:
+        # A repository with no published score is unknown, not unhealthy.
+        offenders = [
+            _signal("unscored", SignalType.SCORECARD, high=1),
+            _signal("scored", SignalType.SCORECARD, high=1, score=7.0),
+        ]
+        assert self._names(offenders, ["score"]) == ["scored", "unscored"]
+        assert self._names(offenders, ["-score"]) == ["scored", "unscored"]
+
+    def test_name_is_the_final_tiebreaker(self) -> None:
+        offenders = [
+            _signal("zulu", SignalType.SCORECARD, high=1, score=7.0),
+            _signal("alpha", SignalType.SCORECARD, high=1, score=7.0),
+        ]
+        assert self._names(offenders, ["total"]) == ["alpha", "zulu"]
+
+    def test_informational_is_an_accepted_alias_for_info(self) -> None:
+        offenders = [
+            _signal("a", SignalType.ZIZMOR, informational=1),
+            _signal("b", SignalType.ZIZMOR, informational=9),
+        ]
+        assert [
+            s.repo.name
+            for s in ordering.sort_offenders(
+                SignalType.ZIZMOR, offenders, ["informational"]
+            )
+        ] == ["b", "a"]
+
+    def test_secret_scanning_counts_are_named_open(self) -> None:
+        offenders = [
+            _signal("a", SignalType.SECRET_SCANNING, high=1),
+            _signal("b", SignalType.SECRET_SCANNING, high=4),
+        ]
+        names = [
+            s.repo.name
+            for s in ordering.sort_offenders(
+                SignalType.SECRET_SCANNING, offenders, ["open"]
+            )
+        ]
+        assert names == ["b", "a"]
+
+    def test_total_falls_back_to_open_for_secret_scanning(self) -> None:
+        # report.json publishes the same number as a total, so accept both
+        # rather than making the one signal with a different heading a trap.
+        offenders = [
+            _signal("a", SignalType.SECRET_SCANNING, high=1),
+            _signal("b", SignalType.SECRET_SCANNING, high=4),
+        ]
+        assert (
+            ordering.resolve_signal_terms(SignalType.SECRET_SCANNING, ["total"])[0].name
+            == "open"
+        )
+        assert [
+            s.repo.name
+            for s in ordering.sort_offenders(
+                SignalType.SECRET_SCANNING, offenders, ["total"]
+            )
+        ] == ["b", "a"]
+
+    def test_score_is_not_offered_to_non_scorecard_signals(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Only Scorecard has a score; naming it elsewhere is a configuration
+        # error worth reporting rather than a silently inert term.
+        offenders = [_signal("a", SignalType.CODEQL, high=1)]
+        with caplog.at_level(logging.WARNING, logger="github_security_report.ordering"):
+            ordering.sort_offenders(SignalType.CODEQL, offenders, ["score"])
+        assert any("score" in r.getMessage() for r in caplog.records)
+
+    def test_unknown_column_is_warned_and_skipped(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        offenders = self._scorecard()
+        with caplog.at_level(logging.WARNING, logger="github_security_report.ordering"):
+            result = self._names(offenders, ["bogus", "total"])
+        assert result == ["strongest", "middling", "weakest"]
+        assert any("bogus" in r.getMessage() for r in caplog.records)
+
+    def test_empty_order_keeps_the_default_ranking(self) -> None:
+        offenders = self._scorecard()
+        assert self._names(offenders, []) == [s.repo.name for s in offenders]
+
+
+class TestApplyConfiguredSignalOrder:
+    def _cfg(self, sort: list[str]) -> config.ReportConfig:
+        return (
+            config.build_config(
+                {
+                    "report": {"categories": {"scorecard": {"sort": sort}}},
+                    "organizations": [{"name": "o"}],
+                }
+            )
+            .organizations[0]
+            .report
+        )
+
+    def _section(self) -> SignalSection:
+        return SignalSection(
+            signal=SignalType.SCORECARD,
+            offenders=[
+                _signal("weakest", SignalType.SCORECARD, high=1, score=6.7),
+                _signal("strongest", SignalType.SCORECARD, high=9, score=8.2),
+            ],
+        )
+
+    def test_applies_configured_order_in_place(self) -> None:
+        section = self._section()
+        ordering.apply_configured_signal_order([section], self._cfg(["total"]))
+        assert [s.repo.name for s in section.offenders] == ["strongest", "weakest"]
+
+    def test_unconfigured_signal_keeps_the_default_ranking(self) -> None:
+        section = self._section()
+        before = [s.repo.name for s in section.offenders]
+        ordering.apply_configured_signal_order([section], config.ReportConfig())
+        assert [s.repo.name for s in section.offenders] == before
+
+    def test_configured_order_is_described(self) -> None:
+        # The Scorecard description states its ranking, so an override that left
+        # the wording alone would make the report contradict itself.
+        section = self._section()
+        ordering.apply_configured_signal_order(
+            [section], self._cfg(["total", "+score"])
+        )
+        described = section.resolved_description()
+        assert "overridden" in described
+        assert "Total (descending)" in described
+        assert "Score (ascending)" in described
+
+    def test_unconfigured_signal_description_is_untouched(self) -> None:
+        section = self._section()
+        before = section.resolved_description()
+        ordering.apply_configured_signal_order([section], config.ReportConfig())
+        assert section.resolved_description() == before
+
+    def test_unknown_only_order_leaves_the_description_alone(self) -> None:
+        section = self._section()
+        before = section.resolved_description()
+        ordering.apply_configured_signal_order([section], self._cfg(["nonesuch"]))
+        assert section.resolved_description() == before

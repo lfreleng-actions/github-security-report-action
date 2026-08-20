@@ -89,6 +89,15 @@ class SignalSection:
     # A skipped section renders as a single "Skipping feature" line with a
     # pointer to the org setup guide instead of a table/footers.
     skipped: bool = False
+    # Resolved explanatory description (Markdown/HTML only). Empty falls back to
+    # the category's default description at render time. Populated only when a
+    # configured ordering overrides the default ranking, whose wording the
+    # default description states and would otherwise misreport.
+    description: str = ""
+
+    def resolved_description(self) -> str:
+        """The description to show, falling back to the category default."""
+        return self.description or self.signal.meta.description
 
     def top(self, n: int) -> list[RepoSignal]:
         """The worst N offenders (used for the Slack digest only)."""
@@ -253,7 +262,7 @@ class OrgReport:
     # The Private Vulnerability Reporting table: repositories where the feature
     # is not enabled. None in repo mode / when not collected.
     private_vulnerability_reporting: TableSection | None = None
-    # The GitHub Issues table: open issues per repository, split by label class.
+    # The GitHub Issues table (open issues per repository, split by label).
     # None in repo mode / when not collected.
     issues: TableSection | None = None
 

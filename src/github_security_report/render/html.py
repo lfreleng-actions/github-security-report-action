@@ -190,7 +190,7 @@ def _section_context(
     return {
         "title": meta.title,
         "url": meta.url,
-        "description": meta.description,
+        "description": section.resolved_description(),
         # Severity sections have numeric count columns after the leading
         # repository column, so they are right-aligned with tabular figures.
         "numeric": True,

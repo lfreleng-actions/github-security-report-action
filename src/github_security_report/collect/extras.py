@@ -23,7 +23,11 @@ from github_security_report.collect.context import (
 from github_security_report.config import OrgConfig, ReportConfig
 from github_security_report.issues import build_issues_table
 from github_security_report.models import Repo, SignalType
-from github_security_report.ordering import apply_configured_order, report_tables
+from github_security_report.ordering import (
+    apply_configured_order,
+    apply_configured_signal_order,
+    report_tables,
+)
 from github_security_report.posture import RepoPosture
 from github_security_report.report import OrgReport
 
@@ -107,3 +111,4 @@ async def attach_extra_tables(
     # Any configured per-category ordering is applied once, here, so every
     # render surface (and report.json) presents the same order.
     apply_configured_order(report_tables(report), report_cfg)
+    apply_configured_signal_order(report.sections, report_cfg)

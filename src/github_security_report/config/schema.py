@@ -136,12 +136,14 @@ CONFIG_SCHEMA: dict = {
                                 # more" tally, overriding the per-output limit
                                 # (0 = no limit, show every row).
                                 "top_n": {"type": "integer", "minimum": 0},
-                                # Row ordering for a generic table: column
-                                # names, most significant first. A leading '-'
-                                # forces descending and '+' forces ascending;
-                                # bare names take the direction implied by the
-                                # column's type. Ignored by the severity signal
-                                # tables, which keep their own ranking.
+                                # Row ordering for a table: column names, most
+                                # significant first. A leading '-' forces
+                                # descending and '+' forces ascending; bare
+                                # names take the direction implied by the
+                                # column's type. The severity signal tables
+                                # resolve these against a fixed vocabulary
+                                # (repository/score/critical/high/medium/low/
+                                # info/total) rather than rendered headings.
                                 "sort": {
                                     "type": "array",
                                     "items": {"type": "string", "minLength": 1},

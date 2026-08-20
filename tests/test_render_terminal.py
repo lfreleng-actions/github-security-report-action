@@ -328,9 +328,15 @@ def test_scorecard_totals_row_omits_score() -> None:
         ),
     ]
     out = _render(_org(signals, count=2))
-    total_line = next(line for line in out.splitlines() if "Total" in line)
+    # "Total" now also heads the trailing per-row sum column, so pick the
+    # totals *row* rather than the first line mentioning the word.
+    total_line = next(
+        line for line in out.splitlines() if line.lstrip("│ ").startswith("Total")
+    )
     # high 3, medium 1, low 1 are summed; the score column is left blank.
     assert "3" in total_line
+    # The row total sums the severity columns only (3 + 1 + 1).
+    assert "5" in total_line
     # No summed score (the individual scores 6.5/6.8 do not add up to 13.3).
     assert "13.3" not in total_line
 

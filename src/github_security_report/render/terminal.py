@@ -74,8 +74,7 @@ def _add_columns(
         table.add_column(name.capitalize(), justify="right", style=style)
     if informational:
         table.add_column("Info", justify="right", style=_INFORMATIONAL_STYLE)
-    if signal is not SignalType.SCORECARD:
-        table.add_column("Total", justify="right")
+    table.add_column("Total", justify="right")
 
 
 def _row(sig: RepoSignal, *, informational: bool = False) -> list[str]:
@@ -84,10 +83,12 @@ def _row(sig: RepoSignal, *, informational: bool = False) -> list[str]:
         return [sig.repo.name, str(c.total)]
     base = [str(c.critical), str(c.high), str(c.medium), str(c.low)]
     info = [str(c.informational)] if informational else []
-    if sig.signal is SignalType.SCORECARD:
-        score = f"{sig.score:.1f}" if sig.score is not None else "—"
-        return [sig.repo.name, score, *base, *info]
-    return [sig.repo.name, *base, *info, str(c.total)]
+    score = (
+        [f"{sig.score:.1f}" if sig.score is not None else "—"]
+        if sig.signal is SignalType.SCORECARD
+        else []
+    )
+    return [sig.repo.name, *score, *base, *info, str(c.total)]
 
 
 def _truncated_names(names: Sequence[str], top_n: int | None) -> str:
