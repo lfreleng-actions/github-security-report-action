@@ -27,7 +27,7 @@ whose window truncated is marked, so a partial breakdown is visible as such.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Set
+from collections.abc import Callable, Mapping, Set
 
 from github_security_report.authors import is_automation_author, is_external_author
 from github_security_report.categories import CategoryKey, category_meta
@@ -64,6 +64,14 @@ BREAKDOWN_COLUMNS = (
 )
 
 ALL_COLUMNS = (REPOSITORY_COLUMN, *BREAKDOWN_COLUMNS, TOTAL_COLUMN)
+
+# Aggregate rows drawn beneath the totals, splitting the same pull requests by
+# who is expected to move them. A partition, not another set of columns: every
+# collected pull request falls in exactly one, so the three sum to the total.
+UNASSIGNED_ROW = "Unassigned"
+OTHERS_ROW = "Others"
+MINE_ROW = "Mine"
+ASSIGNMENT_ROWS = (UNASSIGNED_ROW, OTHERS_ROW, MINE_ROW)
 
 # Marker appended to a repository's total when its open pull requests exceed the
 # collected window, so a partial breakdown is visible as such.
@@ -123,6 +131,34 @@ def count_pull_requests(
             counts[FAILING_COLUMN] += 1
         if pull.conflicting is True:
             counts[CONFLICT_COLUMN] += 1
+    return counts
+
+
+def is_mine(pull: PullRequestRef, viewer: str) -> bool:
+    """Whether ``viewer`` is among a pull request's assignees.
+
+    An empty ``viewer`` is nobody: a run whose account could not be read (or a
+    bot token with no personal queue) must not claim another person's review
+    backlog as its own, so it reports everything assigned as somebody else's.
+    """
+    return bool(viewer) and viewer in pull.assignees
+
+
+def assignment_counts(pulls: tuple[PullRequestRef, ...], viewer: str) -> dict[str, int]:
+    """Split one repository's pull requests by who they are assigned to.
+
+    A pull request assigned to several people, one of whom is the viewer,
+    counts as theirs: it is in their queue regardless of who else is on it.
+    That keeps the three buckets a true partition of the collected set.
+    """
+    counts: dict[str, int] = dict.fromkeys(ASSIGNMENT_ROWS, 0)
+    for pull in pulls:
+        if not pull.assignees:
+            counts[UNASSIGNED_ROW] += 1
+        elif is_mine(pull, viewer):
+            counts[MINE_ROW] += 1
+        else:
+            counts[OTHERS_ROW] += 1
     return counts
 
 
@@ -204,26 +240,25 @@ def _describe(base: str, total_cells: list[str]) -> str:
     return base
 
 
-def build_pull_requests_table(
+def _build_table(
     graph: Mapping[str, RepoGraphData],
     repos: list[Repo],
     *,
-    members: Set[str] = frozenset(),
-    warn_threshold: int = 0,
-    error_threshold: int = 0,
+    category: CategoryKey,
+    members: Set[str],
+    warn_threshold: int,
+    error_threshold: int,
+    viewer: str = "",
+    select: Callable[[PullRequestRef], bool] | None = None,
+    footer: bool = False,
 ) -> TableSection:
-    """The Pull Requests table, largest backlog first.
+    """Assemble a pull-request table, optionally over a subset of each backlog.
 
-    Only repositories with at least one open pull request are listed; the rest
-    are counted as the healthy (pass) total in the standardised footer, matching
-    every other table in the report. Ranking leads on the total -- the headline
-    the table exists to report -- then on the pull requests that are actually
-    blocked (failing checks or conflicting), so two repositories with equal
-    backlogs surface the more stuck one first.
-
-    The thresholds colour the Auto column (see :func:`automation_level`); both
-    default to ``0`` (off), so a caller that does not care about the automation
-    cap gets a plainly rendered table.
+    ``select`` narrows the pull requests a row counts. With no filter the row
+    total is the authoritative ``totalCount``, exact at any size; with one, it
+    can only be the number of matches *in the collected window*, since GitHub
+    was never asked how many matches exist beyond it. Both cases still mark a
+    truncated window, so a partial answer is never presented as a complete one.
     """
     rows: list[tuple[int, int, str, TableRow]] = []
     clean_count = 0
@@ -235,23 +270,29 @@ def build_pull_requests_table(
             # backlog is unknown -- never "none open".
             unknown_count += 1
             continue
-        if data.open_pull_requests <= 0:
+        collected = data.pull_requests
+        selected = (
+            collected if select is None else tuple(p for p in collected if select(p))
+        )
+        total = data.open_pull_requests if select is None else len(selected)
+        if total <= 0:
             clean_count += 1
             continue
-        counts = count_pull_requests(data.pull_requests, members)
-        truncated = data.open_pull_requests > len(data.pull_requests)
+        counts = count_pull_requests(selected, members)
+        truncated = data.open_pull_requests > len(collected)
         blocked = counts[FAILING_COLUMN] + counts[CONFLICT_COLUMN]
         cells = (
             *(str(counts[column]) for column in BREAKDOWN_COLUMNS),
-            _total_cell(data.open_pull_requests, truncated),
+            _total_cell(total, truncated),
         )
         sort_values: tuple[float | str | None, ...] = (
             *(float(counts[column]) for column in BREAKDOWN_COLUMNS),
-            float(data.open_pull_requests),
+            float(total),
         )
+        assigned = assignment_counts(selected, viewer) if footer else {}
         rows.append(
             (
-                data.open_pull_requests,
+                total,
                 blocked,
                 repo.name,
                 TableRow(
@@ -263,6 +304,9 @@ def build_pull_requests_table(
                         warn_threshold=warn_threshold,
                         error_threshold=error_threshold,
                     ),
+                    footer_values=tuple(assigned[label] for label in ASSIGNMENT_ROWS)
+                    if footer
+                    else (),
                 ),
             )
         )
@@ -270,7 +314,7 @@ def build_pull_requests_table(
     # tiebreaker correctly ascending even when one name prefixes another.
     rows.sort(key=lambda item: (-item[0], -item[1], item[2]))
 
-    meta = category_meta(CategoryKey.PULL_REQUESTS)
+    meta = category_meta(category)
     description = _describe(meta.description, [row.cells[-1] for *_, row in rows])
     return TableSection(
         category=meta,
@@ -286,4 +330,73 @@ def build_pull_requests_table(
         fail_count=len(rows),
         unknown_count=unknown_count,
         description=description,
+        footer_labels=ASSIGNMENT_ROWS if footer else (),
+    )
+
+
+def build_pull_requests_table(
+    graph: Mapping[str, RepoGraphData],
+    repos: list[Repo],
+    *,
+    members: Set[str] = frozenset(),
+    warn_threshold: int = 0,
+    error_threshold: int = 0,
+    viewer: str = "",
+) -> TableSection:
+    """The Pull Requests table, largest backlog first.
+
+    Only repositories with at least one open pull request are listed; the rest
+    are counted as the healthy (pass) total in the standardised footer, matching
+    every other table in the report. Ranking leads on the total -- the headline
+    the table exists to report -- then on the pull requests that are actually
+    blocked (failing checks or conflicting), so two repositories with equal
+    backlogs surface the more stuck one first.
+
+    The thresholds colour the Auto column (see :func:`automation_level`); both
+    default to ``0`` (off), so a caller that does not care about the automation
+    cap gets a plainly rendered table. ``viewer`` drives the assignment rows
+    beneath the totals; an empty one still splits Unassigned from Others, and
+    simply finds nothing that is "mine".
+    """
+    return _build_table(
+        graph,
+        repos,
+        category=CategoryKey.PULL_REQUESTS,
+        members=members,
+        warn_threshold=warn_threshold,
+        error_threshold=error_threshold,
+        viewer=viewer,
+        footer=True,
+    )
+
+
+def build_assigned_pull_requests_table(
+    graph: Mapping[str, RepoGraphData],
+    repos: list[Repo],
+    *,
+    members: Set[str] = frozenset(),
+    warn_threshold: int = 0,
+    error_threshold: int = 0,
+    viewer: str = "",
+) -> TableSection:
+    """The Pull Requests table narrowed to the running account's own queue.
+
+    The same columns over the same data, so the two tables read alike; only the
+    population differs. A repository with open pull requests but none assigned
+    to the account counts as clean here rather than as a row of zeros, which
+    keeps the table to the reader's actual inbox.
+
+    An empty ``viewer`` yields an empty table: a run that could not identify
+    its own account (a bot or App token, say) has no personal queue, and
+    guessing at one would put somebody else's work under the reader's name.
+    """
+    return _build_table(
+        graph,
+        repos,
+        category=CategoryKey.PULL_REQUESTS_ASSIGNED,
+        members=members,
+        warn_threshold=warn_threshold,
+        error_threshold=error_threshold,
+        viewer=viewer,
+        select=lambda pull: is_mine(pull, viewer),
     )

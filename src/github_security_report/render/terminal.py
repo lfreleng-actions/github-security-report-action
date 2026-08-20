@@ -39,6 +39,7 @@ from github_security_report.report import (
     limit_resolver,
     section_shows_informational,
     table_column_totals,
+    table_footer_rows,
     truncate,
 )
 
@@ -246,6 +247,15 @@ def render_table_section(
         if totals is not None:
             table.add_section()
             table.add_row(*totals, style="bold")
+        # Aggregate rows beneath the totals: a breakdown of the same rows, so
+        # only the label and its value are filled and the count columns are
+        # left blank rather than repeating numbers that do not apply.
+        footer = table_footer_rows(section, rows)
+        if footer:
+            table.add_section()
+            blanks = [""] * (len(section.columns) - 2)
+            for label, value in footer:
+                table.add_row(escape(label), value, *blanks)
         console.print(table)
         if hidden:
             console.print(f"  [dim]\u2026 and {hidden} more[/dim]")
@@ -314,6 +324,7 @@ def render_org(
     table(org.private_vulnerability_reporting)
     table(org.issues)
     table(org.pull_requests)
+    table(org.assigned_pull_requests)
 
 
 def render_orgs(

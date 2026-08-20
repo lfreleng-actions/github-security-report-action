@@ -183,6 +183,11 @@ class TableRow:
     cells: tuple[str, ...]
     sort_values: tuple[float | str | None, ...] = ()
     cell_levels: tuple[str | None, ...] = ()
+    # This row's contribution to each of its table's ``footer_labels``, in the
+    # same order. Summed over the *displayed* rows at render time, exactly like
+    # the column totals, so a truncated table's footer describes what is on
+    # screen rather than a total the reader cannot reconcile.
+    footer_values: tuple[int, ...] = ()
 
     def level(self, index: int) -> str | None:
         """The emphasis for cell ``index``, or ``None`` when it has none."""
@@ -228,6 +233,10 @@ class TableSection:
     # Resolved explanatory description (Markdown/HTML only). Empty falls back to
     # the category's default description at render time.
     description: str = ""
+    # Labels for aggregate rows drawn beneath the totals row, each summing one
+    # slice of the table that is not a column -- a breakdown *of* the rows
+    # rather than *within* them. Empty means the table has none.
+    footer_labels: tuple[str, ...] = ()
 
     @property
     def title(self) -> str:
@@ -291,6 +300,9 @@ class OrgReport:
     # The Pull Requests table (open pull requests per repository, split by
     # author and by what blocks them). None in repo mode / when not collected.
     pull_requests: TableSection | None = None
+    # The same table narrowed to the running account's own assigned pull
+    # requests. None in repo mode / when not collected.
+    assigned_pull_requests: TableSection | None = None
 
 
 @dataclass
@@ -395,6 +407,38 @@ def table_column_totals(
             continue
         cells.append(str(sum(_as_int(row.cells[index - 1]) for row in rows)))
     return tuple(cells)
+
+
+def table_footer_rows(
+    section: TableSection, rows: Sequence[TableRow]
+) -> tuple[tuple[str, str], ...]:
+    """Aggregate ``(label, value)`` rows drawn beneath a table's totals row.
+
+    A breakdown *of* the rows rather than *within* them: the Pull Requests table
+    uses it to split its backlog by who each pull request is assigned to, which
+    is a partition of the same pull requests the columns already count and so
+    cannot be another column without double-counting them.
+
+    Summed over the rows passed in -- the displayed, already-truncated set --
+    for the same reason :func:`table_column_totals` is: a footer the reader
+    cannot reconcile against the rows above it is worse than no footer.
+    Returns an empty tuple for a table that declares no footer labels.
+    """
+    if not section.footer_labels:
+        return ()
+    return tuple(
+        (
+            label,
+            str(
+                sum(
+                    row.footer_values[index]
+                    for row in rows
+                    if index < len(row.footer_values)
+                )
+            ),
+        )
+        for index, label in enumerate(section.footer_labels)
+    )
 
 
 def _as_int(cell: str) -> int:

@@ -21,6 +21,7 @@ from github_security_report.report import (
     TableRow,
     TableSection,
     table_column_totals,
+    table_footer_rows,
 )
 
 # The unremarkable case every helper defaults to: a human who is an
@@ -45,11 +46,13 @@ def _pull(
     draft: bool = False,
     conflicting: bool | None = None,
     failing: bool | None = None,
+    assignees: tuple[str, ...] = (),
 ) -> PullRequestRef:
     return PullRequestRef(
         number=number,
         author=author,
         draft=draft,
+        assignees=assignees,
         conflicting=conflicting,
         failing=failing,
     )
@@ -65,6 +68,7 @@ def _build(
     members: Set[str] = frozenset(),
     warn_threshold: int = 0,
     error_threshold: int = 0,
+    viewer: str = "",
 ) -> TableSection:
     return pulls.build_pull_requests_table(
         graph,
@@ -72,6 +76,17 @@ def _build(
         members=members,
         warn_threshold=warn_threshold,
         error_threshold=error_threshold,
+        viewer=viewer,
+    )
+
+
+def _build_assigned(
+    graph: dict[str, RepoGraphData],
+    names: list[str],
+    viewer: str = "",
+) -> TableSection:
+    return pulls.build_assigned_pull_requests_table(
+        graph, [_repo(n) for n in names], viewer=viewer
     )
 
 
@@ -503,3 +518,128 @@ class TestCellLevels:
         )
         graph = _graph(a=RepoGraphData(open_pull_requests=40, pull_requests=bots))
         assert self._levels(_build(graph, ["a"]))[pulls.AUTOMATION_COLUMN] is None
+
+
+class TestAssignmentBreakdown:
+    def _mixed(self) -> dict[str, RepoGraphData]:
+        return _graph(
+            a=RepoGraphData(
+                open_pull_requests=4,
+                pull_requests=(
+                    _pull(1),
+                    _pull(2, assignees=("me",)),
+                    _pull(3, assignees=("someone-else",)),
+                    _pull(4, assignees=("someone-else", "me")),
+                ),
+            )
+        )
+
+    def test_the_three_buckets_partition_the_backlog(self) -> None:
+        # Every collected pull request lands in exactly one bucket, so the
+        # three always reconcile against the total the table already shows.
+        counts = pulls.assignment_counts(self._mixed()["a"].pull_requests, "me")
+        assert counts == {
+            pulls.UNASSIGNED_ROW: 1,
+            pulls.OTHERS_ROW: 1,
+            pulls.MINE_ROW: 2,
+        }
+        assert sum(counts.values()) == 4
+
+    def test_shared_assignment_still_counts_as_mine(self) -> None:
+        # It is in my queue regardless of who else is on it.
+        assert pulls.is_mine(_pull(1, assignees=("someone-else", "me")), "me")
+
+    def test_unknown_viewer_claims_nothing(self) -> None:
+        # A bot or App token has no personal queue; assigning another person's
+        # backlog to "mine" would be worse than reporting none.
+        counts = pulls.assignment_counts(self._mixed()["a"].pull_requests, "")
+        assert counts[pulls.MINE_ROW] == 0
+        assert counts[pulls.OTHERS_ROW] == 3
+        assert counts[pulls.UNASSIGNED_ROW] == 1
+
+    def test_footer_rows_are_declared_and_populated(self) -> None:
+        table = _build(self._mixed(), ["a"], viewer="me")
+        assert table.footer_labels == pulls.ASSIGNMENT_ROWS
+        assert table_footer_rows(table, table.rows) == (
+            (pulls.UNASSIGNED_ROW, "1"),
+            (pulls.OTHERS_ROW, "1"),
+            (pulls.MINE_ROW, "2"),
+        )
+
+    def test_footer_sums_only_the_displayed_rows(self) -> None:
+        # Like the totals row: a footer the reader cannot reconcile against the
+        # rows above it is worse than no footer.
+        graph = _graph(
+            big=RepoGraphData(
+                open_pull_requests=2,
+                pull_requests=(
+                    _pull(1, assignees=("me",)),
+                    _pull(2, assignees=("me",)),
+                ),
+            ),
+            small=RepoGraphData(
+                open_pull_requests=1, pull_requests=(_pull(3, assignees=("me",)),)
+            ),
+        )
+        table = _build(graph, ["big", "small"], viewer="me")
+        shown = table.rows[:1]
+        assert table_footer_rows(table, shown) == (
+            (pulls.UNASSIGNED_ROW, "0"),
+            (pulls.OTHERS_ROW, "0"),
+            (pulls.MINE_ROW, "2"),
+        )
+
+
+class TestBuildAssignedPullRequestsTable:
+    def _graph(self) -> dict[str, RepoGraphData]:
+        return _graph(
+            mine=RepoGraphData(
+                open_pull_requests=3,
+                pull_requests=(
+                    _pull(1, assignees=("me",)),
+                    _pull(2, assignees=("someone-else",)),
+                    _pull(3),
+                ),
+            ),
+            theirs=RepoGraphData(
+                open_pull_requests=2,
+                pull_requests=(
+                    _pull(4, assignees=("someone-else",)),
+                    _pull(5),
+                ),
+            ),
+        )
+
+    def test_counts_only_the_viewers_pull_requests(self) -> None:
+        table = _build_assigned(self._graph(), ["mine", "theirs"], viewer="me")
+        assert [r.repo.name for r in table.rows] == ["mine"]
+        # The total is the viewer's own count, not the repository's backlog.
+        assert table.rows[0].cells[-1] == "1"
+
+    def test_repos_with_nothing_assigned_count_as_clean(self) -> None:
+        # A row of zeros for a repository the reader has no stake in would be
+        # noise; the point of the table is their own inbox.
+        table = _build_assigned(self._graph(), ["mine", "theirs"], viewer="me")
+        assert table.pass_count == 1
+        assert table.fail_count == 1
+
+    def test_unknown_viewer_yields_an_empty_table(self) -> None:
+        table = _build_assigned(self._graph(), ["mine", "theirs"], viewer="")
+        assert table.rows == []
+        assert table.pass_count == 2
+
+    def test_shares_the_column_shape_of_the_main_table(self) -> None:
+        # The two tables sit next to each other, so they must read alike.
+        table = _build_assigned(self._graph(), ["mine"], viewer="me")
+        assert table.columns == pulls.ALL_COLUMNS
+
+    def test_carries_no_assignment_footer(self) -> None:
+        # Every row is already "mine", so the breakdown would say nothing.
+        table = _build_assigned(self._graph(), ["mine"], viewer="me")
+        assert table.footer_labels == ()
+        assert table_footer_rows(table, table.rows) == ()
+
+    def test_unreadable_backlog_is_unknown_not_clean(self) -> None:
+        table = _build_assigned(_graph(ghost=RepoGraphData()), ["ghost"], viewer="me")
+        assert table.unknown_count == 1
+        assert table.pass_count == 0

@@ -20,6 +20,7 @@ from github_security_report.client.parsers import _parse_iso, _parse_repo_node
 from github_security_report.client.queries import (
     _ORG_MEMBERS_QUERY,
     _REPO_GRAPH_FRAGMENT,
+    _VIEWER_QUERY,
 )
 from github_security_report.client.transport import NetworkError, Transport
 from github_security_report.models import Repo, RepoGraphData
@@ -195,6 +196,32 @@ class OrgReadClient(Transport):
             if not isinstance(after, str):
                 break
         return normalise_members(logins)
+
+    async def viewer_login(self) -> str:
+        """The authenticated account's login, lower-cased, or ``""``.
+
+        This is what "mine" means in the pull-request assignment breakdown, so
+        it is the token's owner rather than a configured identity: a report run
+        with someone else's token legitimately answers a different question.
+
+        Returns ``""`` when the account cannot be read, in which case callers
+        must treat every assignment as somebody else's rather than as theirs --
+        a scheduled run under a bot or App token has no personal inbox, and
+        inventing one would put another person's review queue under "mine".
+        """
+        resp = await self._request(
+            "POST", self._graphql_url, json={"query": _VIEWER_QUERY}
+        )
+        if resp.status_code != 200:
+            await resp.aclose()  # unread body would leak a pooled connection
+            return ""
+        body = resp.json()
+        await resp.aclose()  # release the connection once the body is read
+        viewer = (body.get("data") or {}).get("viewer")
+        if not isinstance(viewer, dict):
+            return ""
+        login = viewer.get("login")
+        return str(login).lower() if login else ""
 
     # ------------------------------------------------------------------ #
     # Batched per-repo prefetch (one query for many repositories)

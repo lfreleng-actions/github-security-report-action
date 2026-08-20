@@ -186,6 +186,10 @@ class PullRequestRef:
     number: int
     author: AuthorRef | None = None
     draft: bool = False
+    # Logins of everyone the pull request is assigned to, lower-cased. GitHub
+    # caps assignees at 10, so the collected window is exhaustive and an empty
+    # tuple genuinely means "nobody is assigned" rather than "not read".
+    assignees: tuple[str, ...] = ()
     # True when GitHub reports the branch as CONFLICTING. None while GitHub has
     # not finished computing mergeability (it is calculated lazily, and answers
     # UNKNOWN until then), so a cold sweep reports "not established" rather than

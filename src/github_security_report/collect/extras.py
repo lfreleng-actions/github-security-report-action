@@ -29,7 +29,10 @@ from github_security_report.ordering import (
     report_tables,
 )
 from github_security_report.posture import RepoPosture
-from github_security_report.pulls import build_pull_requests_table
+from github_security_report.pulls import (
+    build_assigned_pull_requests_table,
+    build_pull_requests_table,
+)
 from github_security_report.report import OrgReport
 
 log = logging.getLogger(__name__)
@@ -100,6 +103,9 @@ async def attach_extra_tables(
     # organisation"; see ``authors`` for why the per-item association alone is
     # not enough.
     members = await ctx.client.org_members(ctx.org)
+    # "Mine" in the assignment breakdown is the account this run authenticated
+    # as, read once here rather than assumed from configuration.
+    viewer = await ctx.client.viewer_login()
     # Open issues and pull requests come from the same batched GraphQL prefetch
     # as the release and Dependabot data, so these tables cost no extra request.
     report.issues = build_issues_table(
@@ -115,6 +121,15 @@ async def attach_extra_tables(
         members=members,
         warn_threshold=report_cfg.dependabot_warn_threshold,
         error_threshold=report_cfg.dependabot_error_threshold,
+        viewer=viewer,
+    )
+    report.assigned_pull_requests = build_assigned_pull_requests_table(
+        ctx.graph,
+        in_scope,
+        members=members,
+        warn_threshold=report_cfg.dependabot_warn_threshold,
+        error_threshold=report_cfg.dependabot_error_threshold,
+        viewer=viewer,
     )
     # The Dependabot alerts enablement sub-table carries the repositories with
     # Dependabot alerts disabled, so drop them from the Dependabot signal

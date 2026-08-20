@@ -31,6 +31,7 @@ from github_security_report.report import (
     offender_column_totals,
     section_shows_informational,
     table_column_totals,
+    table_footer_rows,
     truncate,
 )
 
@@ -253,6 +254,12 @@ def render_table_section(
                 + " | ".join(f"**{cell}**" if cell else "" for cell in totals)
                 + " |"
             )
+        # Aggregate rows beneath the totals: a breakdown of the same rows, so
+        # the count columns are left blank rather than repeating numbers that
+        # do not apply to them.
+        blanks = [""] * (len(section.columns) - 2)
+        for label, value in table_footer_rows(section, rows):
+            lines.append("| " + " | ".join([label, value, *blanks]) + " |")
         lines.append("")
         if hidden:
             lines.append(f"_… and {hidden} more_")
@@ -329,6 +336,7 @@ def render_org(
     table(org.private_vulnerability_reporting)
     table(org.issues)
     table(org.pull_requests)
+    table(org.assigned_pull_requests)
     return "\n".join(parts).rstrip() + "\n"
 
 

@@ -626,6 +626,52 @@ pages style their tables from the stylesheet.
 > matters is its own, but the `Auto` column counts **every** automation author,
 > which is the right number to compare against the cap.
 
+#### Assignment breakdown
+
+Beneath the totals, the same pull requests are split again by **who is expected
+to move them**:
+
+```text
+├─────────────────────┼───────┼─────┼──────┼──────────┼──────┼───────┼───────┤
+│ Total                │    17 │   0 │    0 │        1 │    1 │     2 │    17 │
+├─────────────────────┼───────┼─────┼──────┼──────────┼──────┼───────┼───────┤
+│ Unassigned           │     1 │     │      │          │      │       │       │
+│ Others               │    14 │     │      │          │      │       │       │
+│ Mine                 │     2 │     │      │          │      │       │       │
+└─────────────────────┴───────┴─────┴──────┴──────────┴──────┴───────┴───────┘
+```
+
+This is a **partition**, not more columns: every collected pull request falls in
+exactly one bucket, so the three reconcile against `Total`. It is a breakdown
+*of* the rows rather than *within* them, which is why it cannot be a column
+without counting the same pull requests twice.
+
+- **Unassigned** — nobody has picked it up.
+- **Mine** — assigned to the account the report ran as.
+- **Others** — assigned to somebody else.
+
+A pull request assigned to several people, one of them you, counts as **Mine**:
+it is in your queue regardless of who else is on it. Like the totals row, the
+breakdown sums the **displayed** rows, so it always reconciles with the table
+above it even under a row limit.
+
+### Assigned to Me
+
+The `pull_requests_assigned` category repeats the Pull Requests table narrowed
+to pull requests assigned to the account the report ran as — the same columns
+over the same data, so the two read alike, with only the population changed. A
+repository with open pull requests but none of yours counts as clean rather than
+appearing as a row of zeros, keeping the table to your actual inbox.
+
+> **"Mine" follows the token, not a configured name.** It is whoever
+> `viewer { login }` resolves to, so the same report run with a different
+> token legitimately answers a different question. A scheduled run under a bot
+> or GitHub App token has no personal queue: `Mine` reads `0`, everything
+> assigned counts under `Others`, and the Assigned to Me table renders empty
+> rather than claiming somebody else's work. Turn the table off for such runs
+> with `"categories": {"pull_requests_assigned": {"enabled": false}}`, or hide
+> it per surface with the usual `outputs` toggles.
+
 `Auto` recognises the same automation accounts as the
 [`dependamerge`](https://github.com/lfreleng-actions/dependamerge) tool:
 Dependabot, Renovate, pre-commit.ci, `github-actions`, Copilot and

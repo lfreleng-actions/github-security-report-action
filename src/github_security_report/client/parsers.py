@@ -292,6 +292,22 @@ def _check_rollup_failed(node: dict) -> bool | None:
     return state in _FAILED_ROLLUP_STATES
 
 
+def _assignee_logins(node: dict) -> tuple[str, ...]:
+    """Lower-cased logins a pull request is assigned to.
+
+    Lower-cased at the boundary so the "is this mine?" comparison never has to
+    worry about the casing GitHub happened to return for either side.
+    """
+    assignees = node.get("assignees")
+    if not isinstance(assignees, dict):
+        return ()
+    logins: list[str] = []
+    for entry in assignees.get("nodes") or []:
+        if isinstance(entry, dict) and (login := entry.get("login")):
+            logins.append(str(login).lower())
+    return tuple(logins)
+
+
 def _pull_request_ref(node: object) -> PullRequestRef | None:
     """One parsed pull request, or None when the node is unusable."""
     if not isinstance(node, dict):
@@ -312,6 +328,7 @@ def _pull_request_ref(node: object) -> PullRequestRef | None:
         number=number,
         author=_author_ref(node),
         draft=bool(node.get("isDraft")),
+        assignees=_assignee_logins(node),
         conflicting=conflicting,
         failing=_check_rollup_failed(node),
     )

@@ -42,6 +42,15 @@ query($org: String!, $after: String) {
 }
 """
 
+# The authenticated account, which is what "mine" means in the assignment
+# breakdown. Token-scoped rather than organisation-scoped, but read once per
+# organisation run alongside the membership, since both answer "who is who".
+_VIEWER_QUERY = """
+query {
+  viewer { login }
+}
+"""
+
 # The code-scanning-derived signal tools whose enablement we probe per repo.
 # Each is checked via the analyses ``tool_name`` filter (a definitive presence
 # test) rather than scanning the analysis history, which a busy repo could push
@@ -87,6 +96,11 @@ _ISSUE_LABEL_WINDOW = 5
 # check rollup moved the query cost from 1 point to 3, and adds no extra HTTP
 # request at all, since it rides a query the run already makes.
 _PULL_REQUEST_WINDOW = 25
+# GitHub caps an issue or pull request at 10 assignees, so this window is
+# exhaustive by construction: unlike the issue-label window, it can never
+# truncate, and the assignment breakdown is therefore exact for every collected
+# pull request.
+_ASSIGNEE_WINDOW = 10
 _REPO_GRAPH_FRAGMENT = f"""\
 fragment RepoData on Repository {{
   hasVulnerabilityAlertsEnabled
@@ -132,6 +146,7 @@ fragment RepoData on Repository {{
       mergeable
       authorAssociation
       author {{ __typename login }}
+      assignees(first: {_ASSIGNEE_WINDOW}) {{ nodes {{ login }} }}
       commits(last: 1) {{
         nodes {{ commit {{ statusCheckRollup {{ state }} }} }}
       }}

@@ -245,6 +245,7 @@ def report_tables(report: OrgReport) -> list[TableSection | None]:
         report.private_vulnerability_reporting,
         report.issues,
         report.pull_requests,
+        report.assigned_pull_requests,
     ]
 
 

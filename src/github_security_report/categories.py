@@ -42,6 +42,7 @@ class CategoryKey(str, Enum):
     PRIVATE_VULNERABILITY_REPORTING = "private_vulnerability_reporting"
     GITHUB_ISSUES = "github_issues"
     PULL_REQUESTS = "pull_requests"
+    PULL_REQUESTS_ASSIGNED = "pull_requests_assigned"
 
 
 @dataclass(frozen=True)
@@ -299,7 +300,25 @@ _CATEGORIES: dict[CategoryKey, CategoryMeta] = {
             "Conflict (blocked on a merge conflict), Fail (blocked on failing "
             "checks) and Draft are independent of the author split and of each "
             "other, so one pull request can appear in more than one of them. "
-            "Ranked by total open pull requests, then by those blocked."
+            "Ranked by total open pull requests, then by those blocked. "
+            "Beneath the totals, the same pull requests are split by who they "
+            "are assigned to: Unassigned, Mine (the account this report ran "
+            "as) and Others."
+        ),
+    ),
+    CategoryKey.PULL_REQUESTS_ASSIGNED: CategoryMeta(
+        key=CategoryKey.PULL_REQUESTS_ASSIGNED,
+        title="Assigned to Me",
+        pass_label="None assigned",
+        pass_all_label="Clean",
+        fail_label="With assigned pull requests",
+        url="https://docs.github.com/en/pull-requests",
+        description=(
+            "The Pull Requests table narrowed to those assigned to the account "
+            "this report ran as -- a personal review queue, so it changes with "
+            "the token used. Columns carry the same meaning as the table "
+            "above. Empty when the account has nothing assigned, or when the "
+            "run used a bot or App token with no personal queue."
         ),
     ),
 }

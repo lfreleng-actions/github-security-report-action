@@ -9,7 +9,7 @@ toggles deliberately do not filter it.
 
 from __future__ import annotations
 
-from github_security_report.report import OrgReport, TableSection
+from github_security_report.report import OrgReport, TableSection, table_footer_rows
 
 
 def _table_to_dict(section: TableSection) -> dict:
@@ -31,6 +31,12 @@ def _table_to_dict(section: TableSection) -> dict:
         "fail_count": section.fail_count,
         "unknown_count": section.unknown_count,
         "description": section.resolved_description(),
+        # Aggregate rows beneath the totals, over every row (report.json is the
+        # unconditionally complete artifact, so nothing here is truncated).
+        "footer_rows": [
+            {"label": label, "value": value}
+            for label, value in table_footer_rows(section, section.rows)
+        ],
     }
 
 
@@ -87,5 +93,10 @@ def _org_to_dict(org: OrgReport) -> dict:
         "issues": _table_to_dict(org.issues) if org.issues else None,
         "pull_requests": (
             _table_to_dict(org.pull_requests) if org.pull_requests else None
+        ),
+        "assigned_pull_requests": (
+            _table_to_dict(org.assigned_pull_requests)
+            if org.assigned_pull_requests
+            else None
         ),
     }

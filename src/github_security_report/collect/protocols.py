@@ -39,6 +39,14 @@ class ClientProtocol(Protocol):
         """
         raise NotImplementedError
 
+    async def viewer_login(self) -> str:
+        """Return the authenticated account's login, lower-cased.
+
+        An empty string means the account could not be read, in which case no
+        pull request counts as assigned to the caller.
+        """
+        raise NotImplementedError
+
     async def code_scanning_tools(
         self, org: str, repo: str, tools: tuple[str, ...] | None = None
     ) -> tuple[int, set[str]]:

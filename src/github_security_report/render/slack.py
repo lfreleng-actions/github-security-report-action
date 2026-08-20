@@ -44,6 +44,7 @@ from github_security_report.report import (
     offender_column_totals,
     section_shows_informational,
     table_column_totals,
+    table_footer_rows,
     truncate,
 )
 
@@ -254,6 +255,11 @@ def _table_block(
             totals = table_column_totals(section, shown)
             if totals is not None:
                 cells.append(list(totals))
+            # Aggregate rows beneath the totals, padded to the table's width so
+            # the fixed-width column alignment still holds.
+            blanks = [""] * (len(section.columns) - 2)
+            for label, value in table_footer_rows(section, shown):
+                cells.append([label, value, *blanks])
             table = _fixed_table_generic(section.columns, cells)
             hidden = len(section.rows) - len(shown)
             if hidden:
@@ -369,6 +375,7 @@ def render_org_blocks(
     add_table(org.private_vulnerability_reporting)
     add_table(org.issues)
     add_table(org.pull_requests)
+    add_table(org.assigned_pull_requests)
     if pages_url:
         # Link straight to this organisation's latest report page rather than
         # the Pages index: the digest is per-org, so the index is a detour.
