@@ -785,6 +785,27 @@ your enterprise endpoints (Actions sets these automatically on GHES
 runners). `SCORECARD_API_URL` overrides the external OpenSSF Scorecard
 API in the same way.
 
+### Exit codes
+
+| Code | Meaning |
+| ---- | ------- |
+| `0` | The report ran. |
+| `1` | Repo mode only: findings met or exceeded `--fail-threshold`. |
+| `2` | Usage or configuration error (bad flag, unreadable config). |
+| `3` | The GitHub API was unreachable after the retry budget. |
+| `4` | GitHub rejected the credentials (HTTP 401). |
+
+Codes `3` and `4` are **aborts, not reports**: nothing is written and no Pages
+artifact is produced. That is deliberate. A token that has expired, been revoked
+or been rotated makes every read fail, and a run that degraded instead would
+render a complete, confidently clean report — `0 repositories analysed`, every
+section `No data` or `All Clean` — and a scheduled job would then publish it
+over the last good one. Reporting false data is worse than reporting none, so
+the run stops at the first rejected request.
+
+The two are separate codes because the remedy differs: `4` means rotate or fix
+the token, `3` means retry later.
+
 ## Remediation
 
 The `remediate` subcommand is the in-tool counterpart to the report: it runs the

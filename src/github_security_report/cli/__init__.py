@@ -27,6 +27,7 @@ from github_security_report.cli.app import (
 from github_security_report.cli.modes import (
     OrgRunOptions,
     ReleaseOverrides,
+    _abort_auth,
     _abort_network,
     _load_config,
     _run_org,
@@ -48,6 +49,7 @@ __all__ = [
     "OrgRunOptions",
     "ReleaseOverrides",
     "TopNLimits",
+    "_abort_auth",
     "_abort_network",
     "_load_config",
     "_org_to_dict",

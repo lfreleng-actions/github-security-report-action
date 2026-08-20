@@ -34,7 +34,7 @@ from github_security_report.cli.outputs import (
     slack_show,
     write_org_files,
 )
-from github_security_report.client import GitHubClient, NetworkError
+from github_security_report.client import AuthError, GitHubClient, NetworkError
 from github_security_report.config import Config, OrgConfig, ReportConfig
 from github_security_report.render import html as html_render
 from github_security_report.render import markdown as md_render
@@ -88,6 +88,19 @@ def _abort_network(console: Console, exc: NetworkError) -> NoReturn:
     """
     console.print(str(exc), style="red", markup=False)
     raise typer.Exit(3)
+
+
+def _abort_auth(console: Console, exc: AuthError) -> NoReturn:
+    """Abort the run on rejected credentials.
+
+    Exits with code 4, distinct from a usage error (2) and a connectivity
+    failure (3), so an automated caller can tell "rotate the token" apart from
+    "retry later" without parsing the message. Aborting matters most in CI:
+    a scheduled run that degraded instead would publish an empty, confidently
+    clean report over a good one.
+    """
+    console.print(str(exc), style="red", markup=False)
+    raise typer.Exit(4)
 
 
 # --------------------------------------------------------------------------- #

@@ -15,6 +15,7 @@ import respx
 
 from github_security_report.client import (
     API_MAX_RETRIES,
+    AuthError,
     GitHubClient,
     NetworkError,
     _endpoint_diagnostics,
@@ -398,6 +399,64 @@ async def test_external_transport_failure_degrades_not_raises(
     )
     status, score = await client.scorecard_score("o", "r")
     assert status == 503
+    assert score is None
+
+
+@respx.mock
+async def test_rejected_credentials_raise_auth_error(client: GitHubClient) -> None:
+    # A 401 condemns every remaining read, so degrading it would render the
+    # whole report as "no data" / "all clean" -- a false negative a scheduled
+    # run would publish over a good report.
+    respx.get(f"{API}/repos/o/r/secret-scanning/alerts").mock(
+        return_value=httpx.Response(401, json={"message": "Bad credentials"})
+    )
+    with pytest.raises(AuthError) as excinfo:
+        await client.secret_scanning_status("o", "r")
+    message = str(excinfo.value)
+    assert "401" in message
+    # The message has to name the remedy: the operator's next action is to
+    # check the token, not to retry.
+    assert "expired" in message or "revoked" in message
+
+
+async def test_auth_error_is_a_network_error() -> None:
+    # Callers that already abort on an unusable API keep aborting without
+    # having to learn about the new type.
+    assert issubclass(AuthError, NetworkError)
+
+
+@respx.mock
+async def test_rejected_credentials_are_not_retried(
+    client: GitHubClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Retrying rejected credentials cannot help and only delays the abort.
+    slept: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        slept.append(delay)
+
+    monkeypatch.setattr(
+        "github_security_report.client.transport.asyncio.sleep", _fake_sleep
+    )
+    route = respx.get(f"{API}/repos/o/r/secret-scanning/alerts").mock(
+        return_value=httpx.Response(401)
+    )
+    with pytest.raises(AuthError):
+        await client.secret_scanning_status("o", "r")
+    assert route.call_count == 1
+    assert slept == []
+
+
+@respx.mock
+async def test_external_401_does_not_abort_the_run(client: GitHubClient) -> None:
+    # The Scorecard endpoint is unauthenticated and third-party: whatever it
+    # says about credentials tells us nothing about the GitHub token, so it
+    # degrades that one signal instead of aborting.
+    respx.get(url__startswith=f"{SCORECARD}/projects/github.com/o/r").mock(
+        return_value=httpx.Response(401)
+    )
+    status, score = await client.scorecard_score("o", "r")
+    assert status == 401
     assert score is None
 
 

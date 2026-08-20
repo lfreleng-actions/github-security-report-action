@@ -23,6 +23,7 @@ from github_security_report import remediate as remediate_mod
 from github_security_report.cli.modes import (
     OrgRunOptions,
     ReleaseOverrides,
+    _abort_auth,
     _abort_network,
     _load_config,
     _run_org,
@@ -30,7 +31,7 @@ from github_security_report.cli.modes import (
     _run_repo,
 )
 from github_security_report.cli.outputs import TopNLimits
-from github_security_report.client import NetworkError
+from github_security_report.client import AuthError, NetworkError
 
 app = typer.Typer(
     name="github-security-report",
@@ -223,6 +224,8 @@ def report(
         )
         try:
             code = asyncio.run(_run_org(cfg, options, console=console))
+        except AuthError as exc:
+            _abort_auth(console, exc)
         except NetworkError as exc:
             _abort_network(console, exc)
     else:
@@ -242,6 +245,8 @@ def report(
                     ruleset_workflows=rw,
                 )
             )
+        except AuthError as exc:
+            _abort_auth(console, exc)
         except NetworkError as exc:
             _abort_network(console, exc)
     raise typer.Exit(code)
@@ -333,6 +338,8 @@ def remediate(
                 apply=apply,
             )
         )
+    except AuthError as exc:
+        _abort_auth(console, exc)
     except NetworkError as exc:
         _abort_network(console, exc)
     raise typer.Exit(code)

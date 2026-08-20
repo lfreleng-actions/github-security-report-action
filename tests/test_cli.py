@@ -204,6 +204,30 @@ def test_org_mode_uses_default_config(
 
 
 @respx.mock
+def test_rejected_credentials_abort_instead_of_reporting_no_data() -> None:
+    # A rotated, expired or revoked token used to produce a full report saying
+    # "0 repositories analysed" with every section "No data" / "All Clean".
+    # In CI that renders a confidently clean report and publishes it over a
+    # good one, so the run must abort and print nothing resembling a report.
+    respx.get(url__startswith=f"{API}/orgs/o").mock(
+        return_value=httpx.Response(401, json={"message": "Bad credentials"})
+    )
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(401, json={"message": "Bad credentials"})
+    )
+
+    result = cli.invoke(app, ["report", "--org", "o", "--no-color"])
+
+    # Exit 4 is authentication, distinct from usage (2) and connectivity (3),
+    # so a caller can tell "rotate the token" from "retry later".
+    assert result.exit_code == 4, result.stdout
+    assert "401" in result.stdout
+    assert "Security report:" not in result.stdout
+    assert "All Clean" not in result.stdout
+    assert "No data" not in result.stdout
+
+
+@respx.mock
 def test_repo_mode_fail_threshold(tmp_path: Path) -> None:
     respx.get(f"{API}/repos/o/r").mock(
         return_value=httpx.Response(

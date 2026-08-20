@@ -50,6 +50,7 @@ from github_security_report.client.queries import (
 )
 from github_security_report.client.reads import ReadClient
 from github_security_report.client.transport import (
+    AuthError,
     NetworkError,
     Transport,
     _endpoint_diagnostics,
@@ -66,6 +67,7 @@ __all__ = [
     "GITHUB_API",
     "GRAPHQL_API",
     "SCORECARD_API",
+    "AuthError",
     "GitHubClient",
     "NetworkError",
     "OrgReadClient",
