@@ -110,7 +110,11 @@ async def attach_extra_tables(
         members=members,
     )
     report.pull_requests = build_pull_requests_table(
-        ctx.graph, in_scope, members=members
+        ctx.graph,
+        in_scope,
+        members=members,
+        warn_threshold=report_cfg.dependabot_warn_threshold,
+        error_threshold=report_cfg.dependabot_error_threshold,
     )
     # The Dependabot alerts enablement sub-table carries the repositories with
     # Dependabot alerts disabled, so drop them from the Dependabot signal

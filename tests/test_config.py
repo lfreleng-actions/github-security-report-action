@@ -145,6 +145,54 @@ class TestBuildConfig:
         org = config.build_config(data).organizations[0]
         assert org.report.release_max_age_days == 90
 
+    def test_dependabot_thresholds_default_and_override(self) -> None:
+        report = config.build_config(MINIMAL).report
+        assert report.dependabot_warn_threshold == 12
+        # 15 is GitHub's default per-repository open-PR cap for Dependabot.
+        assert report.dependabot_error_threshold == 15
+        data = {
+            "report": {
+                "dependabot_warn_threshold": 8,
+                "dependabot_error_threshold": 10,
+            },
+            "organizations": [
+                {"name": "o", "report": {"dependabot_warn_threshold": 5}},
+            ],
+        }
+        org = config.build_config(data).organizations[0]
+        assert org.report.dependabot_warn_threshold == 5
+        assert org.report.dependabot_error_threshold == 10
+
+    def test_error_threshold_below_warn_is_rejected(self) -> None:
+        # Unsatisfiable as written: every value that would warn has already
+        # errored, so the warning colour could never appear. Rejecting beats
+        # silently ignoring one of the two knobs the operator set.
+        data = {
+            "report": {
+                "dependabot_warn_threshold": 20,
+                "dependabot_error_threshold": 10,
+            },
+            "organizations": [{"name": "o"}],
+        }
+        with pytest.raises(ConfigError, match="dependabot_error_threshold"):
+            config.build_config(data)
+
+    def test_org_override_cannot_invert_the_thresholds(self) -> None:
+        # The check runs on the merged result, so an org block that raises warn
+        # above an inherited error is caught rather than silently disabling the
+        # warning level for that one organisation.
+        data = {
+            "report": {
+                "dependabot_warn_threshold": 12,
+                "dependabot_error_threshold": 15,
+            },
+            "organizations": [
+                {"name": "o", "report": {"dependabot_warn_threshold": 30}},
+            ],
+        }
+        with pytest.raises(ConfigError, match="dependabot_error_threshold"):
+            config.build_config(data)
+
     def test_releases_exclude_parsed(self) -> None:
         data = {
             "organizations": [

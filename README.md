@@ -583,6 +583,49 @@ the collected total. They are ordered worst-first — a conflict needs a human t
 rebase, a failing check may only need a re-run, and a draft is not blocked at
 all.
 
+#### Automation backlog thresholds
+
+On the terminal the counts are coloured so the table reads at a glance: `Human`
+and `Ext` **green**, `Conflict` and `Fail` **red**, and `Auto` coloured against
+your automation cap.
+
+An organisation caps how many pull requests Dependabot may hold open per
+repository. At the cap it stops raising them, so the repository quietly stops
+receiving dependency updates — an outage in waiting rather than an untidy queue.
+Two thresholds surface that before it bites:
+
+```json
+{
+  "report": {
+    "dependabot_warn_threshold": 12,
+    "dependabot_error_threshold": 15
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
+
+- **Yellow** above `dependabot_warn_threshold` (default `12`) — approaching the
+  cap, with headroom left.
+- **Red** at or above `dependabot_error_threshold` (default `15`, GitHub's own
+  per-repository limit) — at the cap, no new pull requests are arriving.
+
+Either may be set to `0` to switch that level off, matching the `0 = no limit`
+idiom the row limits use, and `dependabot_error_threshold` must be greater than
+or equal to `dependabot_warn_threshold` — a lower error threshold would make the
+warning colour unreachable, so it is rejected at load rather than silently
+ignored. Both are settable per organisation.
+
+Only **non-zero** counts are coloured. A table of red zeros would train the eye
+to ignore the colour, which costs exactly the signal it exists to carry, so a
+clean row stays plain and the rows with something wrong stand out. The totals
+row is never coloured: it sums columns that disagree about what good looks like.
+Colour is a terminal affordance — Markdown and Slack have none, and the HTML
+pages style their tables from the stylesheet.
+
+> **A note on the name.** These are named for Dependabot because the limit that
+> matters is its own, but the `Auto` column counts **every** automation author,
+> which is the right number to compare against the cap.
+
 `Auto` recognises the same automation accounts as the
 [`dependamerge`](https://github.com/lfreleng-actions/dependamerge) tool:
 Dependabot, Renovate, pre-commit.ci, `github-actions`, Copilot and

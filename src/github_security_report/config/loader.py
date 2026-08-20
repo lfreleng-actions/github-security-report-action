@@ -162,6 +162,8 @@ def _report_from(data: dict, base: ReportConfig) -> ReportConfig:
                 "include_test",
                 "repo_min_age_days",
                 "release_max_age_days",
+                "dependabot_warn_threshold",
+                "dependabot_error_threshold",
                 "gating",
             }
         },
@@ -179,6 +181,17 @@ def _report_from(data: dict, base: ReportConfig) -> ReportConfig:
         result = replace(
             result,
             categories=_categories_from(data["categories"], base.categories),
+        )
+    if result.dependabot_error_threshold < result.dependabot_warn_threshold:
+        # An error threshold below the warning one is unsatisfiable as written:
+        # every value that warns would already have errored, so the warning
+        # colour could never appear. Rejecting beats silently ignoring one of
+        # the two knobs the operator deliberately set.
+        raise ConfigError(
+            "report.dependabot_error_threshold "
+            f"({result.dependabot_error_threshold}) must be greater than or "
+            "equal to report.dependabot_warn_threshold "
+            f"({result.dependabot_warn_threshold})"
         )
     return result
 

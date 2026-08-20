@@ -16,12 +16,16 @@ from dataclasses import replace
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
+from rich.text import Text
 
 from github_security_report.categories import CategoryKey
 from github_security_report.models import Repo, RepoSignal, SignalType
 from github_security_report.remediate import CategoryRemediation
 from github_security_report.render import markdown
 from github_security_report.report import (
+    CELL_BAD,
+    CELL_GOOD,
+    CELL_WARN,
     ORG_SETUP_DOC_URL,
     SKIP_MESSAGE,
     SUMMARY_EMOJI,
@@ -29,6 +33,7 @@ from github_security_report.report import (
     OrgReport,
     SignalSection,
     SummaryLine,
+    TableRow,
     TableSection,
     build_summary,
     limit_resolver,
@@ -55,6 +60,16 @@ _SUMMARY_STYLE = {
     "unknown": "dim",
     "pass": "green",
     "excluded": "blue",
+}
+
+# Rich style per semantic cell level, for the builders that emphasise a cell
+# (see ``report.CELL_LEVELS``). The terminal is the only surface that renders
+# these: Markdown and Slack have no colour, and the HTML pages style their
+# tables from the stylesheet.
+_CELL_LEVEL_STYLE = {
+    CELL_GOOD: "green",
+    CELL_WARN: "yellow",
+    CELL_BAD: "red",
 }
 
 # Label prefixing the repository-name list printed beneath a summary line.
@@ -177,6 +192,20 @@ def render_section(
     console.print()
 
 
+def _styled_cells(row: TableRow) -> list[Text | str]:
+    """A row's cells, each carrying the emphasis its builder asked for.
+
+    An emphasised cell becomes a :class:`~rich.text.Text`, which Rich renders
+    literally, so the style is applied without the cell's own content ever being
+    parsed as markup. Unemphasised cells keep the existing escaped-string path.
+    """
+    out: list[Text | str] = []
+    for index, cell in enumerate(row.cells):
+        style = _CELL_LEVEL_STYLE.get(row.level(index) or "")
+        out.append(Text(cell, style=style) if style else escape(cell))
+    return out
+
+
 def render_table_section(
     section: TableSection,
     console: Console,
@@ -210,7 +239,7 @@ def render_table_section(
                 escape(col), overflow="fold", justify="left" if i == 0 else "right"
             )
         for row in rows:
-            table.add_row(escape(row.repo.name), *(escape(cell) for cell in row.cells))
+            table.add_row(escape(row.repo.name), *_styled_cells(row))
         # A trailing totals row sums the numeric columns across the rows shown
         # above, matching the offender tables.
         totals = table_column_totals(section, rows)

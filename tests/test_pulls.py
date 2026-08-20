@@ -14,7 +14,14 @@ from github_security_report.models import (
     Repo,
     RepoGraphData,
 )
-from github_security_report.report import TableRow, TableSection, table_column_totals
+from github_security_report.report import (
+    CELL_BAD,
+    CELL_GOOD,
+    CELL_WARN,
+    TableRow,
+    TableSection,
+    table_column_totals,
+)
 
 # The unremarkable case every helper defaults to: a human who is an
 # organisation member, so a plain `_pull()` exercises no classification edge.
@@ -56,11 +63,15 @@ def _build(
     graph: dict[str, RepoGraphData],
     names: list[str],
     members: Set[str] = frozenset(),
+    warn_threshold: int = 0,
+    error_threshold: int = 0,
 ) -> TableSection:
     return pulls.build_pull_requests_table(
         graph,
         [_repo(n) for n in names],
         members=members,
+        warn_threshold=warn_threshold,
+        error_threshold=error_threshold,
     )
 
 
@@ -391,3 +402,104 @@ class TestBuildPullRequestsTable:
         assert table.sum_columns == frozenset(range(1, len(table.columns)))
         assert table.numeric_columns == frozenset(range(1, len(table.columns)))
         assert table.category.key is CategoryKey.PULL_REQUESTS
+
+
+class TestAutomationLevel:
+    def _level(self, value: int) -> str | None:
+        return pulls.automation_level(value, warn_threshold=12, error_threshold=15)
+
+    def test_comfortably_below_the_cap_is_unemphasised(self) -> None:
+        assert self._level(0) is None
+        assert self._level(12) is None
+
+    def test_above_the_warn_threshold_warns(self) -> None:
+        assert self._level(13) == CELL_WARN
+        assert self._level(14) == CELL_WARN
+
+    def test_at_the_cap_is_an_error(self) -> None:
+        # At the cap Dependabot stops raising pull requests, so the repository
+        # silently stops receiving updates -- an outage, not a warning.
+        assert self._level(15) == CELL_BAD
+        assert self._level(40) == CELL_BAD
+
+    def test_zero_thresholds_disable_each_level(self) -> None:
+        # 0 means "off", matching the row-limit idiom, rather than "every value
+        # is at or above zero, so colour everything".
+        assert pulls.automation_level(99, warn_threshold=0, error_threshold=0) is None
+        assert (
+            pulls.automation_level(99, warn_threshold=12, error_threshold=0)
+            == CELL_WARN
+        )
+
+
+class TestCellLevels:
+    def _levels(self, table: TableSection) -> dict[str, str | None]:
+        row = table.rows[0]
+        return {
+            column: row.level(index) for index, column in enumerate(table.columns[1:])
+        }
+
+    def test_human_and_external_counts_read_as_good(self) -> None:
+        graph = _graph(
+            a=RepoGraphData(
+                open_pull_requests=1,
+                pull_requests=(_pull(1, _author("outsider", association="NONE")),),
+            )
+        )
+        levels = self._levels(_build(graph, ["a"]))
+        assert levels[pulls.HUMAN_COLUMN] == CELL_GOOD
+        assert levels[pulls.EXTERNAL_COLUMN] == CELL_GOOD
+
+    def test_blocked_counts_read_as_bad(self) -> None:
+        graph = _graph(
+            a=RepoGraphData(
+                open_pull_requests=1,
+                pull_requests=(_pull(1, conflicting=True, failing=True),),
+            )
+        )
+        levels = self._levels(_build(graph, ["a"]))
+        assert levels[pulls.CONFLICT_COLUMN] == CELL_BAD
+        assert levels[pulls.FAILING_COLUMN] == CELL_BAD
+
+    def test_zero_counts_are_never_emphasised(self) -> None:
+        # A table of red zeros teaches the reader to ignore the colour, which
+        # costs exactly the signal the colour exists to carry.
+        graph = _graph(a=RepoGraphData(open_pull_requests=1, pull_requests=(_pull(1),)))
+        levels = self._levels(_build(graph, ["a"]))
+        assert levels[pulls.CONFLICT_COLUMN] is None
+        assert levels[pulls.FAILING_COLUMN] is None
+        assert levels[pulls.EXTERNAL_COLUMN] is None
+
+    def test_draft_and_total_carry_no_emphasis(self) -> None:
+        # A draft is not blocked, just unfinished; the total sums columns that
+        # disagree about what good looks like, so no one colour is true of it.
+        graph = _graph(
+            a=RepoGraphData(open_pull_requests=1, pull_requests=(_pull(1, draft=True),))
+        )
+        levels = self._levels(_build(graph, ["a"]))
+        assert levels[pulls.DRAFT_COLUMN] is None
+        assert levels[pulls.TOTAL_COLUMN] is None
+
+    def test_automation_backlog_uses_the_configured_thresholds(self) -> None:
+        def _auto(count: int) -> RepoGraphData:
+            bots = tuple(
+                _pull(i, _author("dependabot[bot]", typename="Bot", association="NONE"))
+                for i in range(count)
+            )
+            return RepoGraphData(open_pull_requests=count, pull_requests=bots)
+
+        for count, expected in ((4, None), (13, CELL_WARN), (15, CELL_BAD)):
+            table = _build(
+                _graph(a=_auto(count)), ["a"], warn_threshold=12, error_threshold=15
+            )
+            assert self._levels(table)[pulls.AUTOMATION_COLUMN] == expected
+
+    def test_thresholds_default_to_off(self) -> None:
+        # A caller that never configured the cap gets a plainly rendered table
+        # rather than one coloured against a number it did not choose.
+        bots = tuple(
+            _pull(i, _author("dependabot[bot]", typename="Bot", association="NONE"))
+            for i in range(40)
+        )
+        graph = _graph(a=RepoGraphData(open_pull_requests=40, pull_requests=bots))
+        assert self._levels(_build(graph, ["a"]))[pulls.AUTOMATION_COLUMN] is None

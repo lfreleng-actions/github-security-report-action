@@ -32,7 +32,13 @@ from collections.abc import Mapping, Set
 from github_security_report.authors import is_automation_author, is_external_author
 from github_security_report.categories import CategoryKey, category_meta
 from github_security_report.models import PullRequestRef, Repo, RepoGraphData
-from github_security_report.report import TableRow, TableSection
+from github_security_report.report import (
+    CELL_BAD,
+    CELL_GOOD,
+    CELL_WARN,
+    TableRow,
+    TableSection,
+)
 
 REPOSITORY_COLUMN = "Repository"
 HUMAN_COLUMN = "Human"
@@ -125,6 +131,63 @@ def _total_cell(total: int, truncated: bool) -> str:
     return f"{total} {TRUNCATED_MARKER}" if truncated else str(total)
 
 
+def automation_level(
+    value: int, *, warn_threshold: int, error_threshold: int
+) -> str | None:
+    """Emphasis for an automation backlog of ``value`` open pull requests.
+
+    An organisation caps how many pull requests automation may hold open per
+    repository; at the cap, Dependabot stops raising them and the repository
+    quietly stops receiving dependency updates. That makes a large automation
+    backlog an outage in waiting rather than a tidiness problem, so it is
+    flagged before it arrives: warning *above* the warn threshold, error *at or
+    above* the error threshold, which is the cap itself.
+
+    Either threshold of ``0`` turns that level off, matching the ``0 = no
+    limit`` idiom the row limits already use.
+    """
+    if error_threshold and value >= error_threshold:
+        return CELL_BAD
+    if warn_threshold and value > warn_threshold:
+        return CELL_WARN
+    return None
+
+
+def _cell_levels(
+    counts: dict[str, int], *, warn_threshold: int, error_threshold: int
+) -> tuple[str | None, ...]:
+    """Semantic emphasis for one row's cells, parallel to its columns.
+
+    Only *non-zero* counts are emphasised. A table whose every Conflict and
+    Fail cell reads a red ``0`` trains the reader to ignore the colour, which
+    costs exactly the signal the colour exists to carry; an unemphasised zero
+    lets the eye land on the rows that have something wrong with them.
+
+    The trailing Total is never emphasised: it is the sum of columns that
+    disagree about what good looks like, so no one colour is true of it.
+    """
+    levels: list[str | None] = []
+    for column in BREAKDOWN_COLUMNS:
+        value = counts[column]
+        if column == AUTOMATION_COLUMN:
+            levels.append(
+                automation_level(
+                    value,
+                    warn_threshold=warn_threshold,
+                    error_threshold=error_threshold,
+                )
+            )
+        elif column in (HUMAN_COLUMN, EXTERNAL_COLUMN):
+            levels.append(CELL_GOOD if value else None)
+        elif column in (CONFLICT_COLUMN, FAILING_COLUMN):
+            levels.append(CELL_BAD if value else None)
+        else:
+            # Draft is neither good nor bad: a draft is not blocked, it is
+            # simply not finished, so it carries no emphasis.
+            levels.append(None)
+    return (*levels, None)
+
+
 def _describe(base: str, total_cells: list[str]) -> str:
     """Extend the category description with the caveat the table earned.
 
@@ -146,6 +209,8 @@ def build_pull_requests_table(
     repos: list[Repo],
     *,
     members: Set[str] = frozenset(),
+    warn_threshold: int = 0,
+    error_threshold: int = 0,
 ) -> TableSection:
     """The Pull Requests table, largest backlog first.
 
@@ -155,6 +220,10 @@ def build_pull_requests_table(
     the table exists to report -- then on the pull requests that are actually
     blocked (failing checks or conflicting), so two repositories with equal
     backlogs surface the more stuck one first.
+
+    The thresholds colour the Auto column (see :func:`automation_level`); both
+    default to ``0`` (off), so a caller that does not care about the automation
+    cap gets a plainly rendered table.
     """
     rows: list[tuple[int, int, str, TableRow]] = []
     clean_count = 0
@@ -185,7 +254,16 @@ def build_pull_requests_table(
                 data.open_pull_requests,
                 blocked,
                 repo.name,
-                TableRow(repo=repo, cells=cells, sort_values=sort_values),
+                TableRow(
+                    repo=repo,
+                    cells=cells,
+                    sort_values=sort_values,
+                    cell_levels=_cell_levels(
+                        counts,
+                        warn_threshold=warn_threshold,
+                        error_threshold=error_threshold,
+                    ),
+                ),
             )
         )
     # Negated numerics so the whole sort runs ascending, keeping the name

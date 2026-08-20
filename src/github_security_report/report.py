@@ -144,6 +144,17 @@ class SignalSection:
         ]
 
 
+# Semantic emphasis a builder can attach to a table cell, mapped to a concrete
+# presentation by each render surface. Deliberately meaning rather than colour:
+# a builder knows a repository is at its automation cap, not that the terminal
+# should print yellow, and a surface with no colour (Markdown, Slack) can ignore
+# the levels entirely rather than being handed escape codes it cannot use.
+CELL_GOOD = "good"
+CELL_WARN = "warn"
+CELL_BAD = "bad"
+CELL_LEVELS = (CELL_GOOD, CELL_WARN, CELL_BAD)
+
+
 @dataclass
 class TableRow:
     """A generic, repository-keyed table row with pre-formatted cells.
@@ -161,11 +172,23 @@ class TableRow:
     means that cell has no value to sort on (an unknown age, say); the ordering
     layer keeps such rows last whichever direction the column is sorted in,
     since missing is not the same as small.
+
+    ``cell_levels`` is the optional semantic emphasis for each cell, again
+    parallel to ``cells`` (one of :data:`CELL_LEVELS`, or ``None`` for no
+    emphasis). Empty means the builder published none and every cell renders
+    plainly.
     """
 
     repo: Repo
     cells: tuple[str, ...]
     sort_values: tuple[float | str | None, ...] = ()
+    cell_levels: tuple[str | None, ...] = ()
+
+    def level(self, index: int) -> str | None:
+        """The emphasis for cell ``index``, or ``None`` when it has none."""
+        if index < len(self.cell_levels):
+            return self.cell_levels[index]
+        return None
 
 
 @dataclass

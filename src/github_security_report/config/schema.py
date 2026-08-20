@@ -78,6 +78,12 @@ CONFIG_SCHEMA: dict = {
                 # Releases/Tagging only when its newest release or tag is older
                 # than this many days (0 = flag every eligible repository).
                 "release_max_age_days": {"type": "integer", "minimum": 0},
+                # Automation-backlog thresholds colouring the Pull Requests
+                # table's Auto column: warn above the first, error at or above
+                # the second (the per-repository open-PR cap, beyond which
+                # Dependabot stops raising new pull requests).
+                "dependabot_warn_threshold": {"type": "integer", "minimum": 0},
+                "dependabot_error_threshold": {"type": "integer", "minimum": 0},
                 # Organisation feature gating: when true (the default) the
                 # workflow-driven signals (Scorecard, zizmor, aislop) are
                 # probed only after a cheap support check (org ruleset,
