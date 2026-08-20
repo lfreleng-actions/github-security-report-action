@@ -265,6 +265,9 @@ class OrgReport:
     # The GitHub Issues table (open issues per repository, split by label).
     # None in repo mode / when not collected.
     issues: TableSection | None = None
+    # The Pull Requests table (open pull requests per repository, split by
+    # author and by what blocks them). None in repo mode / when not collected.
+    pull_requests: TableSection | None = None
 
 
 @dataclass
@@ -372,10 +375,16 @@ def table_column_totals(
 
 
 def _as_int(cell: str) -> int:
-    """A table cell as a number, or 0 when it does not parse."""
+    """A table cell as a number, or 0 when it does not parse.
+
+    Reads the leading numeric token rather than requiring the whole cell to be a
+    number, so a count annotated with a trailing marker (e.g. the Pull Requests
+    table's ``"12 +"``, flagging a partial breakdown) still contributes its
+    value to the totals row instead of silently summing as zero.
+    """
     try:
-        return int(cell)
-    except (TypeError, ValueError):
+        return int(str(cell).split()[0])
+    except (AttributeError, IndexError, TypeError, ValueError):
         return 0
 
 

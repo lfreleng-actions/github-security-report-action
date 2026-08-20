@@ -29,6 +29,7 @@ from github_security_report.ordering import (
     report_tables,
 )
 from github_security_report.posture import RepoPosture
+from github_security_report.pulls import build_pull_requests_table
 from github_security_report.report import OrgReport
 
 log = logging.getLogger(__name__)
@@ -93,20 +94,23 @@ async def attach_extra_tables(
     )
     report.mutable_releases = posture.build_mutable_releases_table(postures)
     report.private_vulnerability_reporting = posture.build_pvr_table(postures)
-    # Organisation membership is collected once and reused for every
-    # repository, so classifying contributions costs one query rather than a
-    # probe per author. It is the token-independent basis for "outside the
+    # Organisation membership is collected once and reused by both author-aware
+    # tables, so classifying contributions costs one query rather than a probe
+    # per author. It is the token-independent basis for "outside the
     # organisation"; see ``authors`` for why the per-item association alone is
     # not enough.
     members = await ctx.client.org_members(ctx.org)
-    # Open issues come from the same batched GraphQL prefetch as the release and
-    # Dependabot data, so this table costs no extra requests.
+    # Open issues and pull requests come from the same batched GraphQL prefetch
+    # as the release and Dependabot data, so these tables cost no extra request.
     report.issues = build_issues_table(
         ctx.graph,
         in_scope,
         generated_at=report.generated_at,
         label_columns=report_cfg.issue_labels,
         members=members,
+    )
+    report.pull_requests = build_pull_requests_table(
+        ctx.graph, in_scope, members=members
     )
     # The Dependabot alerts enablement sub-table carries the repositories with
     # Dependabot alerts disabled, so drop them from the Dependabot signal

@@ -174,6 +174,28 @@ class IssueRef:
     author: AuthorRef | None = None
 
 
+@dataclass(frozen=True)
+class PullRequestRef:
+    """One open pull request's review-load facts.
+
+    ``draft`` and the two blocked flags are independent of the author and of
+    each other, so one pull request may be a draft *and* conflicting; the table
+    counts each axis separately rather than bucketing rows.
+    """
+
+    number: int
+    author: AuthorRef | None = None
+    draft: bool = False
+    # True when GitHub reports the branch as CONFLICTING. None while GitHub has
+    # not finished computing mergeability (it is calculated lazily, and answers
+    # UNKNOWN until then), so a cold sweep reports "not established" rather than
+    # asserting a clean merge it never confirmed.
+    conflicting: bool | None = None
+    # True when the head commit's combined check rollup failed. None when no
+    # checks have run at all, which is not a passing result.
+    failing: bool | None = None
+
+
 @dataclass
 class RepoGraphData:
     """Per-repository data fetched in the batched GraphQL prefetch.
@@ -227,6 +249,12 @@ class RepoGraphData:
     # so once entry 0 is lost ``issues[0]`` is merely the oldest *readable*
     # one, and reporting its age would name a newer issue as the oldest.
     oldest_issue_unreadable: bool = False
+    # Total open pull requests, with the same semantics as ``open_issues``:
+    # ``None`` means the connection could not be read at all, never zero.
+    open_pull_requests: int | None = None
+    # A bounded, oldest-first window of those pull requests, which may be
+    # shorter than ``open_pull_requests`` on a busy repository.
+    pull_requests: tuple[PullRequestRef, ...] = ()
 
 
 @dataclass

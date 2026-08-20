@@ -85,4 +85,7 @@ def _org_to_dict(org: OrgReport) -> dict:
             else None
         ),
         "issues": _table_to_dict(org.issues) if org.issues else None,
+        "pull_requests": (
+            _table_to_dict(org.pull_requests) if org.pull_requests else None
+        ),
     }

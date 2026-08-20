@@ -538,14 +538,89 @@ with HTTP 200 and this one field null, so affected repositories are reported as
 `❓ Unknown` rather than counted as having no open issues — an unreadable backlog
 is never presented as a clean one.
 
+### Pull Requests
+
+The `pull_requests` category counts each repository's **open pull requests**,
+split by who raised them and by what is holding them up. It rides the same
+batched GraphQL prefetch as the issues data, so it costs **no extra API
+requests** — measured against a five-repository batch, adding the connection and
+the head commit's check rollup moved the query cost from 1 point to 3, against
+an hourly budget of 5,000:
+
+```text
+Pull Requests
+┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━┳━━━━━━┳━━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━┓
+┃ Repository           ┃ Human ┃ Ext ┃ Auto ┃ Conflict ┃ Fail ┃ Draft ┃ Total ┃
+┡━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━╇━━━━━━╇━━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━┩
+│ lftools-uv           │     8 │   0 │    0 │        0 │    0 │     0 │     8 │
+│ dependamerge         │     3 │   0 │    0 │        0 │    0 │     0 │     3 │
+│ gha-workflow-linter  │     2 │   0 │    0 │        0 │    1 │     1 │     2 │
+│ harden-runner-block- │     1 │   0 │    0 │        1 │    0 │     1 │     1 │
+│ action               │       │     │      │          │      │       │       │
+├─────────────────────┼───────┼─────┼──────┼──────────┼──────┼───────┼───────┤
+│ Total                │    14 │   0 │    0 │        1 │    1 │     2 │    14 │
+└─────────────────────┴───────┴─────┴──────┴──────────┴──────┴───────┴───────┘
+  … and 9 more
+  ❌ 13 With open pull requests
+  ✅ 104 No open pull requests
+```
+
+The columns form **two independent groupings**:
+
+| Column | Meaning |
+| ------ | ------- |
+| `Human` / `Auto` | Partition the total by author. `Auto` is recognised automation; `Human` is everyone else. |
+| `Ext` | Human pull requests raised from outside the organisation — a **subset of Human**, which is why it sits beside it. |
+| `Conflict` | Blocked on a merge conflict. |
+| `Fail` | Blocked on failing checks (including pre-commit.ci). |
+| `Draft` | Marked as a draft. |
+
+`Conflict`, `Fail` and `Draft` **overlap** each other and the author split, so
+they do not sum to `Total` and are not meant to: one pull request that is
+conflicting, failing *and* a draft is counted once in each of those three
+columns, and once under `Human` or `Auto`. Only `Human` + `Auto` reconciles with
+the collected total. They are ordered worst-first — a conflict needs a human to
+rebase, a failing check may only need a re-run, and a draft is not blocked at
+all.
+
+`Auto` recognises the same automation accounts as the
+[`dependamerge`](https://github.com/lfreleng-actions/dependamerge) tool:
+Dependabot, Renovate, pre-commit.ci, `github-actions`, Copilot and
+Allcontributors, by their bare or `[bot]`-suffixed login, plus any actor GitHub
+reports as an App and any unrecognised login carrying the `[bot]` marker — so a
+future bot is classified as automation rather than mistaken for an outside
+contributor.
+
+`Fail` and `Conflict` count only **established** blockers. GitHub computes
+mergeability lazily and answers `UNKNOWN` until it settles, and reports no check
+rollup at all when no checks have run; neither absence is evidence that a pull
+request is ready, so neither is counted either way.
+
+Repositories with no open pull requests are counted in the footer rather than
+listed. Rows rank by total open pull requests, then by those actually blocked
+(`Fail` + `Conflict`), so two repositories with equal backlogs surface the more
+stuck one first.
+
+> **Accuracy note.** As with the issues table, `Total` is exact at any size,
+> while the breakdown columns are computed from a bounded, oldest-first window
+> of 25 open pull requests per repository. A repository whose backlog exceeds
+> that window shows a trailing `+` on its `Total` cell, marking the breakdown as
+> partial; the total itself stays exact.
+
+**Permissions.** A fine-grained PAT needs **Pull requests: read**; a classic
+PAT's `repo` scope already covers it. Without it the connection comes back null
+and affected repositories are reported as `❓ Unknown` rather than as having no
+open pull requests.
+
 ### Inside or outside the organisation
 
-The `Ext` column counts contributions from **outside the organisation**. Two
-pieces of evidence decide it, in this order:
+The `Ext` column on both the Issues and Pull Requests tables counts
+contributions from **outside the organisation**. Two pieces of evidence decide
+it, in this order:
 
 1. **The organisation's membership**, collected once per organisation in a
    single GraphQL query (one page per 100 members) and reused for every
-   repository.
+   repository and every table.
 2. **GitHub's per-item `authorAssociation`**, consulted when the author is not a
    known member. This is what recognises a repository-level *collaborator* who
    holds no organisation membership.
@@ -560,8 +635,9 @@ counts depend on which token produced the report, and a token lacking
 
 **Automation is never counted as external.** Bots are outsiders by association —
 `dependabot[bot]` genuinely reports `CONTRIBUTOR` or `NONE` — so counting on
-association alone would file every automated contribution as an external one and
-bury the genuine outside contributors the column exists to surface.
+association alone would file every dependency-update pull request as an external
+contribution and bury the genuine outside contributors the column exists to
+surface. Automation is reported under `Auto` instead.
 
 An author who cannot be classified at all — a deleted account, or an
 association value GitHub has newly introduced — is **not** counted as external.

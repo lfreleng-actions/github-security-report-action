@@ -41,6 +41,7 @@ class CategoryKey(str, Enum):
     MUTABLE_RELEASES = "mutable_releases"
     PRIVATE_VULNERABILITY_REPORTING = "private_vulnerability_reporting"
     GITHUB_ISSUES = "github_issues"
+    PULL_REQUESTS = "pull_requests"
 
 
 @dataclass(frozen=True)
@@ -277,6 +278,28 @@ _CATEGORIES: dict[CategoryKey, CategoryMeta] = {
             "the column to watch -- an unlabelled issue has not been triaged. "
             "Ext counts issues raised from outside the organisation. "
             "Ranked by total open issues, then by Untriaged."
+        ),
+    ),
+    CategoryKey.PULL_REQUESTS: CategoryMeta(
+        key=CategoryKey.PULL_REQUESTS,
+        title="Pull Requests",
+        pass_label="No open pull requests",
+        # "All No open pull requests" does not parse; the collapsed line reads
+        # "All Clean", matching the other categories' vocabulary.
+        pass_all_label="Clean",
+        fail_label="With open pull requests",
+        url="https://docs.github.com/en/pull-requests",
+        description=(
+            "Open pull requests per repository, split by who raised them and "
+            "what is holding them up. Human and Auto partition the total by "
+            "author: Auto counts recognised automation (Dependabot, "
+            "pre-commit.ci, Renovate and the like), Human counts everyone "
+            "else. Ext counts the human pull requests raised from outside the "
+            "organisation, so it is a subset of Human and never counts a bot. "
+            "Conflict (blocked on a merge conflict), Fail (blocked on failing "
+            "checks) and Draft are independent of the author split and of each "
+            "other, so one pull request can appear in more than one of them. "
+            "Ranked by total open pull requests, then by those blocked."
         ),
     ),
 }

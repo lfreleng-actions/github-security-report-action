@@ -78,6 +78,15 @@ _CODE_SCANNING_SIGNAL_TOOLS = tuple(CODE_SCANNING_TOOLS.values())
 # can be reported as partially classified rather than silently mislabelled.
 _ISSUE_WINDOW = 25
 _ISSUE_LABEL_WINDOW = 5
+# Open pull requests ride the same batched prefetch, and are windowed and
+# ordered on the same basis as the issues connection: ``totalCount`` keeps the
+# headline exact at any backlog size, while the bounded, oldest-first window
+# points the per-PR breakdown (automation, drafts, external, blocked) at the
+# most-aged -- so most review-worthy -- pull requests. Measured against a
+# five-repository batch, adding this connection together with the head commit's
+# check rollup moved the query cost from 1 point to 3, and adds no extra HTTP
+# request at all, since it rides a query the run already makes.
+_PULL_REQUEST_WINDOW = 25
 _REPO_GRAPH_FRAGMENT = f"""\
 fragment RepoData on Repository {{
   hasVulnerabilityAlertsEnabled
@@ -112,6 +121,20 @@ fragment RepoData on Repository {{
       authorAssociation
       author {{ __typename login }}
       labels(first: {_ISSUE_LABEL_WINDOW}) {{ totalCount nodes {{ name }} }}
+    }}
+  }}
+  pullRequests(states: OPEN, first: {_PULL_REQUEST_WINDOW},
+               orderBy: {{field: CREATED_AT, direction: ASC}}) {{
+    totalCount
+    nodes {{
+      number
+      isDraft
+      mergeable
+      authorAssociation
+      author {{ __typename login }}
+      commits(last: 1) {{
+        nodes {{ commit {{ statusCheckRollup {{ state }} }} }}
+      }}
     }}
   }}
 }}

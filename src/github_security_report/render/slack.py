@@ -368,6 +368,7 @@ def render_org_blocks(
     add_table(org.mutable_releases)
     add_table(org.private_vulnerability_reporting)
     add_table(org.issues)
+    add_table(org.pull_requests)
     if pages_url:
         # Link straight to this organisation's latest report page rather than
         # the Pages index: the digest is per-org, so the index is a detour.

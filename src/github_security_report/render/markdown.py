@@ -328,6 +328,7 @@ def render_org(
     table(org.mutable_releases)
     table(org.private_vulnerability_reporting)
     table(org.issues)
+    table(org.pull_requests)
     return "\n".join(parts).rstrip() + "\n"
 
 

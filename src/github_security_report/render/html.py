@@ -267,6 +267,7 @@ def render_org_html(
             mutable_releases=table(org.mutable_releases),
             private_vulnerability_reporting=table(org.private_vulnerability_reporting),
             issues=table(org.issues),
+            pull_requests=table(org.pull_requests),
             datatables_version=DATATABLES_VERSION,
             datatables_css_sri=DATATABLES_CSS_SRI,
             datatables_js_sri=DATATABLES_JS_SRI,
