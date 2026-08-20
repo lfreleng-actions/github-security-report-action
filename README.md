@@ -668,9 +668,55 @@ appearing as a row of zeros, keeping the table to your actual inbox.
 > token legitimately answers a different question. A scheduled run under a bot
 > or GitHub App token has no personal queue: `Mine` reads `0`, everything
 > assigned counts under `Others`, and the Assigned to Me table renders empty
-> rather than claiming somebody else's work. Turn the table off for such runs
-> with `"categories": {"pull_requests_assigned": {"enabled": false}}`, or hide
-> it per surface with the usual `outputs` toggles.
+> rather than claiming somebody else's work.
+
+**It is a terminal-only table by default.** A personal review queue keyed to
+whichever account ran the report has no business in a published Pages site or a
+shared Slack digest, so `pull_requests_assigned` ships with `cli` on and
+`markdown`, `html` and `slack` off. No configuration is needed to keep it out of
+shared output, and tuning another of its settings (a `top_n`, say) will not
+silently publish it, since the per-category blocks merge key by key. Opt in
+deliberately if you want it published:
+
+```json
+{
+  "report": {
+    "categories": {
+      "pull_requests_assigned": { "outputs": { "html": true } }
+    }
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
+
+### Hiding a category for one run
+
+`--hide <category>` (repeatable) suppresses a category on **every** output for
+that invocation, and **outranks the configuration**:
+
+```bash
+github-security-report report --hide pull_requests_assigned
+```
+
+The Action exposes the same control, defaulting to the personal queue so a
+workflow publishes shared artifacts safely without any config at all:
+
+```yaml
+- uses: lfreleng-actions/github-security-report-action@v1
+  with:
+    hide: "pull_requests_assigned"   # space- or comma-separated; this is the default
+```
+
+It is deliberately **one-way**: naming a category can only suppress it, never
+re-enable one the configuration disabled. That means a CI invocation can keep
+something off a published surface without knowing, or contradicting, what the
+shared configuration asked for — and cannot accidentally publish something an
+operator switched off. An unrecognised category name is rejected with exit `2`
+rather than ignored, since a silently-ignored typo would publish the very thing
+the flag was meant to hide.
+
+`report.json` is unaffected: it is the complete machine-readable dataset, so the
+render toggles never filter it.
 
 `Auto` recognises the same automation accounts as the
 [`dependamerge`](https://github.com/lfreleng-actions/dependamerge) tool:
@@ -838,6 +884,7 @@ and the Slack **bot token** is consumed by the workflow, not the CLI.
 | `top_n_slack` | No | — | Offenders per signal in the Slack digest (`0` = no limit; overrides `top_n`) |
 | `fail_threshold` | No | `none` | `none`/`low`/`medium`/`high`/`critical`/`any` (repo mode) |
 | `force_notify` | No | `false` | Post to Slack regardless of `report_day` |
+| `hide` | No | `pull_requests_assigned` | Category keys to suppress on every output (space- or comma-separated). Overrides config, and is one-way: it cannot re-enable a disabled category |
 | `tool_version` | No | `""` | Published PyPI version to install. Empty (the default) uses the Dependabot-managed pin in `.github/runtime-pin/requirements.txt`; set a specific version to override. Ignored on pull requests or when `use_local_source` is `true` (both run from source) |
 | `use_local_source` | No | `false` | Run from the checked-out source instead of PyPI (for testing unreleased code from any event) |
 

@@ -389,6 +389,38 @@ class TestCategoryToggles:
             assert rc.shows_category(CategoryKey.CODEQL, output)
             assert rc.shows_category(CategoryKey.MUTABLE_RELEASES, output)
 
+    def test_assigned_pull_requests_defaults_to_the_terminal_only(self) -> None:
+        # A personal review queue, keyed to whichever account the run
+        # authenticated as, must not land in a published Pages site or a shared
+        # Slack digest just because nobody configured it.
+        rc = config.build_config(MINIMAL).report
+        assert rc.shows_category(CategoryKey.PULL_REQUESTS_ASSIGNED, "cli")
+        for output in ("slack", "markdown", "html"):
+            assert not rc.shows_category(CategoryKey.PULL_REQUESTS_ASSIGNED, output)
+
+    def test_configuring_another_field_keeps_the_restricted_surfaces(self) -> None:
+        # Per-key merging means an operator tuning one setting must not silently
+        # publish the category everywhere as a side effect.
+        data = {
+            "report": {"categories": {"pull_requests_assigned": {"top_n": 5}}},
+            "organizations": [{"name": "o"}],
+        }
+        rc = config.build_config(data).report
+        assert rc.shows_category(CategoryKey.PULL_REQUESTS_ASSIGNED, "cli")
+        assert not rc.shows_category(CategoryKey.PULL_REQUESTS_ASSIGNED, "html")
+
+    def test_the_restriction_can_be_lifted_deliberately(self) -> None:
+        data = {
+            "report": {
+                "categories": {
+                    "pull_requests_assigned": {"outputs": {"html": True}},
+                }
+            },
+            "organizations": [{"name": "o"}],
+        }
+        rc = config.build_config(data).report
+        assert rc.shows_category(CategoryKey.PULL_REQUESTS_ASSIGNED, "html")
+
     def test_global_enabled_false_hides_on_all_outputs(self) -> None:
         data = {
             "report": {"categories": {"zizmor": {"enabled": False}}},

@@ -20,6 +20,7 @@ from rich.console import Console
 
 from github_security_report import __version__, gitctx, runner
 from github_security_report import remediate as remediate_mod
+from github_security_report.categories import CategoryKey
 from github_security_report.cli.modes import (
     OrgRunOptions,
     ReleaseOverrides,
@@ -85,6 +86,30 @@ def _check_non_negative(console: Console, name: str, value: int | None) -> None:
     if value is not None and value < 0:
         console.print(f"[red]{name} must be 0 or greater[/red]")
         raise typer.Exit(2)
+
+
+def _resolve_hidden(console: Console, hide: list[str] | None) -> frozenset[CategoryKey]:
+    """Validate ``--hide`` values into category keys, or abort.
+
+    An unrecognised category is rejected rather than ignored: the point of the
+    flag is to keep something off a published surface, so a typo that silently
+    published it anyway would be the one failure mode that matters.
+    """
+    if not hide:
+        return frozenset()
+    valid = {key.value: key for key in CategoryKey}
+    unknown = sorted({name for name in hide if name not in valid})
+    if unknown:
+        # markup=False: the user-supplied values are printed literally, so
+        # bracketed input cannot be interpreted as Rich markup.
+        console.print(
+            f"Unknown --hide category: {', '.join(unknown)}. "
+            f"Valid values: {', '.join(sorted(valid))}",
+            style="red",
+            markup=False,
+        )
+        raise typer.Exit(2)
+    return frozenset(valid[name] for name in hide)
 
 
 @app.command()
@@ -160,6 +185,11 @@ def report(
         "--releases-exclude",
         help="Repository name to omit from the Releases/Tagging table (repeatable; overrides config).",
     ),
+    hide: list[str] | None = typer.Option(
+        None,
+        "--hide",
+        help="Category to suppress on every output (repeatable; overrides config, which cannot re-enable it).",
+    ),
     no_color: bool = typer.Option(False, "--no-color", help="Disable coloured output."),
 ) -> None:
     """Generate a security and quality report."""
@@ -179,6 +209,8 @@ def report(
 
     _check_non_negative(console, "--repo-min-age-days", repo_min_age_days)
     _check_non_negative(console, "--release-max-age-days", release_max_age_days)
+
+    hidden = _resolve_hidden(console, hide)
 
     cfg = _load_config(config_file, config_data, org, token_env, console=console)
     detected: tuple[str, str] | None = None
@@ -221,6 +253,7 @@ def report(
                 release_max_age_days=release_max_age_days,
                 releases_exclude=tuple(releases_exclude) if releases_exclude else None,
             ),
+            hidden=hidden,
         )
         try:
             code = asyncio.run(_run_org(cfg, options, console=console))

@@ -147,6 +147,10 @@ class OrgRunOptions:
     force_notify: bool = False
     limits: TopNLimits = field(default_factory=TopNLimits)
     releases: ReleaseOverrides = field(default_factory=ReleaseOverrides)
+    # Categories the invocation suppressed outright. Outranks the config, so a
+    # scheduled run can keep a reader-specific category out of its published
+    # artifacts without editing (or contradicting) the shared configuration.
+    hidden: frozenset[CategoryKey] = frozenset()
 
 
 async def _collect_reports(
@@ -179,7 +183,12 @@ async def _collect_reports(
 
 
 def _write_pages(
-    pairs: list[OrgPair], output_dir: Path, *, console: Console, limits: TopNLimits
+    pairs: list[OrgPair],
+    output_dir: Path,
+    *,
+    console: Console,
+    limits: TopNLimits,
+    hidden: frozenset[CategoryKey] = frozenset(),
 ) -> None:
     """Write the GitHub Pages artifacts: per-org files plus the shared index."""
     for org_cfg, org_report in pairs:
@@ -189,6 +198,7 @@ def _write_pages(
             top_n=limits.resolve(org_cfg, "report"),
             limit=limits.resolver(org_cfg, "report"),
             report_cfg=org_cfg.report,
+            hidden=hidden,
         )
     (output_dir / "index.html").write_text(
         html_render.render_index_html([report for _, report in pairs]),
@@ -244,7 +254,7 @@ def _slack_digest(
             pages_url=options.pages_url,
             # A category shows in the channel digest when any contributing org
             # would show it on Slack (mirrors the most-generous top_n rule).
-            show=slack_show(items),
+            show=slack_show(items, options.hidden),
             limit=slack_limit(items, options.limits),
         )
         for channel, items in by_channel.items()
@@ -265,14 +275,18 @@ def _write_slack_payloads(payloads: list[dict], output_dir: Path) -> None:
         dest.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def _summary(pairs: list[OrgPair], limits: TopNLimits) -> str:
+def _summary(
+    pairs: list[OrgPair],
+    limits: TopNLimits,
+    hidden: frozenset[CategoryKey] = frozenset(),
+) -> str:
     """The job summary, mirroring the GitHub Pages Markdown for every org."""
     return (
         "\n\n".join(
             md_render.render_org(
                 org_report,
                 top_n=limits.resolve(org_cfg, "report"),
-                show=show(org_cfg.report, "markdown"),
+                show=show(org_cfg.report, "markdown", hidden),
                 limit=limits.resolver(org_cfg, "report"),
             )
             for org_cfg, org_report in pairs
@@ -296,14 +310,20 @@ async def _run_org(cfg: Config, options: OrgRunOptions, *, console: Console) -> 
             org_report,
             console,
             top_n=limits.resolve(org_cfg, "cli"),
-            show=show(org_cfg.report, "cli"),
+            show=show(org_cfg.report, "cli", options.hidden),
             limit=limits.resolver(org_cfg, "cli"),
         )
     if options.output_dir:
-        _write_pages(pairs, options.output_dir, console=console, limits=limits)
+        _write_pages(
+            pairs,
+            options.output_dir,
+            console=console,
+            limits=limits,
+            hidden=options.hidden,
+        )
 
     runner.write_github_output(_slack_digest(pairs, options, now=now))
-    runner.append_step_summary(_summary(pairs, limits))
+    runner.append_step_summary(_summary(pairs, limits, options.hidden))
     return 0
 
 

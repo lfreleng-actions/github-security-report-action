@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -89,21 +89,41 @@ def most_generous(limits: list[int]) -> int:
     return max(limits)
 
 
-def show(report_cfg: ReportConfig, output: str) -> Callable[[CategoryKey], bool]:
-    """A per-output category-visibility predicate for the render surfaces."""
-    return lambda key: report_cfg.shows_category(key, output)
+def show(
+    report_cfg: ReportConfig,
+    output: str,
+    hidden: Collection[CategoryKey] = (),
+) -> Callable[[CategoryKey], bool]:
+    """A per-output category-visibility predicate for the render surfaces.
+
+    ``hidden`` is the command line's explicit suppression list and outranks the
+    configuration entirely, matching the rule the row limits already follow: a
+    flag is a decision about this one run. It is one-way on purpose -- it can
+    hide a category the config would show, but never reveal one the config
+    disabled -- so a CI invocation can suppress a category without having to
+    know, or contradict, what the config asked for.
+    """
+    suppressed = frozenset(hidden)
+    return lambda key: key not in suppressed and report_cfg.shows_category(key, output)
 
 
 def slack_show(
     items: list[tuple[OrgConfig, OrgReport]],
+    hidden: Collection[CategoryKey] = (),
 ) -> Callable[[CategoryKey], bool]:
     """Slack visibility for a channel: show a category if any org would.
 
     Orgs sharing a Slack channel render into one digest, so a category appears
     when any contributing org would show it on Slack -- mirroring the
-    most-generous ``top_n`` rule for the same grouping.
+    most-generous ``top_n`` rule for the same grouping. An explicitly hidden
+    category is suppressed for the whole digest regardless, since the request
+    was made of the run rather than of one organisation.
     """
-    return lambda key: any(oc.report.shows_category(key, "slack") for oc, _ in items)
+    suppressed = frozenset(hidden)
+    return lambda key: (
+        key not in suppressed
+        and any(oc.report.shows_category(key, "slack") for oc, _ in items)
+    )
 
 
 def slack_limit(
@@ -127,6 +147,7 @@ def write_org_files(
     top_n: int | None = None,
     limit: LimitFor | None = None,
     report_cfg: ReportConfig,
+    hidden: Collection[CategoryKey] = (),
 ) -> None:
     """Write one org's Markdown, HTML and JSON artifacts under ``output_dir``."""
     slug = html_render.slugify(org.org)
@@ -134,13 +155,16 @@ def write_org_files(
     org_dir.mkdir(parents=True, exist_ok=True)
     (org_dir / "report.md").write_text(
         md_render.render_org(
-            org, top_n=top_n, show=show(report_cfg, "markdown"), limit=limit
+            org,
+            top_n=top_n,
+            show=show(report_cfg, "markdown", hidden),
+            limit=limit,
         ),
         encoding="utf-8",
     )
     (org_dir / "report.html").write_text(
         html_render.render_org_html(
-            org, top_n=top_n, show=show(report_cfg, "html"), limit=limit
+            org, top_n=top_n, show=show(report_cfg, "html", hidden), limit=limit
         ),
         encoding="utf-8",
     )

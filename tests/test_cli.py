@@ -204,6 +204,72 @@ def test_org_mode_uses_default_config(
 
 
 @respx.mock
+def test_hide_suppresses_a_category_the_config_enables() -> None:
+    # The suppression is a decision about this run, so it outranks the shared
+    # configuration -- a scheduled job can keep a reader-specific table out of
+    # its published artifacts without editing the config every org shares.
+    _mock_org_o_r()
+    data = json.dumps(
+        {
+            "report": {
+                "categories": {
+                    "pull_requests_assigned": {
+                        "enabled": True,
+                        "outputs": {"cli": True},
+                    }
+                }
+            },
+            "organizations": [{"name": "o", "token_env": "GITHUB_TOKEN"}],
+        }
+    )
+    shown = cli.invoke(app, ["report", "--config-data", data, "--no-color"])
+    assert shown.exit_code == 0, shown.stdout
+    assert "Assigned to Me" in shown.stdout
+
+    hidden = cli.invoke(
+        app,
+        [
+            "report",
+            "--config-data",
+            data,
+            "--hide",
+            "pull_requests_assigned",
+            "--no-color",
+        ],
+    )
+    assert hidden.exit_code == 0, hidden.stdout
+    assert "Assigned to Me" not in hidden.stdout
+
+
+@respx.mock
+def test_hide_cannot_re_enable_a_disabled_category() -> None:
+    # One-way by design: naming a category can only ever suppress it, so a
+    # caller cannot accidentally publish something the config switched off.
+    _mock_org_o_r()
+    data = json.dumps(
+        {
+            "report": {"categories": {"pull_requests_assigned": {"enabled": False}}},
+            "organizations": [{"name": "o", "token_env": "GITHUB_TOKEN"}],
+        }
+    )
+    result = cli.invoke(app, ["report", "--config-data", data, "--no-color"])
+    assert result.exit_code == 0, result.stdout
+    assert "Assigned to Me" not in result.stdout
+
+
+def test_unknown_hide_category_is_rejected() -> None:
+    # A typo that silently published the category anyway would be the one
+    # failure mode this flag exists to prevent.
+    result = cli.invoke(
+        app, ["report", "--org", "o", "--hide", "pull_requests_assigne", "--no-color"]
+    )
+    assert result.exit_code == 2
+    assert "Unknown --hide category" in result.stdout
+    # The message must name the valid values, since the keys are not guessable.
+    assert "pull_requests_assigned" in result.stdout
+
+
+@respx.mock
 def test_rejected_credentials_abort_instead_of_reporting_no_data() -> None:
     # A rotated, expired or revoked token used to produce a full report saying
     # "0 repositories analysed" with every section "No data" / "All Clean".
