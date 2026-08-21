@@ -42,8 +42,18 @@ def _org_graphql_side(request: httpx.Request) -> httpx.Response:
     Returns a minimal repository node per alias (alerts enabled, no config, no
     tags, no releases), mirroring the shape :func:`client.repo_graph_batch`
     expects so org-mode tests need no per-repo dependabot.yml/releases mocks.
+
+    The viewer query is answered with a human account, since that is the
+    ordinary case: a run authenticated as a person is what makes the personal
+    review queue meaningful, and therefore what the visibility rules around it
+    are worth exercising.
     """
-    variables = json.loads(request.content).get("variables", {})
+    payload = json.loads(request.content)
+    if "viewer {" in payload.get("query", ""):
+        return httpx.Response(
+            200, json={"data": {"viewer": {"__typename": "User", "login": "alice"}}}
+        )
+    variables = payload.get("variables", {})
     data: dict[str, object] = {}
     for key in variables:
         if not key.startswith("n"):

@@ -23,6 +23,12 @@ The same bounded-window caveat as the issues table applies: ``Total`` is exact
 at any size because it comes from ``totalCount``, while the breakdown columns
 only see the collected window, so they can sum to less than ``Total``. A row
 whose window truncated is marked, so a partial breakdown is visible as such.
+
+**Who is expected to move it.** Aggregate rows beneath the totals split the
+same pull requests by assignment. Only ``Unassigned`` is a property of the pull
+request itself; ``Mine`` and ``Others`` are read relative to the account the
+report authenticated as, and so are confined twice over -- to runs that
+authenticated as a person, and to the surface that person reads.
 """
 
 from __future__ import annotations
@@ -67,11 +73,18 @@ ALL_COLUMNS = (REPOSITORY_COLUMN, *BREAKDOWN_COLUMNS, TOTAL_COLUMN)
 
 # Aggregate rows drawn beneath the totals, splitting the same pull requests by
 # who is expected to move them. A partition, not another set of columns: every
-# collected pull request falls in exactly one, so the three sum to the total.
+# collected pull request falls in exactly one, so the rows sum to the total.
+#
+# Only ``Unassigned`` is a fact about the pull request. ``Mine`` and ``Others``
+# are read relative to the account the report authenticated as, so they exist
+# only when that account is a person (see :func:`assignment_rows`) and are
+# rendered only on the surface that person reads (see
+# ``TableSection.personal_footer_labels``).
 UNASSIGNED_ROW = "Unassigned"
 OTHERS_ROW = "Others"
 MINE_ROW = "Mine"
-ASSIGNMENT_ROWS = (UNASSIGNED_ROW, OTHERS_ROW, MINE_ROW)
+PERSONAL_ASSIGNMENT_ROWS = (OTHERS_ROW, MINE_ROW)
+ASSIGNMENT_ROWS = (UNASSIGNED_ROW, *PERSONAL_ASSIGNMENT_ROWS)
 
 # Marker appended to a repository's total when its open pull requests exceed the
 # collected window, so a partial breakdown is visible as such.
@@ -144,21 +157,37 @@ def is_mine(pull: PullRequestRef, viewer: str) -> bool:
     return bool(viewer) and viewer in pull.assignees
 
 
+def assignment_rows(viewer: str) -> tuple[str, ...]:
+    """The assignment rows a run with this ``viewer`` can honestly draw.
+
+    With a personal account, all three: the reader can place themselves in the
+    breakdown. Without one -- a bot or App token, or an account that could not
+    be read -- ``Mine`` is empty by construction and ``Others`` degenerates into
+    "assigned to somebody", a partition drawn against a person who is not there.
+    Such a run reports ``Unassigned`` alone, which is a property of the pull
+    request rather than of the token, and loses nothing: the assigned count is
+    the totals row minus that one figure.
+    """
+    return ASSIGNMENT_ROWS if viewer else (UNASSIGNED_ROW,)
+
+
 def assignment_counts(pulls: tuple[PullRequestRef, ...], viewer: str) -> dict[str, int]:
     """Split one repository's pull requests by who they are assigned to.
 
     A pull request assigned to several people, one of whom is the viewer,
     counts as theirs: it is in their queue regardless of who else is on it.
-    That keeps the three buckets a true partition of the collected set.
+    That keeps the buckets a true partition of the collected set.
+
+    Keyed by :func:`assignment_rows`, so a run with no personal account gets no
+    viewer-relative counts at all -- they are not computed, rather than computed
+    and then withheld.
     """
-    counts: dict[str, int] = dict.fromkeys(ASSIGNMENT_ROWS, 0)
+    counts: dict[str, int] = dict.fromkeys(assignment_rows(viewer), 0)
     for pull in pulls:
         if not pull.assignees:
             counts[UNASSIGNED_ROW] += 1
-        elif is_mine(pull, viewer):
-            counts[MINE_ROW] += 1
-        else:
-            counts[OTHERS_ROW] += 1
+        elif viewer:
+            counts[MINE_ROW if is_mine(pull, viewer) else OTHERS_ROW] += 1
     return counts
 
 
@@ -307,6 +336,7 @@ def _build_table(
     rows: list[tuple[int, int, str, TableRow]] = []
     clean_count = 0
     unknown_count = 0
+    footer_labels = assignment_rows(viewer) if footer else ()
     for repo in repos:
         data = graph.get(repo.name, RepoGraphData())
         if select is not None and not viewer:
@@ -362,9 +392,7 @@ def _build_table(
                         warn_threshold=warn_threshold,
                         error_threshold=error_threshold,
                     ),
-                    footer_values=tuple(assigned[label] for label in ASSIGNMENT_ROWS)
-                    if footer
-                    else (),
+                    footer_values=tuple(assigned[label] for label in footer_labels),
                 ),
             )
         )
@@ -393,7 +421,10 @@ def _build_table(
         fail_count=len(rows),
         unknown_count=unknown_count,
         description=description,
-        footer_labels=ASSIGNMENT_ROWS if footer else (),
+        footer_labels=footer_labels,
+        # Declared unconditionally: it names which labels *would* be personal,
+        # and an empty footer has none of them anyway.
+        personal_footer_labels=frozenset(PERSONAL_ASSIGNMENT_ROWS),
     )
 
 
@@ -418,8 +449,9 @@ def build_pull_requests_table(
     The thresholds colour the Auto column (see :func:`automation_level`); both
     default to ``0`` (off), so a caller that does not care about the automation
     cap gets a plainly rendered table. ``viewer`` drives the assignment rows
-    beneath the totals; an empty one still splits Unassigned from Others, and
-    simply finds nothing that is "mine".
+    beneath the totals: with a personal account they partition the backlog into
+    Unassigned, Mine and Others, and without one only Unassigned is drawn (see
+    :func:`assignment_rows`).
     """
     return _build_table(
         graph,
@@ -452,6 +484,8 @@ def build_assigned_pull_requests_table(
     An empty ``viewer`` yields an empty table: a run that could not identify
     its own account (a bot or App token, say) has no personal queue, and
     guessing at one would put somebody else's work under the reader's name.
+    Collection skips the table entirely in that case, so the empty result is a
+    safety net for a direct caller rather than something a report renders.
     """
     return _build_table(
         graph,

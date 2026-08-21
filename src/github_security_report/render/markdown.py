@@ -255,7 +255,9 @@ def render_table_section(
                 + " |"
             )
         # Aggregate rows beneath the totals: a breakdown of the same rows,
-        # arriving full width with the value under the final column.
+        # arriving full width with the value under the final column. Rendered
+        # without ``personal``, so the viewer-relative rows stay out of a file
+        # whose readers are not the account the report ran as.
         for footer_row in table_footer_rows(section, rows):
             lines.append("| " + " | ".join(footer_row) + " |")
         lines.append("")

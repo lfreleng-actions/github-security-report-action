@@ -248,8 +248,11 @@ def render_table_section(
             table.add_section()
             table.add_row(*totals, style="bold")
         # Aggregate rows beneath the totals: a breakdown of the same rows,
-        # arriving full width with the value under the final column.
-        footer = table_footer_rows(section, rows)
+        # arriving full width with the value under the final column. The
+        # terminal is the one surface the account that ran the report reads
+        # itself, so it is the one surface where a viewer-relative row ("Mine")
+        # means what it says.
+        footer = table_footer_rows(section, rows, personal=True)
         if footer:
             table.add_section()
             for cells in footer:

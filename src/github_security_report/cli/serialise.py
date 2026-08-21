@@ -37,7 +37,9 @@ def _table_to_dict(section: TableSection) -> dict:
         # Aggregate rows beneath the totals, over every row (report.json is the
         # unconditionally complete artifact, so nothing here is truncated).
         # Emitted as label/value rather than the renderers' padded row, since a
-        # JSON consumer wants the pair, not the table's column alignment.
+        # JSON consumer wants the pair, not the table's column alignment. The
+        # viewer-relative rows are still omitted: this file is written into the
+        # published Pages directory, where "Mine" names nobody the reader knows.
         "footer_rows": [
             {"label": row[0], "value": row[-1]}
             for row in table_footer_rows(section, section.rows)

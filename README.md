@@ -691,10 +691,38 @@ it is in your queue regardless of who else is on it. Like the totals row, the
 breakdown sums the **displayed** rows, so a row limit does not put it out of
 step with the table above it.
 
-On rows **not** marked `+`, the three buckets reconcile against `Total`. On a
-marked row they cannot: the buckets cover only the collected window while
-`Total` remains the exact backlog, which is what the marker is there to warn
-you about.
+On rows **not** marked `+`, the buckets reconcile against `Total`. On a marked
+row they cannot: the buckets cover only the collected window while `Total`
+remains the exact backlog, which is what the marker is there to warn you about.
+
+##### Only `Unassigned` is universal
+
+`Unassigned` is a fact about the pull request. `Mine` and `Others` are read
+against the account the report authenticated as, and are drawn **only** where
+that reading holds — which needs two things to be true at once:
+
+1. **The run authenticated as a person**, i.e. `viewer { login }` resolved to a
+   human account. A bot or App token has no queue, so `Mine` would be empty by
+   construction and `Others` would collapse into "assigned to somebody" — a
+   split drawn against a person who is not there.
+2. **The surface is read by that account**, i.e. the terminal. A Pages site,
+   Slack digest, `report.md` or `report.json` is read by everybody *except* the
+   token owner, for whom `Mine` names a stranger's queue as their own.
+
+Where either fails, the breakdown is a single `Unassigned` row. Nothing is lost:
+the assigned count is the totals row minus that one figure. So the daily
+scheduled run publishes this to Pages, whatever token it holds:
+
+```text
+├─────────────────────┼───────┼─────┼──────┼──────────┼──────┼───────┼───────┤
+│ Total                │    17 │   0 │    0 │        1 │    1 │     2 │    17 │
+├─────────────────────┼───────┼─────┼──────┼──────────┼──────┼───────┼───────┤
+│ Unassigned           │       │     │      │          │      │       │     1 │
+└─────────────────────┴───────┴─────┴──────┴──────────┴──────┴───────┴───────┘
+```
+
+This is not a configurable toggle. A published `Mine` is not a preference but a
+false statement, so there is nothing to opt into.
 
 ### Assigned to Me
 
@@ -707,9 +735,10 @@ appearing as a row of zeros, keeping the table to your actual inbox.
 > **"Mine" follows the token, not a configured name.** It is whoever
 > `viewer { login }` resolves to, so the same report run with a different
 > token legitimately answers a different question. A scheduled run under a bot
-> or GitHub App token has no personal queue: `Mine` reads `0`, everything
-> assigned counts under `Others`, and the Assigned to Me table renders empty
-> rather than claiming somebody else's work.
+> or GitHub App token has no personal queue at all: the category is not
+> collected, and the section is **absent** rather than reporting every
+> repository clean — a reassuring "nothing assigned to you" about an inbox that
+> does not exist is worse than saying nothing.
 
 **It is a terminal-only table by default.** A personal review queue keyed to
 whichever account ran the report has no business in a published Pages site or a

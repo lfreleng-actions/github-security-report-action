@@ -145,6 +145,9 @@ def _table_context(
             for row in rows
         ],
         "total_cells": list(totals) if totals is not None else None,
+        # Not a personal surface: the Pages site is read by everyone but the
+        # account the report ran as, so the viewer-relative footer rows are
+        # left out and only the objective ones survive.
         "footer_rows": [list(row) for row in table_footer_rows(section, rows)],
         "hidden": hidden,
         "summary": _summary_context(

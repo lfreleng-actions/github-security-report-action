@@ -4,26 +4,36 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import functools
+import json
 from collections.abc import Set
+
+from rich.console import Console
 
 from github_security_report import config, pulls
 from github_security_report.categories import CategoryKey
+from github_security_report.cli.serialise import _org_to_dict
 from github_security_report.models import (
     AuthorRef,
     PullRequestRef,
     Repo,
     RepoGraphData,
 )
+from github_security_report.render import html, markdown, slack, terminal
 from github_security_report.report import (
     CELL_BAD,
     CELL_GOOD,
     CELL_WARN,
+    OrgReport,
     TableRow,
     TableSection,
+    build_org_report,
     table_column_totals,
     table_footer_rows,
 )
+
+WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.timezone.utc)
 
 # The unremarkable case every helper defaults to: a human who is an
 # organisation member, so a plain `_pull()` exercises no classification edge.
@@ -609,18 +619,27 @@ class TestAssignmentBreakdown:
         # It is in my queue regardless of who else is on it.
         assert pulls.is_mine(_pull(1, assignees=("someone-else", "me")), "me")
 
-    def test_unknown_viewer_claims_nothing(self) -> None:
-        # A bot or App token has no personal queue; assigning another person's
-        # backlog to "mine" would be worse than reporting none.
+    def test_unknown_viewer_reports_only_what_is_objective(self) -> None:
+        # A bot or App token has no personal queue. "Mine" would be empty by
+        # construction and "Others" would collapse into "assigned to somebody",
+        # a split drawn against a person who is not there -- so neither is
+        # computed, and the one bucket that is a property of the pull request
+        # rather than of the token stands alone.
         counts = pulls.assignment_counts(self._mixed()["a"].pull_requests, "")
-        assert counts[pulls.MINE_ROW] == 0
-        assert counts[pulls.OTHERS_ROW] == 3
-        assert counts[pulls.UNASSIGNED_ROW] == 1
+        assert counts == {pulls.UNASSIGNED_ROW: 1}
+
+    def test_a_run_without_a_person_draws_one_row(self) -> None:
+        # Nothing is lost: the assigned count is the totals row minus this one.
+        table = _build(self._mixed(), ["a"], viewer="")
+        assert table.footer_labels == (pulls.UNASSIGNED_ROW,)
+        for personal in (False, True):
+            rows = table_footer_rows(table, table.rows, personal=personal)
+            assert [(r[0], r[-1]) for r in rows] == [(pulls.UNASSIGNED_ROW, "1")]
 
     def test_footer_rows_are_declared_and_populated(self) -> None:
         table = _build(self._mixed(), ["a"], viewer="me")
         assert table.footer_labels == pulls.ASSIGNMENT_ROWS
-        rows = table_footer_rows(table, table.rows)
+        rows = table_footer_rows(table, table.rows, personal=True)
         # Full width, so every renderer places the value under the final
         # column. Anything narrower lands it under Human, which would file an
         # unassigned bot pull request as a human one.
@@ -634,11 +653,20 @@ class TestAssignmentBreakdown:
         # not break down by column.
         assert all(set(r[1:-1]) == {""} for r in rows)
 
+    def test_the_viewer_relative_rows_are_declared_personal(self) -> None:
+        # "Mine" and "Others" are read against the account the report ran as, so
+        # a surface that account does not read must be able to drop them without
+        # knowing what a pull request is.
+        table = _build(self._mixed(), ["a"], viewer="me")
+        assert table.personal_footer_labels == frozenset(pulls.PERSONAL_ASSIGNMENT_ROWS)
+        rows = table_footer_rows(table, table.rows)
+        assert [(r[0], r[-1]) for r in rows] == [(pulls.UNASSIGNED_ROW, "1")]
+
     def test_the_value_aligns_under_the_total_column(self) -> None:
         # The buckets partition every collected pull request, automation
         # included, so Total is the only column they are a breakdown of.
         table = _build(self._mixed(), ["a"], viewer="me")
-        row = table_footer_rows(table, table.rows)[0]
+        row = table_footer_rows(table, table.rows, personal=True)[0]
         assert table.columns[-1] == pulls.TOTAL_COLUMN
         assert row[-1] == "1"
         assert row[table.columns.index(pulls.HUMAN_COLUMN)] == ""
@@ -660,7 +688,9 @@ class TestAssignmentBreakdown:
         )
         table = _build(graph, ["big", "small"], viewer="me")
         shown = table.rows[:1]
-        assert [(r[0], r[-1]) for r in table_footer_rows(table, shown)] == [
+        assert [
+            (r[0], r[-1]) for r in table_footer_rows(table, shown, personal=True)
+        ] == [
             (pulls.UNASSIGNED_ROW, "0"),
             (pulls.OTHERS_ROW, "0"),
             (pulls.MINE_ROW, "2"),
@@ -812,3 +842,70 @@ class TestTruncationAndMembershipCaveats:
         assert "lower bound" in described
         assert "Total itself stays exact" not in described
         assert "assignment breakdown" not in described
+
+
+class TestPersonalRowsBySurface:
+    """Where the viewer-relative assignment rows may honestly be drawn.
+
+    "Mine" names the account the report authenticated as, which is the reader
+    only at the terminal. Everything else this tool writes is read by somebody
+    else -- a Pages site, a Slack channel, a committed Markdown file -- where
+    the same row silently reports a stranger's queue as the reader's own.
+    """
+
+    def _org(self, viewer: str = "me") -> OrgReport:
+        graph = _graph(
+            a=RepoGraphData(
+                open_pull_requests=3,
+                pull_requests=(
+                    _pull(1),
+                    _pull(2, assignees=("me",)),
+                    _pull(3, assignees=("someone-else",)),
+                ),
+            )
+        )
+        org = build_org_report("o", [], repo_count=1, generated_at=WHEN)
+        org.pull_requests = _build(graph, ["a"], viewer=viewer)
+        return org
+
+    def test_the_terminal_draws_all_three(self) -> None:
+        console = Console(record=True, width=120, no_color=True)
+        terminal.render_org(self._org(), console)
+        out = console.export_text()
+        assert "Unassigned" in out
+        assert "Others" in out
+        assert "Mine" in out
+
+    def test_markdown_draws_only_the_objective_row(self) -> None:
+        out = markdown.render_org(self._org())
+        assert "| Unassigned |" in out
+        assert "| Mine |" not in out
+        assert "| Others |" not in out
+
+    def test_the_pages_site_draws_only_the_objective_row(self) -> None:
+        out = html.render_org_html(self._org())
+        assert "Unassigned" in out
+        assert "Mine" not in out
+        assert "Others" not in out
+
+    def test_slack_draws_only_the_objective_row(self) -> None:
+        out = json.dumps(slack.render_org_blocks(self._org(), top_n=10, pages_url=None))
+        assert "Unassigned" in out
+        assert "Mine" not in out
+        assert "Others" not in out
+
+    def test_report_json_carries_only_the_objective_row(self) -> None:
+        # Written into the published Pages directory beside the HTML, so it
+        # answers to the same rule the rendered surfaces do.
+        footer = _org_to_dict(self._org())["pull_requests"]["footer_rows"]
+        assert [row["label"] for row in footer] == [pulls.UNASSIGNED_ROW]
+
+    def test_a_run_without_a_person_shows_one_row_even_at_the_terminal(self) -> None:
+        # The second gate, and independent of the surface: with no account to
+        # be "mine", the split is not merely private, it is meaningless.
+        console = Console(record=True, width=120, no_color=True)
+        terminal.render_org(self._org(viewer=""), console)
+        out = console.export_text()
+        assert "Unassigned" in out
+        assert "Others" not in out
+        assert "Mine" not in out

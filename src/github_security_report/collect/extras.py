@@ -104,7 +104,9 @@ async def attach_extra_tables(
     # not enough.
     members = await ctx.client.org_members(ctx.org)
     # "Mine" in the assignment breakdown is the account this run authenticated
-    # as, read once here rather than assumed from configuration.
+    # as, read once here rather than assumed from configuration. Empty when that
+    # account is automation or could not be read, which is what confines the
+    # viewer-relative output below.
     viewer = await ctx.client.viewer_login()
     # Open issues and pull requests come from the same batched GraphQL prefetch
     # as the release and Dependabot data, so the per-repository data costs no
@@ -124,14 +126,19 @@ async def attach_extra_tables(
         error_threshold=report_cfg.dependabot_error_threshold,
         viewer=viewer,
     )
-    report.assigned_pull_requests = build_assigned_pull_requests_table(
-        ctx.graph,
-        in_scope,
-        members=members,
-        warn_threshold=report_cfg.dependabot_warn_threshold,
-        error_threshold=report_cfg.dependabot_error_threshold,
-        viewer=viewer,
-    )
+    # A personal review queue needs a person. Without one the table would be
+    # unconditionally empty, and an "Assigned to Me" section reporting every
+    # repository clean reassures the reader about an inbox that does not exist,
+    # so the category is left uncollected and no surface renders it.
+    if viewer:
+        report.assigned_pull_requests = build_assigned_pull_requests_table(
+            ctx.graph,
+            in_scope,
+            members=members,
+            warn_threshold=report_cfg.dependabot_warn_threshold,
+            error_threshold=report_cfg.dependabot_error_threshold,
+            viewer=viewer,
+        )
     # The Dependabot alerts enablement sub-table carries the repositories with
     # Dependabot alerts disabled, so drop them from the Dependabot signal
     # section's nag list to avoid listing the same repositories twice under the

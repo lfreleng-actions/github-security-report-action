@@ -305,9 +305,12 @@ _CATEGORIES: dict[CategoryKey, CategoryMeta] = {
             "are independent of the author split and of each other, so one "
             "pull request can appear in more than one of them. Ranked by total "
             "open pull requests, then by those failing or conflicting. "
-            "Beneath the totals, the same pull requests are split by who they "
-            "are assigned to: Unassigned, Mine (the account this report ran "
-            "as) and Others."
+            "Beneath the totals, Unassigned counts the pull requests nobody "
+            "has picked up; the rest are on somebody's plate. A terminal run "
+            "that authenticated as a personal account splits that remainder "
+            "again, into the reader's own queue and everyone else's. A "
+            "published report leaves that split out, since its readers are not "
+            "the account it ran as."
         ),
     ),
     CategoryKey.PULL_REQUESTS_ASSIGNED: CategoryMeta(
@@ -321,8 +324,9 @@ _CATEGORIES: dict[CategoryKey, CategoryMeta] = {
             "The Pull Requests table narrowed to those assigned to the account "
             "this report ran as -- a personal review queue, so it changes with "
             "the token used. Columns carry the same meaning as the table "
-            "above. Empty when the account has nothing assigned, or when the "
-            "run used a bot or App token with no personal queue."
+            "above. Empty when the account has nothing assigned; a run that "
+            "authenticated as a bot or App has no personal queue at all, and "
+            "omits this table rather than reporting an empty one."
         ),
     ),
 }

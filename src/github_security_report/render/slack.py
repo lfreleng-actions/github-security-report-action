@@ -256,7 +256,8 @@ def _table_block(
             if totals is not None:
                 cells.append(list(totals))
             # Aggregate rows beneath the totals, already full width so the
-            # fixed-width column alignment holds.
+            # fixed-width column alignment holds. Not a personal surface: a
+            # channel digest is read by the whole team, not by the token owner.
             for footer_row in table_footer_rows(section, shown):
                 cells.append(list(footer_row))
             table = _fixed_table_generic(section.columns, cells)

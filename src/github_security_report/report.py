@@ -237,6 +237,13 @@ class TableSection:
     # slice of the table that is not a column -- a breakdown *of* the rows
     # rather than *within* them. Empty means the table has none.
     footer_labels: tuple[str, ...] = ()
+    # The subset of ``footer_labels`` whose meaning is relative to the account
+    # the report authenticated as ("Mine" and, by implication, "Others").
+    # Those rows answer a question only that account can ask, so they are
+    # rendered solely on the surface that account reads -- the terminal -- and
+    # dropped from every published artifact, where "mine" would name the token
+    # owner rather than the reader. See :func:`table_footer_rows`.
+    personal_footer_labels: frozenset[str] = frozenset()
 
     @property
     def title(self) -> str:
@@ -410,7 +417,7 @@ def table_column_totals(
 
 
 def table_footer_rows(
-    section: TableSection, rows: Sequence[TableRow]
+    section: TableSection, rows: Sequence[TableRow], *, personal: bool = False
 ) -> tuple[tuple[str, ...], ...]:
     """Aggregate rows drawn beneath a table's totals row, full width.
 
@@ -426,6 +433,14 @@ def table_footer_rows(
     column would file an unassigned bot pull request under ``Human``. Returning
     complete rows also keeps every renderer from padding them itself, which is
     where that misalignment came from.
+
+    ``personal`` declares that this surface is read by the account the report
+    ran as, and is the **only** thing that admits the section's
+    ``personal_footer_labels``. It defaults to off, so a surface that says
+    nothing gets the objective rows alone: a published artifact is read by
+    people who are not the token owner, for whom "Mine" names a stranger's
+    queue. Little is lost by omitting them -- the objective rows still sit
+    against the totals row, so what they would have said remains bounded.
 
     Summed over the rows passed in -- the displayed, already-truncated set --
     for the same reason :func:`table_column_totals` is: a footer the reader
@@ -449,6 +464,7 @@ def table_footer_rows(
             ),
         )
         for index, label in enumerate(section.footer_labels)
+        if personal or label not in section.personal_footer_labels
     )
 
 
