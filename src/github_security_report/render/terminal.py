@@ -16,12 +16,16 @@ from dataclasses import replace
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
+from rich.text import Text
 
 from github_security_report.categories import CategoryKey
 from github_security_report.models import Repo, RepoSignal, SignalType
 from github_security_report.remediate import CategoryRemediation
 from github_security_report.render import markdown
 from github_security_report.report import (
+    CELL_BAD,
+    CELL_GOOD,
+    CELL_WARN,
     ORG_SETUP_DOC_URL,
     SKIP_MESSAGE,
     SUMMARY_EMOJI,
@@ -29,11 +33,13 @@ from github_security_report.report import (
     OrgReport,
     SignalSection,
     SummaryLine,
+    TableRow,
     TableSection,
     build_summary,
     limit_resolver,
     section_shows_informational,
     table_column_totals,
+    table_footer_rows,
     truncate,
 )
 
@@ -57,6 +63,16 @@ _SUMMARY_STYLE = {
     "excluded": "blue",
 }
 
+# Rich style per semantic cell level, for the builders that emphasise a cell
+# (see ``report.CELL_LEVELS``). The terminal is the only surface that renders
+# these: Markdown and Slack have no colour, and the HTML pages style their
+# tables from the stylesheet.
+_CELL_LEVEL_STYLE = {
+    CELL_GOOD: "green",
+    CELL_WARN: "yellow",
+    CELL_BAD: "red",
+}
+
 # Label prefixing the repository-name list printed beneath a summary line.
 _NAME_LIST_LABEL = {"disabled": "Disabled", "excluded": "Excluded"}
 
@@ -74,8 +90,7 @@ def _add_columns(
         table.add_column(name.capitalize(), justify="right", style=style)
     if informational:
         table.add_column("Info", justify="right", style=_INFORMATIONAL_STYLE)
-    if signal is not SignalType.SCORECARD:
-        table.add_column("Total", justify="right")
+    table.add_column("Total", justify="right")
 
 
 def _row(sig: RepoSignal, *, informational: bool = False) -> list[str]:
@@ -84,10 +99,12 @@ def _row(sig: RepoSignal, *, informational: bool = False) -> list[str]:
         return [sig.repo.name, str(c.total)]
     base = [str(c.critical), str(c.high), str(c.medium), str(c.low)]
     info = [str(c.informational)] if informational else []
-    if sig.signal is SignalType.SCORECARD:
-        score = f"{sig.score:.1f}" if sig.score is not None else "—"
-        return [sig.repo.name, score, *base, *info]
-    return [sig.repo.name, *base, *info, str(c.total)]
+    score = (
+        [f"{sig.score:.1f}" if sig.score is not None else "—"]
+        if sig.signal is SignalType.SCORECARD
+        else []
+    )
+    return [sig.repo.name, *score, *base, *info, str(c.total)]
 
 
 def _truncated_names(names: Sequence[str], top_n: int | None) -> str:
@@ -176,6 +193,20 @@ def render_section(
     console.print()
 
 
+def _styled_cells(row: TableRow) -> list[Text | str]:
+    """A row's cells, each carrying the emphasis its builder asked for.
+
+    An emphasised cell becomes a :class:`~rich.text.Text`, which Rich renders
+    literally, so the style is applied without the cell's own content ever being
+    parsed as markup. Unemphasised cells keep the existing escaped-string path.
+    """
+    out: list[Text | str] = []
+    for index, cell in enumerate(row.cells):
+        style = _CELL_LEVEL_STYLE.get(row.level(index) or "")
+        out.append(Text(cell, style=style) if style else escape(cell))
+    return out
+
+
 def render_table_section(
     section: TableSection,
     console: Console,
@@ -209,13 +240,23 @@ def render_table_section(
                 escape(col), overflow="fold", justify="left" if i == 0 else "right"
             )
         for row in rows:
-            table.add_row(escape(row.repo.name), *(escape(cell) for cell in row.cells))
+            table.add_row(escape(row.repo.name), *_styled_cells(row))
         # A trailing totals row sums the numeric columns across the rows shown
         # above, matching the offender tables.
         totals = table_column_totals(section, rows)
         if totals is not None:
             table.add_section()
             table.add_row(*totals, style="bold")
+        # Aggregate rows beneath the totals: a breakdown of the same rows,
+        # arriving full width with the value under the final column. The
+        # terminal is the one surface the account that ran the report reads
+        # itself, so it is the one surface where a viewer-relative row ("Mine")
+        # means what it says.
+        footer = table_footer_rows(section, rows, personal=True)
+        if footer:
+            table.add_section()
+            for cells in footer:
+                table.add_row(*(escape(cell) for cell in cells))
         console.print(table)
         if hidden:
             console.print(f"  [dim]\u2026 and {hidden} more[/dim]")
@@ -283,6 +324,8 @@ def render_org(
     table(org.mutable_releases)
     table(org.private_vulnerability_reporting)
     table(org.issues)
+    table(org.pull_requests)
+    table(org.assigned_pull_requests)
 
 
 def render_orgs(

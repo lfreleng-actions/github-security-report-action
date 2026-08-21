@@ -145,6 +145,84 @@ class TestBuildConfig:
         org = config.build_config(data).organizations[0]
         assert org.report.release_max_age_days == 90
 
+    def test_dependabot_thresholds_default_and_override(self) -> None:
+        report = config.build_config(MINIMAL).report
+        # The defaults track GitHub's own open-pull-requests-limit, which
+        # defaults to 5: red at the limit, yellow on the approach to it.
+        assert report.dependabot_warn_threshold == 2
+        assert report.dependabot_error_threshold == 5
+        data = {
+            "report": {
+                "dependabot_warn_threshold": 8,
+                "dependabot_error_threshold": 10,
+            },
+            "organizations": [
+                {"name": "o", "report": {"dependabot_warn_threshold": 5}},
+            ],
+        }
+        org = config.build_config(data).organizations[0]
+        assert org.report.dependabot_warn_threshold == 5
+        assert org.report.dependabot_error_threshold == 10
+
+    def test_error_threshold_below_warn_is_rejected(self) -> None:
+        # Unsatisfiable as written: every value that would warn has already
+        # errored, so the warning colour could never appear. Rejecting beats
+        # silently ignoring one of the two knobs the operator set.
+        data = {
+            "report": {
+                "dependabot_warn_threshold": 20,
+                "dependabot_error_threshold": 10,
+            },
+            "organizations": [{"name": "o"}],
+        }
+        with pytest.raises(ConfigError, match="dependabot_error_threshold"):
+            config.build_config(data)
+
+    def test_a_disabled_error_level_is_not_an_inversion(self) -> None:
+        # 0 is the documented way to switch the error level off, so a
+        # warning-only configuration must load rather than tripping the
+        # ordering check against a threshold that is not in play.
+        data = {
+            "report": {
+                "dependabot_warn_threshold": 12,
+                "dependabot_error_threshold": 0,
+            },
+            "organizations": [{"name": "o"}],
+        }
+        report = config.build_config(data).report
+        assert report.dependabot_warn_threshold == 12
+        assert report.dependabot_error_threshold == 0
+
+    def test_equal_thresholds_are_rejected(self) -> None:
+        # The error level is checked first and inclusively (>= error), so an
+        # equal warning threshold can never be reached -- the warning colour
+        # would be dead configuration rather than a second level.
+        data = {
+            "report": {
+                "dependabot_warn_threshold": 12,
+                "dependabot_error_threshold": 12,
+            },
+            "organizations": [{"name": "o"}],
+        }
+        with pytest.raises(ConfigError, match="greater than"):
+            config.build_config(data)
+
+    def test_org_override_cannot_invert_the_thresholds(self) -> None:
+        # The check runs on the merged result, so an org block that raises warn
+        # above an inherited error is caught rather than silently disabling the
+        # warning level for that one organisation.
+        data = {
+            "report": {
+                "dependabot_warn_threshold": 12,
+                "dependabot_error_threshold": 15,
+            },
+            "organizations": [
+                {"name": "o", "report": {"dependabot_warn_threshold": 30}},
+            ],
+        }
+        with pytest.raises(ConfigError, match="dependabot_error_threshold"):
+            config.build_config(data)
+
     def test_releases_exclude_parsed(self) -> None:
         data = {
             "organizations": [
@@ -340,6 +418,38 @@ class TestCategoryToggles:
         for output in config.REPORT_OUTPUTS:
             assert rc.shows_category(CategoryKey.CODEQL, output)
             assert rc.shows_category(CategoryKey.MUTABLE_RELEASES, output)
+
+    def test_assigned_pull_requests_defaults_to_the_terminal_only(self) -> None:
+        # A personal review queue, keyed to whichever account the run
+        # authenticated as, must not land in a published Pages site or a shared
+        # Slack digest just because nobody configured it.
+        rc = config.build_config(MINIMAL).report
+        assert rc.shows_category(CategoryKey.PULL_REQUESTS_ASSIGNED, "cli")
+        for output in ("slack", "markdown", "html"):
+            assert not rc.shows_category(CategoryKey.PULL_REQUESTS_ASSIGNED, output)
+
+    def test_configuring_another_field_keeps_the_restricted_surfaces(self) -> None:
+        # Per-key merging means an operator tuning one setting must not silently
+        # publish the category everywhere as a side effect.
+        data = {
+            "report": {"categories": {"pull_requests_assigned": {"top_n": 5}}},
+            "organizations": [{"name": "o"}],
+        }
+        rc = config.build_config(data).report
+        assert rc.shows_category(CategoryKey.PULL_REQUESTS_ASSIGNED, "cli")
+        assert not rc.shows_category(CategoryKey.PULL_REQUESTS_ASSIGNED, "html")
+
+    def test_the_restriction_can_be_lifted_deliberately(self) -> None:
+        data = {
+            "report": {
+                "categories": {
+                    "pull_requests_assigned": {"outputs": {"html": True}},
+                }
+            },
+            "organizations": [{"name": "o"}],
+        }
+        rc = config.build_config(data).report
+        assert rc.shows_category(CategoryKey.PULL_REQUESTS_ASSIGNED, "html")
 
     def test_global_enabled_false_hides_on_all_outputs(self) -> None:
         data = {

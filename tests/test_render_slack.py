@@ -37,6 +37,35 @@ def test_payload_shape() -> None:
     assert "lfreleng-actions" in payload["blocks"][0]["text"]["text"]
 
 
+def test_visibility_is_resolved_per_organisation() -> None:
+    # Organisations sharing a channel render into one digest, but visibility is
+    # a property of each one's own data. Pooling it -- as the row limits are
+    # pooled -- would let one organisation's opt-in publish another's, which
+    # for a reader-specific category is a leak rather than an inconsistency.
+    first = report.build_org_report("opted-in", [], repo_count=1, generated_at=WHEN)
+    second = report.build_org_report("opted-out", [], repo_count=1, generated_at=WHEN)
+    first.issues = report.TableSection(
+        category=category_meta(CategoryKey.GITHUB_ISSUES),
+        columns=("Repository", "Total"),
+        rows=[report.TableRow(repo=_repo("shown-repo"), cells=("1",))],
+    )
+    second.issues = report.TableSection(
+        category=category_meta(CategoryKey.GITHUB_ISSUES),
+        columns=("Repository", "Total"),
+        rows=[report.TableRow(repo=_repo("private-repo"), cells=("1",))],
+    )
+
+    def show(org: report.OrgReport, key: CategoryKey) -> bool:
+        return org.org == "opted-in" or key is not CategoryKey.GITHUB_ISSUES
+
+    payload = slack.render_payload([first, second], channel="C123", show=show)
+    text = str(payload["blocks"])
+    assert "shown-repo" in text
+    # The opted-out organisation's row must not appear just because its
+    # channel-mate enabled the category.
+    assert "private-repo" not in text
+
+
 def test_payload_enforces_slack_block_limit() -> None:
     # Many orgs would blow past Slack's 50-block ceiling and make the whole
     # message fail; the payload must be capped with a truncation note instead.

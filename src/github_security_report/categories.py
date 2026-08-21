@@ -41,6 +41,8 @@ class CategoryKey(str, Enum):
     MUTABLE_RELEASES = "mutable_releases"
     PRIVATE_VULNERABILITY_REPORTING = "private_vulnerability_reporting"
     GITHUB_ISSUES = "github_issues"
+    PULL_REQUESTS = "pull_requests"
+    PULL_REQUESTS_ASSIGNED = "pull_requests_assigned"
 
 
 @dataclass(frozen=True)
@@ -101,7 +103,9 @@ _CATEGORIES: dict[CategoryKey, CategoryMeta] = {
         description=(
             "OpenSSF Scorecard supply-chain health scores (a lower score is "
             "weaker). Ranked by the worst severity rung present in the table "
-            "(most findings at that rung first), then weakest score first."
+            "(most findings at that rung first), then weakest score first. "
+            "Total counts findings only; the score is a health rating, not a "
+            "finding count, so it is not part of that sum."
         ),
     ),
     CategoryKey.ZIZMOR: CategoryMeta(
@@ -273,7 +277,56 @@ _CATEGORIES: dict[CategoryKey, CategoryMeta] = {
             "classes. Issues carrying none of the configured labels count as "
             "Other; issues with no labels at all count as Untriaged, which is "
             "the column to watch -- an unlabelled issue has not been triaged. "
+            "Ext counts issues raised from outside the organisation, computed "
+            "from the collected window rather than the whole backlog. "
             "Ranked by total open issues, then by Untriaged."
+        ),
+    ),
+    CategoryKey.PULL_REQUESTS: CategoryMeta(
+        key=CategoryKey.PULL_REQUESTS,
+        title="Pull Requests",
+        pass_label="No open pull requests",
+        # "All No open pull requests" does not parse; the collapsed line reads
+        # "All Clean", matching the other categories' vocabulary.
+        pass_all_label="Clean",
+        fail_label="With open pull requests",
+        url="https://docs.github.com/en/pull-requests",
+        description=(
+            "Open pull requests per repository, split by who raised them and "
+            "what is holding them up. Human and Auto partition the total by "
+            "author: Auto counts recognised automation (Dependabot, "
+            "pre-commit.ci, Renovate and the like), Human counts everyone "
+            "else. Ext counts the human pull requests raised from outside the "
+            "organisation, so it is a subset of Human and never counts a bot. "
+            "Conflict counts pull requests blocked on a merge conflict; Fail "
+            "counts those whose latest checks did not pass, which includes "
+            "optional checks and so is not by itself proof that a merge is "
+            "blocked; Draft counts those still marked as drafts. Those three "
+            "are independent of the author split and of each other, so one "
+            "pull request can appear in more than one of them. Ranked by total "
+            "open pull requests, then by those failing or conflicting. "
+            "Beneath the totals, Unassigned counts the pull requests nobody "
+            "has picked up; the rest are on somebody's plate. A terminal run "
+            "that authenticated as a personal account splits that remainder "
+            "again, into the reader's own queue and everyone else's. A "
+            "published report leaves that split out, since its readers are not "
+            "the account it ran as."
+        ),
+    ),
+    CategoryKey.PULL_REQUESTS_ASSIGNED: CategoryMeta(
+        key=CategoryKey.PULL_REQUESTS_ASSIGNED,
+        title="Assigned to Me",
+        pass_label="None assigned",
+        pass_all_label="Clean",
+        fail_label="With assigned pull requests",
+        url="https://docs.github.com/en/pull-requests",
+        description=(
+            "The Pull Requests table narrowed to those assigned to the account "
+            "this report ran as -- a personal review queue, so it changes with "
+            "the token used. Columns carry the same meaning as the table "
+            "above. Empty when the account has nothing assigned; a run that "
+            "authenticated as a bot or App has no personal queue at all, and "
+            "omits this table rather than reporting an empty one."
         ),
     ),
 }

@@ -135,12 +135,29 @@ class ReleaseRef:
 
 
 @dataclass(frozen=True)
+class AuthorRef:
+    """The identity facts needed to classify who made a contribution.
+
+    Deliberately raw: the transport layer records what GitHub said, and the
+    table builders apply the policy (see :mod:`authors`). ``association`` is
+    GitHub's ``authorAssociation``, which is computed relative to the viewing
+    token and so is evidence rather than a verdict.
+    """
+
+    login: str = ""
+    # GraphQL ``__typename`` of the actor: "User", "Bot", "Organization", ...
+    typename: str = ""
+    association: str = ""
+
+
+@dataclass(frozen=True)
 class IssueRef:
     """One open issue's triage-relevant facts.
 
     Carries only what the open-issues reporting needs: the label set, so issues
-    can be classified into buckets (bug, enhancement, and so on), and the
-    creation time, so the oldest outstanding issue and its age can be reported.
+    can be classified into buckets (bug, enhancement, and so on), the creation
+    time, so the oldest outstanding issue and its age can be reported, and the
+    author, so contributions from outside the organisation can be counted.
     ``created_at`` is ``None`` when GitHub supplied no usable timestamp, in
     which case the issue cannot contribute to the oldest-issue age.
     """
@@ -152,6 +169,35 @@ class IssueRef:
     # so ``labels`` may omit the one that would have classified it.
     labels_truncated: bool = False
     created_at: dt.datetime | None = None
+    # None when GitHub returned no usable author (a deleted account renders the
+    # ``author`` field null), which is distinct from a known insider.
+    author: AuthorRef | None = None
+
+
+@dataclass(frozen=True)
+class PullRequestRef:
+    """One open pull request's review-load facts.
+
+    ``draft`` and the two blocked flags are independent of the author and of
+    each other, so one pull request may be a draft *and* conflicting; the table
+    counts each axis separately rather than bucketing rows.
+    """
+
+    number: int
+    author: AuthorRef | None = None
+    draft: bool = False
+    # Logins of everyone the pull request is assigned to, lower-cased. GitHub
+    # caps assignees at 10, so the collected window is exhaustive and an empty
+    # tuple genuinely means "nobody is assigned" rather than "not read".
+    assignees: tuple[str, ...] = ()
+    # True when GitHub reports the branch as CONFLICTING. None while GitHub has
+    # not finished computing mergeability (it is calculated lazily, and answers
+    # UNKNOWN until then), so a cold sweep reports "not established" rather than
+    # asserting a clean merge it never confirmed.
+    conflicting: bool | None = None
+    # True when the head commit's combined check rollup failed. None when no
+    # checks have run at all, which is not a passing result.
+    failing: bool | None = None
 
 
 @dataclass
@@ -207,6 +253,12 @@ class RepoGraphData:
     # so once entry 0 is lost ``issues[0]`` is merely the oldest *readable*
     # one, and reporting its age would name a newer issue as the oldest.
     oldest_issue_unreadable: bool = False
+    # Total open pull requests, with the same semantics as ``open_issues``:
+    # ``None`` means the connection could not be read at all, never zero.
+    open_pull_requests: int | None = None
+    # A bounded, oldest-first window of those pull requests, which may be
+    # shorter than ``open_pull_requests`` on a busy repository.
+    pull_requests: tuple[PullRequestRef, ...] = ()
 
 
 @dataclass

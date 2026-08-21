@@ -16,7 +16,18 @@ from typing import cast
 
 import httpx
 
-from github_security_report.models import IssueRef, ReleaseRef, RepoGraphData
+from github_security_report.models import (
+    AuthorRef,
+    IssueRef,
+    PullRequestRef,
+    ReleaseRef,
+    RepoGraphData,
+)
+
+# ``statusCheckRollup`` states that mean the head commit's checks did not pass.
+# ``PENDING`` and ``EXPECTED`` are still in flight, and ``SUCCESS`` passed, so
+# none of them blocks a merge the way these do.
+_FAILED_ROLLUP_STATES = frozenset({"FAILURE", "ERROR"})
 
 
 def _parse_iso(value: object) -> dt.datetime | None:
@@ -164,6 +175,28 @@ def _label_names(node: dict) -> tuple[tuple[str, ...], bool]:
     return tuple(names), raw_total > len(names)
 
 
+def _author_ref(node: dict) -> AuthorRef | None:
+    """The author facts from an issue or pull-request node, or None.
+
+    GitHub renders ``author`` as null for a deleted account, which is not the
+    same as an author we chose not to classify, so the absence is preserved.
+    ``authorAssociation`` lives on the item rather than the actor, so it is read
+    from the enclosing node.
+    """
+    author = node.get("author")
+    if not isinstance(author, dict):
+        return None
+    login = author.get("login")
+    if not login:
+        return None
+    association = node.get("authorAssociation")
+    return AuthorRef(
+        login=str(login),
+        typename=str(author.get("__typename") or ""),
+        association=str(association or ""),
+    )
+
+
 def _issue_ref(node: object) -> IssueRef | None:
     """One parsed issue, or None when the node is unusable.
 
@@ -183,6 +216,7 @@ def _issue_ref(node: object) -> IssueRef | None:
         labels=labels,
         labels_truncated=labels_truncated,
         created_at=_parse_iso(node.get("createdAt")),
+        author=_author_ref(node),
     )
 
 
@@ -232,6 +266,107 @@ def _issue_refs(issues: object) -> tuple[int | None, tuple[IssueRef, ...], bool]
     return total, tuple(refs), lead_unreadable
 
 
+def _check_rollup_failed(node: dict) -> bool | None:
+    """Whether the head commit's combined check rollup reports a failure.
+
+    ``None`` means no rollup at all -- a pull request whose checks have not run
+    (or a repository with no CI) has not passed, so it must not be folded in
+    with the successes. Only the states GitHub documents as terminal failures
+    count; ``PENDING`` and ``EXPECTED`` are still in flight.
+
+    The rollup combines *every* check and status on the commit, required or
+    not, so a failure here means "something failed" rather than "the merge is
+    blocked": an optional check can fail while the pull request stays
+    mergeable. Establishing the stronger claim would need each repository's
+    branch-protection rules, which is a request per repository for a column
+    that reads the same either way -- so the column reports the weaker,
+    accurate fact and is named and described accordingly.
+    """
+    commits = node.get("commits")
+    if not isinstance(commits, dict):
+        return None
+    nodes = commits.get("nodes") or []
+    if not nodes or not isinstance(nodes[0], dict):
+        return None
+    commit = nodes[0].get("commit")
+    if not isinstance(commit, dict):
+        return None
+    rollup = commit.get("statusCheckRollup")
+    if not isinstance(rollup, dict):
+        return None
+    state = rollup.get("state")
+    if not isinstance(state, str):
+        return None
+    return state in _FAILED_ROLLUP_STATES
+
+
+def _assignee_logins(node: dict) -> tuple[str, ...]:
+    """Lower-cased logins a pull request is assigned to.
+
+    Lower-cased at the boundary so the "is this mine?" comparison never has to
+    worry about the casing GitHub happened to return for either side.
+    """
+    assignees = node.get("assignees")
+    if not isinstance(assignees, dict):
+        return ()
+    logins: list[str] = []
+    for entry in assignees.get("nodes") or []:
+        if isinstance(entry, dict) and (login := entry.get("login")):
+            logins.append(str(login).lower())
+    return tuple(logins)
+
+
+def _pull_request_ref(node: object) -> PullRequestRef | None:
+    """One parsed pull request, or None when the node is unusable."""
+    if not isinstance(node, dict):
+        return None
+    number = node.get("number")
+    if not isinstance(number, int) or isinstance(number, bool):
+        return None
+    mergeable = node.get("mergeable")
+    # GitHub computes mergeability lazily and answers UNKNOWN until it settles,
+    # so only an explicit CONFLICTING is a conflict and only an explicit
+    # MERGEABLE is a clean merge. Anything else leaves the question open.
+    conflicting: bool | None = None
+    if mergeable == "CONFLICTING":
+        conflicting = True
+    elif mergeable == "MERGEABLE":
+        conflicting = False
+    return PullRequestRef(
+        number=number,
+        author=_author_ref(node),
+        draft=bool(node.get("isDraft")),
+        assignees=_assignee_logins(node),
+        conflicting=conflicting,
+        failing=_check_rollup_failed(node),
+    )
+
+
+def _pull_request_refs(
+    pulls: object,
+) -> tuple[int | None, tuple[PullRequestRef, ...]]:
+    """Open pull-request total and window from a ``pullRequests`` connection.
+
+    Mirrors :func:`_issue_refs`: a missing or failed connection returns
+    ``(None, ())`` rather than ``(0, ())``, so a repository whose pull requests
+    were never readable is reported as unknown instead of as having none open.
+    """
+    if not isinstance(pulls, dict):
+        return None, ()
+    raw_total = pulls.get("totalCount")
+    total = (
+        raw_total
+        if isinstance(raw_total, int) and not isinstance(raw_total, bool)
+        else None
+    )
+    refs: list[PullRequestRef] = []
+    for node in pulls.get("nodes") or []:
+        ref = _pull_request_ref(node)
+        if ref is not None:
+            refs.append(ref)
+    return total, tuple(refs)
+
+
 def _parse_repo_node(node: dict) -> RepoGraphData:
     """Map one repository alias from the batched query to ``RepoGraphData``.
 
@@ -262,6 +397,7 @@ def _parse_repo_node(node: dict) -> RepoGraphData:
     if latest is not None and all(r.tag != latest.tag for r in candidates):
         candidates.append(latest)
     open_issues, issues, oldest_unreadable = _issue_refs(node.get("issues"))
+    open_pulls, pulls = _pull_request_refs(node.get("pullRequests"))
     return RepoGraphData(
         dependabot_alerts_enabled=enabled,
         latest_tag_at=_tag_committed_date(node.get("tags")),
@@ -272,4 +408,6 @@ def _parse_repo_node(node: dict) -> RepoGraphData:
         open_issues=open_issues,
         issues=issues,
         oldest_issue_unreadable=oldest_unreadable,
+        open_pull_requests=open_pulls,
+        pull_requests=pulls,
     )

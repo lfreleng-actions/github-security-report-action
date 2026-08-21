@@ -85,6 +85,23 @@ async def _endpoint_diagnostics(url: str) -> str:
     return f"host={host} ip={addr} port={port}"
 
 
+class AuthError(NetworkError):
+    """GitHub rejected the credentials (HTTP 401).
+
+    Distinct from the permission-shaped failures the report degrades over. A
+    403 usually means "this token cannot see this one feature", which is a
+    legitimate per-signal unknown; a 401 means the token itself is invalid,
+    expired or revoked, so every remaining read fails the same way. Degrading
+    would render a confident "all clean" report out of nothing but rejections
+    -- the false negative a security report must never publish, and one that a
+    scheduled run would happily push to GitHub Pages over a good report.
+
+    Subclasses :class:`NetworkError` so any caller already aborting on an
+    unusable API keeps doing so; the CLI catches it first to report the cause
+    and exit with its own status.
+    """
+
+
 class Transport:
     """Connection lifecycle plus the shared retry/backoff request primitives."""
 
@@ -169,7 +186,9 @@ class Transport:
         same schedule and, once exhausted, return the response for the caller
         to handle: per-signal probes degrade to unknown, while callers whose
         data is load-bearing (the GraphQL prefetch) abort the run instead of
-        fabricating results.
+        fabricating results. A 401 from the GitHub API is never degraded or
+        retried: it condemns every remaining read, so it raises
+        :class:`AuthError` immediately.
         """
         http = client or self._client
         is_external = http is self._ext_client
@@ -221,6 +240,20 @@ class Transport:
                 waited += delay
                 attempt += 1
                 continue
+            if resp.status_code == 401 and not is_external:
+                # Credentials rejected: fail fast on the very first request
+                # rather than letting a hundred more rejections accumulate into
+                # an empty, plausible-looking report.
+                await resp.aclose()  # unread body would leak a pooled connection
+                raise AuthError(
+                    "Authentication error: GitHub rejected the credentials "
+                    "(HTTP 401); aborting because every subsequent read would "
+                    "fail the same way and the report would render as "
+                    "'no data' or 'all clean' rather than as a failure.\n  "
+                    f"endpoint={method} {url}\n  "
+                    "Check that the token is set, has not expired, and has not "
+                    "been revoked or rotated."
+                )
             if resp.status_code not in (403, 429) and resp.status_code < 500:
                 return resp
             # Reachable but degraded: a 5xx (GitHub infrastructure trouble) or

@@ -34,7 +34,7 @@ from github_security_report.cli.outputs import (
     slack_show,
     write_org_files,
 )
-from github_security_report.client import GitHubClient, NetworkError
+from github_security_report.client import AuthError, GitHubClient, NetworkError
 from github_security_report.config import Config, OrgConfig, ReportConfig
 from github_security_report.render import html as html_render
 from github_security_report.render import markdown as md_render
@@ -90,6 +90,19 @@ def _abort_network(console: Console, exc: NetworkError) -> NoReturn:
     raise typer.Exit(3)
 
 
+def _abort_auth(console: Console, exc: AuthError) -> NoReturn:
+    """Abort the run on rejected credentials.
+
+    Exits with code 4, distinct from a usage error (2) and a connectivity
+    failure (3), so an automated caller can tell "rotate the token" apart from
+    "retry later" without parsing the message. Aborting matters most in CI:
+    a scheduled run that degraded instead would publish an empty, confidently
+    clean report over a good one.
+    """
+    console.print(str(exc), style="red", markup=False)
+    raise typer.Exit(4)
+
+
 # --------------------------------------------------------------------------- #
 # Org mode
 # --------------------------------------------------------------------------- #
@@ -134,6 +147,10 @@ class OrgRunOptions:
     force_notify: bool = False
     limits: TopNLimits = field(default_factory=TopNLimits)
     releases: ReleaseOverrides = field(default_factory=ReleaseOverrides)
+    # Categories the invocation suppressed outright. Outranks the config, so a
+    # scheduled run can keep a reader-specific category out of its published
+    # artifacts without editing (or contradicting) the shared configuration.
+    hidden: frozenset[CategoryKey] = frozenset()
 
 
 async def _collect_reports(
@@ -166,7 +183,12 @@ async def _collect_reports(
 
 
 def _write_pages(
-    pairs: list[OrgPair], output_dir: Path, *, console: Console, limits: TopNLimits
+    pairs: list[OrgPair],
+    output_dir: Path,
+    *,
+    console: Console,
+    limits: TopNLimits,
+    hidden: frozenset[CategoryKey] = frozenset(),
 ) -> None:
     """Write the GitHub Pages artifacts: per-org files plus the shared index."""
     for org_cfg, org_report in pairs:
@@ -176,6 +198,7 @@ def _write_pages(
             top_n=limits.resolve(org_cfg, "report"),
             limit=limits.resolver(org_cfg, "report"),
             report_cfg=org_cfg.report,
+            hidden=hidden,
         )
     (output_dir / "index.html").write_text(
         html_render.render_index_html([report for _, report in pairs]),
@@ -229,9 +252,11 @@ def _slack_digest(
                 [options.limits.resolve(oc, "slack") for oc, _ in items]
             ),
             pages_url=options.pages_url,
-            # A category shows in the channel digest when any contributing org
-            # would show it on Slack (mirrors the most-generous top_n rule).
-            show=slack_show(items),
+            # Visibility is resolved per organisation, so each org's rows obey
+            # its own Slack toggles. Unlike the row limits above, it is
+            # deliberately not pooled: one org's opt-in must never publish
+            # another's data into the shared channel.
+            show=slack_show(items, options.hidden),
             limit=slack_limit(items, options.limits),
         )
         for channel, items in by_channel.items()
@@ -252,14 +277,18 @@ def _write_slack_payloads(payloads: list[dict], output_dir: Path) -> None:
         dest.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def _summary(pairs: list[OrgPair], limits: TopNLimits) -> str:
+def _summary(
+    pairs: list[OrgPair],
+    limits: TopNLimits,
+    hidden: frozenset[CategoryKey] = frozenset(),
+) -> str:
     """The job summary, mirroring the GitHub Pages Markdown for every org."""
     return (
         "\n\n".join(
             md_render.render_org(
                 org_report,
                 top_n=limits.resolve(org_cfg, "report"),
-                show=show(org_cfg.report, "markdown"),
+                show=show(org_cfg.report, "markdown", hidden),
                 limit=limits.resolver(org_cfg, "report"),
             )
             for org_cfg, org_report in pairs
@@ -283,14 +312,20 @@ async def _run_org(cfg: Config, options: OrgRunOptions, *, console: Console) -> 
             org_report,
             console,
             top_n=limits.resolve(org_cfg, "cli"),
-            show=show(org_cfg.report, "cli"),
+            show=show(org_cfg.report, "cli", options.hidden),
             limit=limits.resolver(org_cfg, "cli"),
         )
     if options.output_dir:
-        _write_pages(pairs, options.output_dir, console=console, limits=limits)
+        _write_pages(
+            pairs,
+            options.output_dir,
+            console=console,
+            limits=limits,
+            hidden=options.hidden,
+        )
 
     runner.write_github_output(_slack_digest(pairs, options, now=now))
-    runner.append_step_summary(_summary(pairs, limits))
+    runner.append_step_summary(_summary(pairs, limits, options.hidden))
     return 0
 
 
@@ -305,6 +340,7 @@ async def _run_repo(
     console: Console,
     fail_threshold: str,
     ruleset_workflows: Mapping[str, str] | None = None,
+    hidden: frozenset[CategoryKey] = frozenset(),
 ) -> int:
     token = os.environ.get(token_env, "").strip()
     if not token:
@@ -321,9 +357,15 @@ async def _run_repo(
     org = build_org_report(
         f"{owner}/{repo_name}", signals, repo_count=1, generated_at=now
     )
-    term_render.render_org(org, console)
+    # ``--hide`` promises suppression on every output, so it has to reach repo
+    # mode too: a flag accepted, validated and then ignored is worse than one
+    # rejected, because nothing tells the caller it did nothing.
+    visible = show(ReportConfig(), "cli", hidden)
+    term_render.render_org(org, console, show=visible)
 
-    runner.append_step_summary(md_render.render_org(org))
+    runner.append_step_summary(
+        md_render.render_org(org, show=show(ReportConfig(), "markdown", hidden))
+    )
     outputs = repo_outputs(signals, fail_threshold)
     # Keep the action's declared outputs stable across modes.
     outputs["should_notify"] = "false"

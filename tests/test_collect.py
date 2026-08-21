@@ -9,7 +9,7 @@ import logging
 
 import pytest
 
-from github_security_report import collect
+from github_security_report import collect, pulls
 from github_security_report.config import OrgConfig, ReportConfig
 from github_security_report.models import Repo, RepoGraphData, RepoState, SignalType
 from github_security_report.report import OrgReport, SignalSection
@@ -57,9 +57,17 @@ class FakeClient:
             "git-configure-action": {"CodeQL"},
         }
         self.scores = {"dependamerge": 8.2}
+        self.members: set[str] = {"insider"}
+        self.viewer: str = "insider"
 
     async def list_org_repos(self, org: str) -> tuple[int, list[Repo]]:
         return 200, self.repos
+
+    async def org_members(self, org: str) -> frozenset[str]:
+        return frozenset(self.members)
+
+    async def viewer_login(self) -> str:
+        return self.viewer
 
     async def org_bulk_alerts(self, org: str, kind: str) -> tuple[int, list[dict]]:
         return 200, self.bulk[kind]
@@ -557,6 +565,33 @@ async def test_collect_org_attaches_dependabot_tables_and_releases() -> None:
     assert pvr.title == "Private Vulnerability Reporting"
     assert [r.repo.name for r in pvr.rows] == ["git-configure-action"]
     assert (pvr.fail_count, pvr.pass_count) == (1, 1)
+
+
+async def test_collect_org_omits_the_personal_queue_without_a_person() -> None:
+    # A bot or App token has no inbox, so an "Assigned to Me" section reporting
+    # every repository clean would reassure the reader about a queue that does
+    # not exist. The category is left uncollected instead, and no surface has to
+    # know why it is missing.
+    client = FakeClient()
+    client.viewer = ""
+    report = await collect.collect_org(
+        client, OrgConfig(name="o"), ReportConfig(), generated_at=WHEN
+    )
+    assert report.assigned_pull_requests is None
+    # The objective table survives, keeping only the assignment row such a run
+    # can stand behind. The assigned count remains readable as the totals row
+    # minus that figure.
+    assert report.pull_requests is not None
+    assert report.pull_requests.footer_labels == (pulls.UNASSIGNED_ROW,)
+
+
+async def test_collect_org_attaches_the_personal_queue_for_a_person() -> None:
+    report = await collect.collect_org(
+        FakeClient(), OrgConfig(name="o"), ReportConfig(), generated_at=WHEN
+    )
+    assert report.assigned_pull_requests is not None
+    assert report.pull_requests is not None
+    assert report.pull_requests.footer_labels == pulls.ASSIGNMENT_ROWS
 
 
 async def test_collect_org_releases_exclude_and_min_age() -> None:

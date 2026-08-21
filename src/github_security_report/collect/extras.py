@@ -23,8 +23,16 @@ from github_security_report.collect.context import (
 from github_security_report.config import OrgConfig, ReportConfig
 from github_security_report.issues import build_issues_table
 from github_security_report.models import Repo, SignalType
-from github_security_report.ordering import apply_configured_order, report_tables
+from github_security_report.ordering import (
+    apply_configured_order,
+    apply_configured_signal_order,
+    report_tables,
+)
 from github_security_report.posture import RepoPosture
+from github_security_report.pulls import (
+    build_assigned_pull_requests_table,
+    build_pull_requests_table,
+)
 from github_security_report.report import OrgReport
 
 log = logging.getLogger(__name__)
@@ -89,14 +97,48 @@ async def attach_extra_tables(
     )
     report.mutable_releases = posture.build_mutable_releases_table(postures)
     report.private_vulnerability_reporting = posture.build_pvr_table(postures)
-    # Open issues come from the same batched GraphQL prefetch as the release and
-    # Dependabot data, so this table costs no extra requests.
+    # Organisation membership is collected once and reused by both author-aware
+    # tables, so classifying contributions costs one query rather than a probe
+    # per author. It is the token-independent basis for "outside the
+    # organisation"; see ``authors`` for why the per-item association alone is
+    # not enough.
+    members = await ctx.client.org_members(ctx.org)
+    # "Mine" in the assignment breakdown is the account this run authenticated
+    # as, read once here rather than assumed from configuration. Empty when that
+    # account is automation or could not be read, which is what confines the
+    # viewer-relative output below.
+    viewer = await ctx.client.viewer_login()
+    # Open issues and pull requests come from the same batched GraphQL prefetch
+    # as the release and Dependabot data, so the per-repository data costs no
+    # extra request; the two identity reads above are the run's only additions.
     report.issues = build_issues_table(
         ctx.graph,
         in_scope,
         generated_at=report.generated_at,
         label_columns=report_cfg.issue_labels,
+        members=members,
     )
+    report.pull_requests = build_pull_requests_table(
+        ctx.graph,
+        in_scope,
+        members=members,
+        warn_threshold=report_cfg.dependabot_warn_threshold,
+        error_threshold=report_cfg.dependabot_error_threshold,
+        viewer=viewer,
+    )
+    # A personal review queue needs a person. Without one the table would be
+    # unconditionally empty, and an "Assigned to Me" section reporting every
+    # repository clean reassures the reader about an inbox that does not exist,
+    # so the category is left uncollected and no surface renders it.
+    if viewer:
+        report.assigned_pull_requests = build_assigned_pull_requests_table(
+            ctx.graph,
+            in_scope,
+            members=members,
+            warn_threshold=report_cfg.dependabot_warn_threshold,
+            error_threshold=report_cfg.dependabot_error_threshold,
+            viewer=viewer,
+        )
     # The Dependabot alerts enablement sub-table carries the repositories with
     # Dependabot alerts disabled, so drop them from the Dependabot signal
     # section's nag list to avoid listing the same repositories twice under the
@@ -107,3 +149,4 @@ async def attach_extra_tables(
     # Any configured per-category ordering is applied once, here, so every
     # render surface (and report.json) presents the same order.
     apply_configured_order(report_tables(report), report_cfg)
+    apply_configured_signal_order(report.sections, report_cfg)

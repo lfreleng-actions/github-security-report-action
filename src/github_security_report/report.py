@@ -89,6 +89,15 @@ class SignalSection:
     # A skipped section renders as a single "Skipping feature" line with a
     # pointer to the org setup guide instead of a table/footers.
     skipped: bool = False
+    # Resolved explanatory description (Markdown/HTML only). Empty falls back to
+    # the category's default description at render time. Populated only when a
+    # configured ordering overrides the default ranking, whose wording the
+    # default description states and would otherwise misreport.
+    description: str = ""
+
+    def resolved_description(self) -> str:
+        """The description to show, falling back to the category default."""
+        return self.description or self.signal.meta.description
 
     def top(self, n: int) -> list[RepoSignal]:
         """The worst N offenders (used for the Slack digest only)."""
@@ -135,6 +144,17 @@ class SignalSection:
         ]
 
 
+# Semantic emphasis a builder can attach to a table cell, mapped to a concrete
+# presentation by each render surface. Deliberately meaning rather than colour:
+# a builder knows a repository is at its automation cap, not that the terminal
+# should print yellow, and a surface with no colour (Markdown, Slack) can ignore
+# the levels entirely rather than being handed escape codes it cannot use.
+CELL_GOOD = "good"
+CELL_WARN = "warn"
+CELL_BAD = "bad"
+CELL_LEVELS = (CELL_GOOD, CELL_WARN, CELL_BAD)
+
+
 @dataclass
 class TableRow:
     """A generic, repository-keyed table row with pre-formatted cells.
@@ -152,11 +172,28 @@ class TableRow:
     means that cell has no value to sort on (an unknown age, say); the ordering
     layer keeps such rows last whichever direction the column is sorted in,
     since missing is not the same as small.
+
+    ``cell_levels`` is the optional semantic emphasis for each cell, again
+    parallel to ``cells`` (one of :data:`CELL_LEVELS`, or ``None`` for no
+    emphasis). Empty means the builder published none and every cell renders
+    plainly.
     """
 
     repo: Repo
     cells: tuple[str, ...]
     sort_values: tuple[float | str | None, ...] = ()
+    cell_levels: tuple[str | None, ...] = ()
+    # This row's contribution to each of its table's ``footer_labels``, in the
+    # same order. Summed over the *displayed* rows at render time, exactly like
+    # the column totals, so a truncated table's footer describes what is on
+    # screen rather than a total the reader cannot reconcile.
+    footer_values: tuple[int, ...] = ()
+
+    def level(self, index: int) -> str | None:
+        """The emphasis for cell ``index``, or ``None`` when it has none."""
+        if index < len(self.cell_levels):
+            return self.cell_levels[index]
+        return None
 
 
 @dataclass
@@ -196,6 +233,17 @@ class TableSection:
     # Resolved explanatory description (Markdown/HTML only). Empty falls back to
     # the category's default description at render time.
     description: str = ""
+    # Labels for aggregate rows drawn beneath the totals row, each summing one
+    # slice of the table that is not a column -- a breakdown *of* the rows
+    # rather than *within* them. Empty means the table has none.
+    footer_labels: tuple[str, ...] = ()
+    # The subset of ``footer_labels`` whose meaning is relative to the account
+    # the report authenticated as ("Mine" and, by implication, "Others").
+    # Those rows answer a question only that account can ask, so they are
+    # rendered solely on the surface that account reads -- the terminal -- and
+    # dropped from every published artifact, where "mine" would name the token
+    # owner rather than the reader. See :func:`table_footer_rows`.
+    personal_footer_labels: frozenset[str] = frozenset()
 
     @property
     def title(self) -> str:
@@ -253,9 +301,15 @@ class OrgReport:
     # The Private Vulnerability Reporting table: repositories where the feature
     # is not enabled. None in repo mode / when not collected.
     private_vulnerability_reporting: TableSection | None = None
-    # The GitHub Issues table: open issues per repository, split by label class.
+    # The GitHub Issues table (open issues per repository, split by label).
     # None in repo mode / when not collected.
     issues: TableSection | None = None
+    # The Pull Requests table (open pull requests per repository, split by
+    # author and by what blocks them). None in repo mode / when not collected.
+    pull_requests: TableSection | None = None
+    # The same table narrowed to the running account's own assigned pull
+    # requests. None in repo mode / when not collected.
+    assigned_pull_requests: TableSection | None = None
 
 
 @dataclass
@@ -362,11 +416,69 @@ def table_column_totals(
     return tuple(cells)
 
 
+def table_footer_rows(
+    section: TableSection, rows: Sequence[TableRow], *, personal: bool = False
+) -> tuple[tuple[str, ...], ...]:
+    """Aggregate rows drawn beneath a table's totals row, full width.
+
+    A breakdown *of* the rows rather than *within* them: the Pull Requests table
+    uses it to split its backlog by who each pull request is assigned to, which
+    is a partition of the same pull requests the columns already count and so
+    cannot be another column without double-counting them.
+
+    Each row is returned at the table's full width, with the label in the
+    repository column and the value under the **last** column. That placement
+    is the point: these values partition the whole row -- automation included --
+    so aligning them under ``Total`` says what they total, whereas the second
+    column would file an unassigned bot pull request under ``Human``. Returning
+    complete rows also keeps every renderer from padding them itself, which is
+    where that misalignment came from.
+
+    ``personal`` declares that this surface is read by the account the report
+    ran as, and is the **only** thing that admits the section's
+    ``personal_footer_labels``. It defaults to off, so a surface that says
+    nothing gets the objective rows alone: a published artifact is read by
+    people who are not the token owner, for whom "Mine" names a stranger's
+    queue. Little is lost by omitting them -- the objective rows still sit
+    against the totals row, so what they would have said remains bounded.
+
+    Summed over the rows passed in -- the displayed, already-truncated set --
+    for the same reason :func:`table_column_totals` is: a footer the reader
+    cannot reconcile against the rows above it is worse than no footer.
+    Returns an empty tuple for a table that declares no footer labels.
+    """
+    if not section.footer_labels:
+        return ()
+    # One label cell, one value cell, and blanks for whatever lies between.
+    gap = max(len(section.columns) - 2, 0)
+    return tuple(
+        (
+            label,
+            *([""] * gap),
+            str(
+                sum(
+                    row.footer_values[index]
+                    for row in rows
+                    if index < len(row.footer_values)
+                )
+            ),
+        )
+        for index, label in enumerate(section.footer_labels)
+        if personal or label not in section.personal_footer_labels
+    )
+
+
 def _as_int(cell: str) -> int:
-    """A table cell as a number, or 0 when it does not parse."""
+    """A table cell as a number, or 0 when it does not parse.
+
+    Reads the leading numeric token rather than requiring the whole cell to be a
+    number, so a count annotated with a trailing marker (e.g. the Pull Requests
+    table's ``"12 +"``, flagging a partial breakdown) still contributes its
+    value to the totals row instead of silently summing as zero.
+    """
     try:
-        return int(cell)
-    except (TypeError, ValueError):
+        return int(str(cell).split()[0])
+    except (AttributeError, IndexError, TypeError, ValueError):
         return 0
 
 

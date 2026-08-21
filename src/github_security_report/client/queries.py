@@ -14,6 +14,52 @@ query($owner: String!, $name: String!) {
 }
 """
 
+# Organisation membership, collected once per organisation and reused for every
+# repository. This is the authoritative, token-independent basis for deciding
+# whether a contribution came from outside the organisation.
+#
+# It cannot be replaced by the per-item ``authorAssociation``: that field is
+# computed relative to the viewing token, so an organisation whose members keep
+# their membership private (GitHub's default) has them reported as ``MEMBER`` to
+# a token with organisation visibility and as ``CONTRIBUTOR``/``NONE`` to one
+# without. Collecting membership once costs a single query (measured: 1 point,
+# one page per 100 members) and makes the external-contribution counts the same
+# whichever token produced the report.
+#
+# ``membersWithRole`` covers every role, including members whose repository
+# access arrives via a team rather than a direct grant -- which is how access is
+# normally organised, and why per-repository collaborator enumeration adds
+# nothing for most organisations.
+# ``membersWithRole`` is visibility-filtered rather than access-controlled: a
+# token that is not a member of the organisation receives a perfectly valid
+# connection containing only the *public* members, with no error and a
+# ``totalCount`` filtered to match. Counting that as the membership would report
+# every private member as an outsider, so ``viewerIsAMember`` is requested
+# alongside it -- it is the only field that distinguishes "these are all the
+# members" from "these are the ones you are allowed to see". Members can see
+# each other, so a viewer inside the organisation gets the complete list.
+_ORG_MEMBERS_QUERY = """
+query($org: String!, $after: String) {
+  organization(login: $org) {
+    viewerIsAMember
+    membersWithRole(first: 100, after: $after) {
+      totalCount
+      pageInfo { hasNextPage endCursor }
+      nodes { login }
+    }
+  }
+}
+"""
+
+# The authenticated account, which is what "mine" means in the assignment
+# breakdown. Token-scoped rather than organisation-scoped, but read once per
+# organisation run alongside the membership, since both answer "who is who".
+_VIEWER_QUERY = """
+query {
+  viewer { __typename login }
+}
+"""
+
 # The code-scanning-derived signal tools whose enablement we probe per repo.
 # Each is checked via the analyses ``tool_name`` filter (a definitive presence
 # test) rather than scanning the analysis history, which a busy repo could push
@@ -50,6 +96,21 @@ _CODE_SCANNING_SIGNAL_TOOLS = tuple(CODE_SCANNING_TOOLS.values())
 # can be reported as partially classified rather than silently mislabelled.
 _ISSUE_WINDOW = 25
 _ISSUE_LABEL_WINDOW = 5
+# Open pull requests ride the same batched prefetch, and are windowed and
+# ordered on the same basis as the issues connection: ``totalCount`` keeps the
+# headline exact at any backlog size, while the bounded, oldest-first window
+# points the per-PR breakdown (automation, drafts, external, blocked) at the
+# most-aged -- so most review-worthy -- pull requests. Measured against a
+# five-repository batch, adding this connection together with the head commit's
+# check rollup and the assignee list moved the query cost from 1 point to 4, and
+# adds no extra HTTP
+# request at all, since it rides a query the run already makes.
+_PULL_REQUEST_WINDOW = 25
+# GitHub caps an issue or pull request at 10 assignees, so this window is
+# exhaustive by construction: unlike the issue-label window, it can never
+# truncate, and the assignment breakdown is therefore exact for every collected
+# pull request.
+_ASSIGNEE_WINDOW = 10
 _REPO_GRAPH_FRAGMENT = f"""\
 fragment RepoData on Repository {{
   hasVulnerabilityAlertsEnabled
@@ -81,7 +142,24 @@ fragment RepoData on Repository {{
       number
       title
       createdAt
+      authorAssociation
+      author {{ __typename login }}
       labels(first: {_ISSUE_LABEL_WINDOW}) {{ totalCount nodes {{ name }} }}
+    }}
+  }}
+  pullRequests(states: OPEN, first: {_PULL_REQUEST_WINDOW},
+               orderBy: {{field: CREATED_AT, direction: ASC}}) {{
+    totalCount
+    nodes {{
+      number
+      isDraft
+      mergeable
+      authorAssociation
+      author {{ __typename login }}
+      assignees(first: {_ASSIGNEE_WINDOW}) {{ nodes {{ login }} }}
+      commits(last: 1) {{
+        nodes {{ commit {{ statusCheckRollup {{ state }} }} }}
+      }}
     }}
   }}
 }}

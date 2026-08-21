@@ -32,6 +32,7 @@ from github_security_report.report import (
     limit_resolver,
     section_shows_informational,
     table_column_totals,
+    table_footer_rows,
     truncate,
 )
 
@@ -144,6 +145,10 @@ def _table_context(
             for row in rows
         ],
         "total_cells": list(totals) if totals is not None else None,
+        # Not a personal surface: the Pages site is read by everyone but the
+        # account the report ran as, so the viewer-relative footer rows are
+        # left out and only the objective ones survive.
+        "footer_rows": [list(row) for row in table_footer_rows(section, rows)],
         "hidden": hidden,
         "summary": _summary_context(
             build_summary(section.summary_counts(excluded)),
@@ -172,6 +177,7 @@ def _section_context(
             "rows": [],
             "hidden": 0,
             "total_cells": None,
+            "footer_rows": [],
             "summary": [],
             "skipped": True,
             "skip_message": SKIP_MESSAGE,
@@ -190,7 +196,7 @@ def _section_context(
     return {
         "title": meta.title,
         "url": meta.url,
-        "description": meta.description,
+        "description": section.resolved_description(),
         # Severity sections have numeric count columns after the leading
         # repository column, so they are right-aligned with tabular figures.
         "numeric": True,
@@ -205,6 +211,7 @@ def _section_context(
         ],
         "hidden": hidden,
         "total_cells": total_cells,
+        "footer_rows": [],
         "summary": _summary_context(
             build_summary(section.summary_counts(excluded)),
             name_to_repo,
@@ -267,6 +274,8 @@ def render_org_html(
             mutable_releases=table(org.mutable_releases),
             private_vulnerability_reporting=table(org.private_vulnerability_reporting),
             issues=table(org.issues),
+            pull_requests=table(org.pull_requests),
+            assigned_pull_requests=table(org.assigned_pull_requests),
             datatables_version=DATATABLES_VERSION,
             datatables_css_sri=DATATABLES_CSS_SRI,
             datatables_js_sri=DATATABLES_JS_SRI,

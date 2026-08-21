@@ -76,9 +76,14 @@
       </tr>
       {% endfor %}
     </tbody>
-    {% if item.total_cells %}
+    {% if item.total_cells or item.footer_rows %}
     <tfoot>
+      {% if item.total_cells %}
       <tr><td>{{ item.total_cells[0] }}</td>{% for cell in item.total_cells[1:] %}<td class="num">{{ cell }}</td>{% endfor %}</tr>
+      {% endif %}
+      {% for footer in item.footer_rows %}
+      <tr class="breakdown"><td>{{ footer[0] }}</td>{% for cell in footer[1:] %}<td class="num">{{ cell }}</td>{% endfor %}</tr>
+      {% endfor %}
     </tfoot>
     {% endif %}
   </table>
@@ -140,6 +145,20 @@
     <section>
       <h2>{{ issues.title }}</h2>
       {{ render_table(issues) }}
+    </section>
+    {% endif %}
+
+    {% if pull_requests %}
+    <section>
+      <h2>{{ pull_requests.title }}</h2>
+      {{ render_table(pull_requests) }}
+    </section>
+    {% endif %}
+
+    {% if assigned_pull_requests %}
+    <section>
+      <h2>{{ assigned_pull_requests.title }}</h2>
+      {{ render_table(assigned_pull_requests) }}
     </section>
     {% endif %}
 

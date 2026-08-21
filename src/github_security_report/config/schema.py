@@ -78,6 +78,13 @@ CONFIG_SCHEMA: dict = {
                 # Releases/Tagging only when its newest release or tag is older
                 # than this many days (0 = flag every eligible repository).
                 "release_max_age_days": {"type": "integer", "minimum": 0},
+                # Automation-backlog thresholds colouring the Pull Requests
+                # table's Auto column: warn above the first, error at or above
+                # the second. The defaults track GitHub's own
+                # open-pull-requests-limit (5), which it applies per package
+                # ecosystem while Auto counts every automation author.
+                "dependabot_warn_threshold": {"type": "integer", "minimum": 0},
+                "dependabot_error_threshold": {"type": "integer", "minimum": 0},
                 # Organisation feature gating: when true (the default) the
                 # workflow-driven signals (Scorecard, zizmor, aislop) are
                 # probed only after a cheap support check (org ruleset,
@@ -136,12 +143,14 @@ CONFIG_SCHEMA: dict = {
                                 # more" tally, overriding the per-output limit
                                 # (0 = no limit, show every row).
                                 "top_n": {"type": "integer", "minimum": 0},
-                                # Row ordering for a generic table: column
-                                # names, most significant first. A leading '-'
-                                # forces descending and '+' forces ascending;
-                                # bare names take the direction implied by the
-                                # column's type. Ignored by the severity signal
-                                # tables, which keep their own ranking.
+                                # Row ordering for a table: column names, most
+                                # significant first. A leading '-' forces
+                                # descending and '+' forces ascending; bare
+                                # names take the direction implied by the
+                                # column's type. The severity signal tables
+                                # resolve these against a fixed vocabulary
+                                # (repository/score/critical/high/medium/low/
+                                # info/total) rather than rendered headings.
                                 "sort": {
                                     "type": "array",
                                     "items": {"type": "string", "minLength": 1},

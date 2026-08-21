@@ -31,6 +31,7 @@ from github_security_report.report import (
     offender_column_totals,
     section_shows_informational,
     table_column_totals,
+    table_footer_rows,
     truncate,
 )
 
@@ -46,9 +47,21 @@ def _columns(signal: SignalType, *, informational: bool = False) -> list[str]:
     if signal is SignalType.SECRET_SCANNING:
         return ["Repository", "Open"]
     info = ["Info"] if informational else []
-    if signal is SignalType.SCORECARD:
-        return ["Repository", "Score", "Critical", "High", "Medium", "Low", *info]
-    return ["Repository", "Critical", "High", "Medium", "Low", *info, "Total"]
+    # Scorecard leads with its aggregate score; every severity table then shares
+    # the same severity columns and the same trailing Total. The score is a
+    # health rating rather than a finding count, so it sits outside that sum --
+    # Total counts findings, which is what remediation effort is sized by.
+    score = ["Score"] if signal is SignalType.SCORECARD else []
+    return [
+        "Repository",
+        *score,
+        "Critical",
+        "High",
+        "Medium",
+        "Low",
+        *info,
+        "Total",
+    ]
 
 
 def _row(sig: RepoSignal, *, informational: bool = False) -> list[str]:
@@ -56,19 +69,14 @@ def _row(sig: RepoSignal, *, informational: bool = False) -> list[str]:
     if sig.signal is SignalType.SECRET_SCANNING:
         return [_link(sig.repo), str(c.total)]
     info = [str(c.informational)] if informational else []
-    if sig.signal is SignalType.SCORECARD:
-        score = f"{sig.score:.1f}" if sig.score is not None else "—"
-        return [
-            _link(sig.repo),
-            score,
-            str(c.critical),
-            str(c.high),
-            str(c.medium),
-            str(c.low),
-            *info,
-        ]
+    score = (
+        [f"{sig.score:.1f}" if sig.score is not None else "—"]
+        if sig.signal is SignalType.SCORECARD
+        else []
+    )
     return [
         _link(sig.repo),
+        *score,
         str(c.critical),
         str(c.high),
         str(c.medium),
@@ -135,9 +143,8 @@ def total_row_cells(
         str(totals.low),
     ]
     info = [str(totals.informational)] if informational else []
-    if signal is SignalType.SCORECARD:
-        return ["Total", "", *base, *info]
-    return ["Total", *base, *info, str(totals.total)]
+    score = [""] if signal is SignalType.SCORECARD else []
+    return ["Total", *score, *base, *info, str(totals.total)]
 
 
 def _summary_lines(
@@ -208,7 +215,7 @@ def render_section(
         lines.append("_No data available._")
         lines.append("")
         return "\n".join(lines).rstrip() + "\n"
-    lines.extend(_description_lines(meta.description, meta.url))
+    lines.extend(_description_lines(section.resolved_description(), meta.url))
     name_to_repo = {r.name: r for r in (*section.nag_repos, *excluded)}
     lines.extend(_summary_lines(summary, name_to_repo, top_n=top_n))
     return "\n".join(lines).rstrip() + "\n"
@@ -247,6 +254,12 @@ def render_table_section(
                 + " | ".join(f"**{cell}**" if cell else "" for cell in totals)
                 + " |"
             )
+        # Aggregate rows beneath the totals: a breakdown of the same rows,
+        # arriving full width with the value under the final column. Rendered
+        # without ``personal``, so the viewer-relative rows stay out of a file
+        # whose readers are not the account the report ran as.
+        for footer_row in table_footer_rows(section, rows):
+            lines.append("| " + " | ".join(footer_row) + " |")
         lines.append("")
         if hidden:
             lines.append(f"_… and {hidden} more_")
@@ -322,6 +335,8 @@ def render_org(
     table(org.mutable_releases)
     table(org.private_vulnerability_reporting)
     table(org.issues)
+    table(org.pull_requests)
+    table(org.assigned_pull_requests)
     return "\n".join(parts).rstrip() + "\n"
 
 

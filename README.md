@@ -401,30 +401,69 @@ total open issues, then on the oldest issue.
 
 Ordering is resolved once, when the report is built, so every surface and
 `report.json` agree. It applies to the generic tables (GitHub Issues, Releases /
-Tagging, Mutable Releases, the Dependabot posture tables). The severity signal
-tables keep their own ranking, which encodes domain logic a column sort would
-flatten — Scorecard cascades through the worst populated severity rung so a lone
-Critical is never buried by a weaker repository with a lower score.
+Tagging, Mutable Releases, the Dependabot posture tables) **and** to the severity
+signal tables (CodeQL, OpenSSF Scorecard, zizmor, AI Slop, Dependabot alerts,
+secret scanning).
+
+The signal tables resolve their terms against a fixed vocabulary rather than a
+rendered column list, because their columns vary by surface and by data (Slack
+abbreviates the headers and drops `Total`, and `Info` appears only when some
+repository carries note-level findings):
+
+| Signal | Accepted sort names |
+| ------ | ------------------- |
+| OpenSSF Scorecard | `repository`, `score`, `critical`, `high`, `medium`, `low`, `info`, `total` |
+| CodeQL, zizmor, AI Slop, Dependabot alerts | `repository`, `critical`, `high`, `medium`, `low`, `info`, `total` |
+| Secret Scanning | `repository`, `open` |
+
+`informational` is accepted for `info`, and `total` for secret scanning's `open`.
+
+A bare `score` sorts **ascending**, because the rule is "worst first" and a lower
+Scorecard score is the weaker repository — so `sort: ["score"]` agrees with the
+default ranking instead of contradicting it. Every count sorts descending. A
+repository with no published score sorts last in either direction: unknown health
+is not bad health.
+
+Ranking by remediation volume rather than by score is the common case, since the
+score is a health rating and not a count of work:
+
+```json
+{
+  "report": {
+    "categories": {
+      "scorecard": { "sort": ["total", "score"] }
+    }
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
+
+Omitting `sort` keeps each signal's default ranking, which is not expressible as
+a column list — Scorecard cascades through the worst severity rung any offender
+actually carries, so a lone Critical is never buried by a weaker repository with
+a lower score.
 
 ### GitHub Issues
 
 The `github_issues` category counts each repository's **open issues**, split by
 label into columns. It reads from the same batched GraphQL prefetch as the
-release and Dependabot data, so it costs no extra API requests:
+release and Dependabot data, so it costs no extra requests per repository; the
+`Ext` column adds one organisation-membership read per run, shared with the
+Pull Requests table.
 
 ```text
 GitHub Issues
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━┳━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━┓
-┃ Repository                    ┃ Bug ┃ Feature ┃ Docs ┃ Other ┃ Untriaged ┃ Total ┃  Oldest ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━╇━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━┩
-│ .github                       │   1 │       0 │    0 │     0 │        10 │    11 │ 16 days │
-│ tag-validate-action           │   0 │       0 │    0 │     0 │         8 │     8 │ 25 days │
-│ security-workflows            │   0 │       5 │    1 │     0 │         0 │     6 │   today │
-│ github-security-report-action │   0 │       0 │    0 │     3 │         1 │     4 │ 52 days │
-│ dependamerge                  │   0 │       1 │    0 │     1 │         1 │     3 │ 52 days │
-├───────────────────────────────┼─────┼─────────┼──────┼───────┼───────────┼───────┼─────────┤
-│ Total                         │   1 │       6 │    1 │     4 │        20 │    32 │         │
-└───────────────────────────────┴─────┴─────────┴──────┴───────┴───────────┴───────┴─────────┘
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━┳━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━━━━┳━━━━━━━┳━━━━━┳━━━━━━━━━┓
+┃ Repository                    ┃ Bug ┃ Feature ┃ Docs ┃ Other ┃ Untriaged ┃ Total ┃ Ext ┃  Oldest ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━╇━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━━━━╇━━━━━━━╇━━━━━╇━━━━━━━━━┩
+│ .github                       │   1 │       0 │    0 │     0 │        10 │    11 │   0 │ 16 days │
+│ tag-validate-action           │   0 │       0 │    0 │     0 │         8 │     8 │   0 │ 25 days │
+│ security-workflows            │   0 │       5 │    1 │     0 │         0 │     6 │   0 │   today │
+│ github-security-report-action │   0 │       0 │    0 │     3 │         1 │     4 │   0 │ 52 days │
+│ dependamerge                  │   0 │       1 │    0 │     1 │         1 │     3 │   0 │ 52 days │
+├───────────────────────────────┼─────┼─────────┼──────┼───────┼───────────┼───────┼─────┼─────────┤
+│ Total                         │   1 │       6 │    1 │     4 │        20 │    32 │   0 │         │
+└───────────────────────────────┴─────┴─────────┴──────┴───────┴───────────┴───────┴─────┴─────────┘
   … and 11 more
   ❌ 16 With open issues
   ✅ 87 No open issues
@@ -441,7 +480,11 @@ Two columns are always present and are not configurable:
 - **Untriaged** — the issue has no labels at all. This is the column to watch:
   an unlabelled issue is one nobody has categorised.
 
-Both names are reserved, as are `Repository`, `Total` and `Oldest`: configuring a
+A third, **Ext**, counts the issues raised from **outside the organisation** —
+see [Inside or outside the organisation](#inside-or-outside-the-organisation).
+
+All three names are reserved, as are `Repository`, `Total` and `Oldest`:
+configuring a
 column with one of those names is rejected, because it would either share a
 counter with the implicit column — stopping the class columns summing to `Total`
 — or duplicate a header, which would also make `sort: ["repository"]` resolve to
@@ -496,6 +539,352 @@ classic PAT's `repo` scope already covers it. Without it GitHub serves the query
 with HTTP 200 and this one field null, so affected repositories are reported as
 `❓ Unknown` rather than counted as having no open issues — an unreadable backlog
 is never presented as a clean one.
+
+### Pull Requests
+
+The `pull_requests` category counts each repository's **open pull requests**,
+split by who raised them and by what is holding them up. The per-repository data
+rides the same batched GraphQL prefetch as the issues data, so it costs **no
+extra requests per repository** — measured against a five-repository batch,
+adding the connection, the head commit's check rollup and the assignee list
+moved the query cost from 1 point to 4, against an hourly budget of 5,000.
+
+Identifying contributors does add **two requests per organisation**, made once
+per run and reused by every repository and both author-aware tables:
+organisation membership (one more per 100 members) and the authenticated
+account. See [Inside or outside the
+organisation](#inside-or-outside-the-organisation):
+
+```text
+Pull Requests
+┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━┳━━━━━━┳━━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━┓
+┃ Repository           ┃ Human ┃ Ext ┃ Auto ┃ Conflict ┃ Fail ┃ Draft ┃ Total ┃
+┡━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━╇━━━━━━╇━━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━┩
+│ lftools-uv           │     8 │   0 │    0 │        0 │    0 │     0 │     8 │
+│ dependamerge         │     3 │   0 │    0 │        0 │    0 │     0 │     3 │
+│ gha-workflow-linter  │     2 │   0 │    0 │        0 │    1 │     1 │     2 │
+│ harden-runner-block- │     1 │   0 │    0 │        1 │    0 │     1 │     1 │
+│ action               │       │     │      │          │      │       │       │
+├─────────────────────┼───────┼─────┼──────┼──────────┼──────┼───────┼───────┤
+│ Total                │    14 │   0 │    0 │        1 │    1 │     2 │    14 │
+└─────────────────────┴───────┴─────┴──────┴──────────┴──────┴───────┴───────┘
+  … and 9 more
+  ❌ 13 With open pull requests
+  ✅ 104 No open pull requests
+```
+
+The columns form **two independent groupings**:
+
+| Column | Meaning |
+| ------ | ------- |
+| `Human` / `Auto` | Partition the total by author. `Auto` is recognised automation; `Human` is everyone else. |
+| `Ext` | Human pull requests raised from outside the organisation — a **subset of Human**, which is why it sits beside it. |
+| `Conflict` | Blocked on a merge conflict. |
+| `Fail` | Latest checks did not pass. The rollup includes optional checks, so this is not by itself proof that the merge is blocked. |
+| `Draft` | Marked as a draft. |
+
+`Conflict`, `Fail` and `Draft` **overlap** each other and the author split, so
+they do not sum to `Total` and are not meant to: one pull request that is
+conflicting, failing *and* a draft is counted once in each of those three
+columns, and once under `Human` or `Auto`. Only `Human` + `Auto` reconciles with
+the collected total. They are ordered worst-first — a conflict needs a human to
+rebase, a failing check may only need a re-run, and a draft is not blocked at
+all.
+
+#### Automation backlog thresholds
+
+On the terminal the counts are coloured so the table reads at a glance: `Human`
+and `Ext` **green**, `Conflict` and `Fail` **red**, and `Auto` coloured against
+two configured thresholds.
+
+Dependabot stops raising pull requests once a repository reaches its
+`open-pull-requests-limit`, so the repository quietly stops receiving dependency
+updates — an outage in waiting rather than an untidy queue. Two thresholds let
+you watch the automation backlog against that risk:
+
+```json
+{
+  "report": {
+    "dependabot_warn_threshold": 2,
+    "dependabot_error_threshold": 5
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
+
+- **Yellow** above `dependabot_warn_threshold` (default `2`) — a backlog worth
+  keeping an eye on.
+- **Red** at or above `dependabot_error_threshold` (default `5`) — a backlog
+  worth investigating now.
+
+> **These are configured investigation levels, not measurements.** `Auto` is an
+> aggregate across every automation author, while GitHub applies its
+> `open-pull-requests-limit` **per package ecosystem**. So neither level
+> establishes that Dependabot has stopped: a repository can sit above the red
+> threshold on Renovate pull requests alone, or be stalled in one ecosystem
+> while sitting below it. What the colour tells you is that the backlog has
+> reached a size you said you wanted to hear about, which is worth a look
+> either way.
+
+The defaults track **GitHub's own** `open-pull-requests-limit`, which defaults
+to `5`. If your organisation raises that limit, raise these to match — they
+describe your policy, and the defaults are only the most useful guess in the
+absence of one:
+
+```json
+{
+  "report": {
+    "dependabot_warn_threshold": 12,
+    "dependabot_error_threshold": 15
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
+
+Either may be set to `0` to switch that level off, matching the `0 = no limit`
+idiom the row limits use. `dependabot_error_threshold` must be **strictly
+greater** than `dependabot_warn_threshold` (or `0`): because the error level is
+checked first and inclusively, an equal or lower error threshold would make the
+warning colour unreachable, so it is rejected at load rather than silently
+ignored. Both are settable per organisation.
+
+> **A note on the name.** These are named for Dependabot because its
+> `open-pull-requests-limit` is the constraint the defaults track.
+
+Only **non-zero** counts are coloured. A table of red zeros would train the eye
+to ignore the colour, which costs exactly the signal it exists to carry, so a
+clean row stays plain and the rows with something wrong stand out. The totals
+row is never coloured: it sums columns that disagree about what good looks like.
+Colour is a terminal affordance — Markdown and Slack have none, and the HTML
+pages style their tables from the stylesheet.
+
+#### Assignment breakdown
+
+Beneath the totals, the same pull requests are split again by **who is expected
+to move them**:
+
+```text
+├─────────────────────┼───────┼─────┼──────┼──────────┼──────┼───────┼───────┤
+│ Total                │    17 │   0 │    0 │        1 │    1 │     2 │    17 │
+├─────────────────────┼───────┼─────┼──────┼──────────┼──────┼───────┼───────┤
+│ Unassigned           │       │     │      │          │      │       │     1 │
+│ Others               │       │     │      │          │      │       │    14 │
+│ Mine                 │       │     │      │          │      │       │     2 │
+└─────────────────────┴───────┴─────┴──────┴──────────┴──────┴───────┴───────┘
+```
+
+The values sit under **`Total`**, because that is what they are a breakdown of:
+they partition every collected pull request, automation included, so aligning
+them under `Human` would file an unassigned bot pull request as a human one.
+
+This is a **partition**, not more columns: every collected pull request falls in
+exactly one bucket. It is a breakdown *of* the rows rather than *within* them,
+which is why it cannot be a column without counting the same pull requests
+twice.
+
+- **Unassigned** — nobody has picked it up.
+- **Mine** — assigned to the account the report ran as.
+- **Others** — assigned to somebody else.
+
+A pull request assigned to several people, one of them you, counts as **Mine**:
+it is in your queue regardless of who else is on it. Like the totals row, the
+breakdown sums the **displayed** rows, so a row limit does not put it out of
+step with the table above it.
+
+On rows **not** marked `+`, the buckets reconcile against `Total`. On a marked
+row they cannot: the buckets cover only the collected window while `Total`
+remains the exact backlog, which is what the marker is there to warn you about.
+
+##### Only `Unassigned` is universal
+
+`Unassigned` is a fact about the pull request. `Mine` and `Others` are read
+against the account the report authenticated as, and are drawn **only** where
+that reading holds — which needs two things to be true at once:
+
+1. **The run authenticated as a person**, i.e. `viewer { login }` resolved to a
+   human account. A bot or App token has no queue, so `Mine` would be empty by
+   construction and `Others` would collapse into "assigned to somebody" — a
+   split drawn against a person who is not there.
+2. **The surface is read by that account**, i.e. the terminal. A Pages site,
+   Slack digest, `report.md` or `report.json` is read by everybody *except* the
+   token owner, for whom `Mine` names a stranger's queue as their own.
+
+Where either fails, the breakdown is a single `Unassigned` row. Nothing is lost:
+the assigned count is the totals row minus that one figure. So the daily
+scheduled run publishes this to Pages, whatever token it holds:
+
+```text
+├─────────────────────┼───────┼─────┼──────┼──────────┼──────┼───────┼───────┤
+│ Total                │    17 │   0 │    0 │        1 │    1 │     2 │    17 │
+├─────────────────────┼───────┼─────┼──────┼──────────┼──────┼───────┼───────┤
+│ Unassigned           │       │     │      │          │      │       │     1 │
+└─────────────────────┴───────┴─────┴──────┴──────────┴──────┴───────┴───────┘
+```
+
+This is not a configurable toggle. A published `Mine` is not a preference but a
+false statement, so there is nothing to opt into.
+
+### Assigned to Me
+
+The `pull_requests_assigned` category repeats the Pull Requests table narrowed
+to pull requests assigned to the account the report ran as — the same columns
+over the same data, so the two read alike, with only the population changed. A
+repository with open pull requests but none of yours counts as clean rather than
+appearing as a row of zeros, keeping the table to your actual inbox.
+
+> **"Mine" follows the token, not a configured name.** It is whoever
+> `viewer { login }` resolves to, so the same report run with a different
+> token legitimately answers a different question. A scheduled run under a bot
+> or GitHub App token has no personal queue at all: the category is not
+> collected, and the section is **absent** rather than reporting every
+> repository clean — a reassuring "nothing assigned to you" about an inbox that
+> does not exist is worse than saying nothing.
+
+**It is a terminal-only table by default.** A personal review queue keyed to
+whichever account ran the report has no business in a published Pages site or a
+shared Slack digest, so `pull_requests_assigned` ships with `cli` on and
+`markdown`, `html` and `slack` off. No configuration is needed to keep it out of
+shared output, and tuning another of its settings (a `top_n`, say) will not
+silently publish it, since the per-category blocks merge key by key. Opt in
+deliberately if you want it published:
+
+```json
+{
+  "report": {
+    "categories": {
+      "pull_requests_assigned": { "outputs": { "html": true } }
+    }
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
+
+If you publish it from a workflow, make sure the Action's `hide` input does not
+name the category as well: `--hide` outranks this toggle and cannot be
+countermanded by it. The input is empty by default, so this only matters if you
+have set it.
+
+### Hiding a category for one run
+
+`--hide <category>` (repeatable) suppresses a category on **every** output for
+that invocation, and **outranks the configuration**:
+
+```bash
+github-security-report report --hide pull_requests_assigned
+```
+
+The Action exposes the same control through a `hide` input:
+
+```yaml
+- uses: lfreleng-actions/github-security-report-action@v1
+  with:
+    hide: "pull_requests_assigned"   # space- or comma-separated
+```
+
+It is **empty by default**, and does not need setting to keep the personal
+queue out of shared artifacts — `pull_requests_assigned` already defaults to the
+terminal only, so Pages, Markdown and Slack never render it, and `report.json`
+omits it for the same reason (see below). Leaving the input empty also keeps the
+Action compatible with whichever published version the runtime pin installs: a
+non-empty default would be passed to releases predating the flag, which reject
+it outright.
+
+It is deliberately **one-way**: naming a category can only suppress it, never
+re-enable one the configuration disabled. That means a CI invocation can keep
+something off a published surface without knowing, or contradicting, what the
+shared configuration asked for — and cannot accidentally publish something an
+operator switched off. An unrecognised category name is rejected with exit `2`
+rather than ignored, since a silently-ignored typo would publish the very thing
+the flag was meant to hide.
+
+`report.json` **does** honour `--hide`, and it also omits any category that no
+published surface carries. It is otherwise the complete dataset: the per-surface
+`outputs` toggles do not filter it, so a category hidden from just the terminal,
+or just Slack, is still present in full.
+
+The two exceptions exist because the file is written into the **published**
+Pages directory alongside the HTML. Ignoring `--hide` there would publish
+exactly what you asked to keep out of shared output; and serialising a
+terminal-only category would publish it through the back door while every
+rendered surface correctly omitted it. Opting such a category into any
+published surface puts it back in the JSON.
+
+`Auto` recognises the same automation accounts as the
+[`dependamerge`](https://github.com/lfreleng-actions/dependamerge) tool:
+Dependabot, Renovate, pre-commit.ci, `github-actions`, Copilot and
+Allcontributors, by their bare or `[bot]`-suffixed login, plus any actor GitHub
+reports as an App and any unrecognised login carrying the `[bot]` marker — so a
+future bot is classified as automation rather than mistaken for an outside
+contributor.
+
+`Fail` and `Conflict` count only **established** states. GitHub computes
+mergeability lazily and answers `UNKNOWN` until it settles, and reports no check
+rollup at all when no checks have run; neither absence is evidence that a pull
+request is ready, so neither is counted either way.
+
+Repositories with no open pull requests are counted in the footer rather than
+listed. Rows rank by total open pull requests, then by those failing or
+conflicting (`Fail` + `Conflict`), so two repositories with equal backlogs
+surface the more
+stuck one first.
+
+> **Accuracy note.** As with the issues table, `Total` is exact at any size,
+> while the breakdown columns are computed from a bounded, oldest-first window
+> of 25 open pull requests per repository. A repository whose backlog exceeds
+> that window shows a trailing `+` on its `Total` cell, marking the breakdown as
+> partial; the total itself stays exact.
+
+**Permissions.** A fine-grained PAT needs **Pull requests: read**; a classic
+PAT's `repo` scope already covers it. Without it the connection comes back null
+and affected repositories are reported as `❓ Unknown` rather than as having no
+open pull requests.
+
+### Inside or outside the organisation
+
+The `Ext` column on both the Issues and Pull Requests tables counts
+contributions from **outside the organisation**. Two pieces of evidence decide
+it, in this order:
+
+1. **The organisation's membership**, collected once per organisation in a
+   single GraphQL query (one page per 100 members) and reused for every
+   repository and every table.
+2. **GitHub's per-item `authorAssociation`**, consulted when the author is not a
+   known member. This is what recognises a repository-level *collaborator* who
+   holds no organisation membership.
+
+The membership query is not redundant, and this ordering is deliberate.
+`authorAssociation` is computed **relative to the requesting token**: where an
+organisation's members keep their membership private — GitHub's default — the
+same issue reports `MEMBER` to a token with organisation visibility and
+`CONTRIBUTOR` to one without. Classifying on that field alone would make the
+counts depend on which token produced the report, and a token lacking
+`read:org` would file an entire organisation as outsiders.
+
+**When membership cannot be read at all**, the fallback is not enough on its
+own: an association naming an *insider* is still trusted (only a token that can
+see the relationship reports it), but one naming an outsider proves nothing,
+because that is exactly how a private member appears to an under-privileged
+token. Those authors are reported as indeterminate rather than external, so
+`Ext` **undercounts and should be read as a lower bound** — the table says so in
+its description whenever this happens, and the run logs a warning. Membership is
+never used partially: a failed page or an organisation beyond the pagination
+guard is treated as unreadable rather than as a member list with people missing
+from it, since every absent member would otherwise read as an outsider.
+
+**Automation is never counted as external.** Bots are outsiders by association —
+`dependabot[bot]` genuinely reports `CONTRIBUTOR` or `NONE` — so counting on
+association alone would file every dependency-update pull request as an external
+contribution and bury the genuine outside contributors the column exists to
+surface. Automation is reported under `Auto` instead.
+
+An author who cannot be classified at all — a deleted account, or an
+association value GitHub has newly introduced — is **not** counted as external.
+The column understates rather than inventing an outsider.
+
+**Permissions.** Reading organisation membership needs `read:org` (classic) or
+**Members: read** (fine-grained). Without it the tool logs a warning and
+reports externally-raised counts as a lower bound rather than guessing from
+`authorAssociation` alone.
 
 ### Organisation feature gating
 
@@ -598,6 +987,7 @@ and the Slack **bot token** is consumed by the workflow, not the CLI.
 | `top_n_slack` | No | — | Offenders per signal in the Slack digest (`0` = no limit; overrides `top_n`) |
 | `fail_threshold` | No | `none` | `none`/`low`/`medium`/`high`/`critical`/`any` (repo mode) |
 | `force_notify` | No | `false` | Post to Slack regardless of `report_day` |
+| `hide` | No | `""` | Category keys to suppress on every output (space- or comma-separated). Overrides config, and is one-way: it cannot re-enable a disabled category |
 | `tool_version` | No | `""` | Published PyPI version to install. Empty (the default) uses the Dependabot-managed pin in `.github/runtime-pin/requirements.txt`; set a specific version to override. Ignored on pull requests or when `use_local_source` is `true` (both run from source) |
 | `use_local_source` | No | `false` | Run from the checked-out source instead of PyPI (for testing unreleased code from any event) |
 
@@ -633,6 +1023,27 @@ without code changes: set `GITHUB_API_URL` and `GITHUB_GRAPHQL_URL` to
 your enterprise endpoints (Actions sets these automatically on GHES
 runners). `SCORECARD_API_URL` overrides the external OpenSSF Scorecard
 API in the same way.
+
+### Exit codes
+
+| Code | Meaning |
+| ---- | ------- |
+| `0` | The report ran. |
+| `1` | Repo mode only: findings met or exceeded `--fail-threshold`. |
+| `2` | Usage or configuration error (bad flag, unreadable config). |
+| `3` | The GitHub API was unreachable after the retry budget. |
+| `4` | GitHub rejected the credentials (HTTP 401). |
+
+Codes `3` and `4` are **aborts, not reports**: nothing is written and no Pages
+artifact is produced. That is deliberate. A token that has expired, been revoked
+or been rotated makes every read fail, and a run that degraded instead would
+render a complete, confidently clean report — `0 repositories analysed`, every
+section `No data` or `All Clean` — and a scheduled job would then publish it
+over the last good one. Reporting false data is worse than reporting none, so
+the run stops at the first rejected request.
+
+The two are separate codes because the remedy differs: `4` means rotate or fix
+the token, `3` means retry later.
 
 ## Remediation
 

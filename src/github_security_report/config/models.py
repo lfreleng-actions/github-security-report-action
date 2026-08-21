@@ -104,6 +104,27 @@ class CategoryToggle:
         return self.enabled and getattr(self.outputs, output)
 
 
+# Surfaces a personal, reader-specific category belongs on. "Assigned to Me"
+# is one account's review queue -- whichever account the run authenticated as --
+# so it belongs on that reader's own terminal and nowhere that is published. A
+# Pages site, a Markdown artifact and a Slack digest are all read by the whole
+# organisation, where one person's inbox is at best noise and at worst a
+# statement about an individual's workload.
+_TERMINAL_ONLY = OutputToggles(cli=True, slack=False, markdown=False, html=False)
+
+# Categories whose default visibility is narrower than "every surface". Merged
+# under any configured block key-by-key, so an operator who sets, say, a `top_n`
+# for one of these keeps the restricted surfaces rather than silently
+# publishing it everywhere.
+DEFAULT_CATEGORIES: Mapping[str, CategoryToggle] = MappingProxyType(
+    {
+        CategoryKey.PULL_REQUESTS_ASSIGNED.value: CategoryToggle(
+            outputs=_TERMINAL_ONLY
+        ),
+    }
+)
+
+
 @dataclass(frozen=True)
 class ReportConfig:
     # Shared default number of offenders shown per signal; per-output overrides
@@ -127,6 +148,25 @@ class ReportConfig:
     # gives every repository a 60-day window: one tagged or released inside that
     # window is treated as recently maintained and omitted from the table.
     release_max_age_days: int = 60
+    # Open-automation thresholds colouring the Pull Requests table's Auto
+    # column. The defaults track GitHub's own behaviour: Dependabot's
+    # ``open-pull-requests-limit`` defaults to 5, so 5 is where updates stop
+    # arriving and 3-4 is the approach to it. An organisation that raises that
+    # limit should raise these to match -- they describe your policy, and the
+    # defaults are only the most useful guess in the absence of one.
+    #
+    # One deliberate imprecision, since the column is a proxy rather than a
+    # measurement: GitHub applies its limit per package ecosystem, while Auto
+    # counts every automation author across all of them. A repository can
+    # therefore be stalled in one ecosystem below the threshold, or sit above
+    # it on Renovate pull requests alone. The count is still the right thing to
+    # watch -- a large automation backlog is worth attention however it
+    # accumulated -- but the colour is a prompt to look, not a verdict.
+    # Warn (yellow) above this many: 3 or 4 open, approaching the default limit.
+    dependabot_warn_threshold: int = 2
+    # Error (red) at or above this many: GitHub's default open-pull-requests
+    # limit, at which no further updates arrive for that ecosystem.
+    dependabot_error_threshold: int = 5
     # Organisation feature gating for the workflow-driven signals (Scorecard,
     # zizmor, aislop): when true, each is collected only after a cheap check
     # finds organisation support (an org ruleset requiring the workflow,
@@ -148,9 +188,10 @@ class ReportConfig:
         default_factory=lambda: DEFAULT_ISSUE_LABELS
     )
     # Per-category render toggles, keyed by category-key value. Absent keys fall
-    # back to a fully-enabled default, so the empty default shows everything.
+    # back to a fully-enabled default; the seeded entries in DEFAULT_CATEGORIES
+    # are the categories that are deliberately not shown everywhere.
     categories: Mapping[str, CategoryToggle] = field(
-        default_factory=lambda: MappingProxyType({})
+        default_factory=lambda: DEFAULT_CATEGORIES
     )
 
     def shows_category(self, key: CategoryKey, output: str) -> bool:

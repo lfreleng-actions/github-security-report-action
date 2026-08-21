@@ -31,6 +31,23 @@ class ClientProtocol(Protocol):
         """Fetch the organisation's workflow rulesets."""
         raise NotImplementedError
 
+    async def org_members(self, org: str) -> frozenset[str] | None:
+        """Return the organisation's member logins, normalised.
+
+        ``None`` means membership could not be read in full, which is not the
+        same as an organisation with no members: the caller must not treat a
+        missing member as evidence that an author is an outsider.
+        """
+        raise NotImplementedError
+
+    async def viewer_login(self) -> str:
+        """Return the authenticated account's login, lower-cased.
+
+        An empty string means the account could not be read, in which case no
+        pull request counts as assigned to the caller.
+        """
+        raise NotImplementedError
+
     async def code_scanning_tools(
         self, org: str, repo: str, tools: tuple[str, ...] | None = None
     ) -> tuple[int, set[str]]:

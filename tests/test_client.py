@@ -15,6 +15,7 @@ import respx
 
 from github_security_report.client import (
     API_MAX_RETRIES,
+    AuthError,
     GitHubClient,
     NetworkError,
     _endpoint_diagnostics,
@@ -402,6 +403,64 @@ async def test_external_transport_failure_degrades_not_raises(
 
 
 @respx.mock
+async def test_rejected_credentials_raise_auth_error(client: GitHubClient) -> None:
+    # A 401 condemns every remaining read, so degrading it would render the
+    # whole report as "no data" / "all clean" -- a false negative a scheduled
+    # run would publish over a good report.
+    respx.get(f"{API}/repos/o/r/secret-scanning/alerts").mock(
+        return_value=httpx.Response(401, json={"message": "Bad credentials"})
+    )
+    with pytest.raises(AuthError) as excinfo:
+        await client.secret_scanning_status("o", "r")
+    message = str(excinfo.value)
+    assert "401" in message
+    # The message has to name the remedy: the operator's next action is to
+    # check the token, not to retry.
+    assert "expired" in message or "revoked" in message
+
+
+async def test_auth_error_is_a_network_error() -> None:
+    # Callers that already abort on an unusable API keep aborting without
+    # having to learn about the new type.
+    assert issubclass(AuthError, NetworkError)
+
+
+@respx.mock
+async def test_rejected_credentials_are_not_retried(
+    client: GitHubClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Retrying rejected credentials cannot help and only delays the abort.
+    slept: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        slept.append(delay)
+
+    monkeypatch.setattr(
+        "github_security_report.client.transport.asyncio.sleep", _fake_sleep
+    )
+    route = respx.get(f"{API}/repos/o/r/secret-scanning/alerts").mock(
+        return_value=httpx.Response(401)
+    )
+    with pytest.raises(AuthError):
+        await client.secret_scanning_status("o", "r")
+    assert route.call_count == 1
+    assert slept == []
+
+
+@respx.mock
+async def test_external_401_does_not_abort_the_run(client: GitHubClient) -> None:
+    # The Scorecard endpoint is unauthenticated and third-party: whatever it
+    # says about credentials tells us nothing about the GitHub token, so it
+    # degrades that one signal instead of aborting.
+    respx.get(url__startswith=f"{SCORECARD}/projects/github.com/o/r").mock(
+        return_value=httpx.Response(401)
+    )
+    status, score = await client.scorecard_score("o", "r")
+    assert status == 401
+    assert score is None
+
+
+@respx.mock
 async def test_org_workflow_rulesets(client: GitHubClient) -> None:
     respx.get(url__regex=r"orgs/o/rulesets($|\?)").mock(
         return_value=httpx.Response(
@@ -665,6 +724,8 @@ def _graph_repo_node(
     # the parameter covariant, so a list of concretely-typed dicts is accepted.
     releases: Sequence[dict | None] | None = None,
     latest_release: dict | None = None,
+    pull_requests: Sequence[dict | str | None] | None = None,
+    pull_request_total: int | None = None,
 ) -> dict:
     """Build one repository alias node as the batched query returns it."""
     return {
@@ -675,6 +736,14 @@ def _graph_repo_node(
         "tags": {"nodes": [{"target": tag_target}] if tag_target else []},
         "latestRelease": latest_release,
         "releases": {"nodes": list(releases or [])},
+        "pullRequests": {
+            "totalCount": (
+                pull_request_total
+                if pull_request_total is not None
+                else len(pull_requests or [])
+            ),
+            "nodes": list(pull_requests or []),
+        },
     }
 
 
@@ -1166,6 +1235,365 @@ async def test_repo_graph_batch_marks_a_truncated_label_window(
     out = await client.repo_graph_batch("o", ["a"])
 
     assert out["a"].issues[0].labels_truncated is True
+
+
+def _graph_pull_request(
+    number: int = 1,
+    *,
+    login: str | None = "alice",
+    typename: str = "User",
+    association: str = "MEMBER",
+    draft: bool = False,
+    mergeable: str | None = "MERGEABLE",
+    rollup: str | None = "SUCCESS",
+    assignees: Sequence[str] | None = (),
+) -> dict:
+    """Build one pull-request node as the batched query returns it."""
+    return {
+        "number": number,
+        "isDraft": draft,
+        "mergeable": mergeable,
+        "authorAssociation": association,
+        "author": ({"__typename": typename, "login": login} if login else None),
+        "assignees": (
+            {"nodes": [{"login": name} for name in assignees]}
+            if assignees is not None
+            else None
+        ),
+        "commits": {
+            "nodes": [
+                {
+                    "commit": {
+                        "statusCheckRollup": (
+                            {"state": rollup} if rollup is not None else None
+                        )
+                    }
+                }
+            ]
+        },
+    }
+
+
+@respx.mock
+async def test_repo_graph_batch_parses_pull_requests(client: GitHubClient) -> None:
+    node = _graph_repo_node(
+        pull_requests=[
+            _graph_pull_request(
+                1,
+                login="dependabot",
+                typename="Bot",
+                association="NONE",
+                mergeable="CONFLICTING",
+                rollup="FAILURE",
+            ),
+            _graph_pull_request(2, draft=True, assignees=["Alice", "BOB"], rollup=None),
+        ],
+        pull_request_total=2,
+    )
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": {"r0": node}})
+    )
+    out = await client.repo_graph_batch("o", ["a"])
+    first, second = out["a"].pull_requests
+    assert out["a"].open_pull_requests == 2
+    assert first.author is not None
+    assert (first.author.login, first.author.typename) == ("dependabot", "Bot")
+    assert first.conflicting is True
+    assert first.failing is True
+    # Assignee logins are lower-cased at the boundary so the "is this mine?"
+    # comparison never has to care which casing GitHub returned.
+    assert second.assignees == ("alice", "bob")
+    assert second.draft is True
+    # No rollup at all is not a pass: nothing has run.
+    assert second.failing is None
+    assert second.conflicting is False
+
+
+@respx.mock
+async def test_repo_graph_batch_pull_requests_absent_is_unknown(
+    client: GitHubClient,
+) -> None:
+    # A null connection is "never read", which must not read as "none open".
+    node = _graph_repo_node()
+    node["pullRequests"] = None
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": {"r0": node}})
+    )
+    out = await client.repo_graph_batch("o", ["a"])
+    assert out["a"].open_pull_requests is None
+    assert out["a"].pull_requests == ()
+
+
+@respx.mock
+async def test_repo_graph_batch_skips_malformed_pull_request_nodes(
+    client: GitHubClient,
+) -> None:
+    # A null entry, a non-dict and an entry without a usable number are not
+    # pull requests we can report on; they are skipped rather than aborting
+    # the surrounding parse, and the authoritative total still stands.
+    node = _graph_repo_node(
+        pull_requests=[None, "nonsense", {"isDraft": True}, _graph_pull_request(7)],
+        pull_request_total=4,
+    )
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": {"r0": node}})
+    )
+    out = await client.repo_graph_batch("o", ["a"])
+    assert out["a"].open_pull_requests == 4
+    assert [p.number for p in out["a"].pull_requests] == [7]
+
+
+@respx.mock
+async def test_repo_graph_batch_unknown_mergeable_is_not_a_clean_merge(
+    client: GitHubClient,
+) -> None:
+    # GitHub computes mergeability lazily and answers UNKNOWN until it settles,
+    # so a cold sweep must report "not established" rather than either answer.
+    node = _graph_repo_node(
+        pull_requests=[_graph_pull_request(1, mergeable="UNKNOWN")],
+        pull_request_total=1,
+    )
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": {"r0": node}})
+    )
+    out = await client.repo_graph_batch("o", ["a"])
+    assert out["a"].pull_requests[0].conflicting is None
+
+
+@respx.mock
+async def test_pull_request_permission_error_spares_the_rest_of_the_repo(
+    client: GitHubClient,
+) -> None:
+    # A token that cannot read pull requests must lose only that table. The
+    # repository's releases, issues, tags and Dependabot posture were read
+    # successfully and failing them too would let one optional, permission-
+    # sensitive section take the whole report down with it.
+    node = _graph_repo_node(enabled=True, config_text="version: 2")
+    node["pullRequests"] = None
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {"r0": node},
+                "errors": [
+                    {
+                        "path": ["r0", "pullRequests"],
+                        "message": "Resource not accessible by integration",
+                    }
+                ],
+            },
+        )
+    )
+    out = await client.repo_graph_batch("o", ["a"])
+    assert out["a"].unreadable is False
+    assert out["a"].dependabot_alerts_enabled is True
+    assert out["a"].dependabot_config == "version: 2"
+    # Only the pull-request data is unknown.
+    assert out["a"].open_pull_requests is None
+
+
+@respx.mock
+async def test_other_field_error_still_fails_the_whole_alias(
+    client: GitHubClient,
+) -> None:
+    # The isolation is deliberately narrow: a nulled latestRelease is
+    # indistinguishable from "never released", so it still condemns the alias.
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {"r0": _graph_repo_node()},
+                "errors": [{"path": ["r0", "latestRelease"], "message": "boom"}],
+            },
+        )
+    )
+    out = await client.repo_graph_batch("o", ["a"])
+    assert out["a"].unreadable is True
+
+
+@respx.mock
+async def test_viewer_login_ignores_an_automation_account(
+    client: GitHubClient,
+) -> None:
+    # A bot or App has no personal review queue, and its login can legitimately
+    # be an assignee, so returning it would populate "Mine" for an account with
+    # no inbox -- in exactly the scheduled runs most likely to authenticate
+    # this way.
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "viewer": {"__typename": "Bot", "login": "github-actions[bot]"}
+                }
+            },
+        )
+    )
+    assert await client.viewer_login() == ""
+
+
+@respx.mock
+async def test_viewer_login_returns_a_human_account(client: GitHubClient) -> None:
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(
+            200, json={"data": {"viewer": {"__typename": "User", "login": "Alice"}}}
+        )
+    )
+    assert await client.viewer_login() == "alice"
+
+
+@respx.mock
+async def test_org_members_rejects_an_unusable_member_node(
+    client: GitHubClient,
+) -> None:
+    # A null node or one without a login is a member we cannot name, and a
+    # member missing from the set reads as an outsider. Dropping it silently
+    # would shorten the list while still returning it as authoritative.
+    for nodes in ([{"login": "alice"}, None], [{"login": "alice"}, {}]):
+        respx.post(f"{API}/graphql").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "organization": {
+                            "viewerIsAMember": True,
+                            "membersWithRole": {
+                                "totalCount": 2,
+                                "pageInfo": {
+                                    "hasNextPage": False,
+                                    "endCursor": None,
+                                },
+                                "nodes": nodes,
+                            },
+                        }
+                    }
+                },
+            )
+        )
+        assert await client.org_members("o") is None
+
+
+@respx.mock
+async def test_org_members_rejects_a_response_carrying_graphql_errors(
+    client: GitHubClient,
+) -> None:
+    # GraphQL answers a partially-failed query with HTTP 200, populating what
+    # it could alongside an errors array. A shortened member list is
+    # indistinguishable from a complete one, so any error condemns the read.
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "organization": {
+                        "viewerIsAMember": True,
+                        "membersWithRole": {
+                            "totalCount": 2,
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [{"login": "alice"}],
+                        },
+                    }
+                },
+                "errors": [{"message": "something was not readable"}],
+            },
+        )
+    )
+    assert await client.org_members("o") is None
+
+
+@respx.mock
+async def test_org_members_outside_viewer_is_unknown_not_partial(
+    client: GitHubClient,
+) -> None:
+    # membersWithRole is visibility-filtered rather than access-controlled: a
+    # non-member gets a valid connection holding only the *public* members,
+    # with no error and a matching totalCount. Trusting it would report every
+    # private member as an outsider.
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "organization": {
+                        "viewerIsAMember": False,
+                        "membersWithRole": {
+                            "totalCount": 3,
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [{"login": "public-person"}],
+                        },
+                    }
+                }
+            },
+        )
+    )
+    assert await client.org_members("o") is None
+
+
+@respx.mock
+async def test_org_members_returns_the_set_for_a_member_viewer(
+    client: GitHubClient,
+) -> None:
+    # Members can see each other, so a viewer inside the organisation gets the
+    # complete list and it is safe to treat as authoritative.
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "organization": {
+                        "viewerIsAMember": True,
+                        "membersWithRole": {
+                            "totalCount": 2,
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [{"login": "Alice"}, {"login": "Bob"}],
+                        },
+                    }
+                }
+            },
+        )
+    )
+    assert await client.org_members("o") == frozenset({"alice", "bob"})
+
+
+@respx.mock
+async def test_org_members_unreadable_organisation_is_unknown(
+    client: GitHubClient,
+) -> None:
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": {"organization": None}, "errors": [{"message": "nope"}]},
+        )
+    )
+    assert await client.org_members("o") is None
+
+
+@respx.mock
+async def test_org_members_failed_later_page_discards_the_partial_set(
+    client: GitHubClient,
+) -> None:
+    # A partial list is worse than none: every member missing from it reads as
+    # an outsider, and nothing distinguishes an absent member from a real one.
+    first = httpx.Response(
+        200,
+        json={
+            "data": {
+                "organization": {
+                    "viewerIsAMember": True,
+                    "membersWithRole": {
+                        "totalCount": 200,
+                        "pageInfo": {"hasNextPage": True, "endCursor": "cursor"},
+                        "nodes": [{"login": "alice"}],
+                    },
+                }
+            }
+        },
+    )
+    route = respx.post(f"{API}/graphql")
+    # 404 rather than 500: a server error is retried on the shared backoff
+    # schedule, which is not what this test is about.
+    route.side_effect = [first, httpx.Response(404)]
+    assert await client.org_members("o") is None
 
 
 @respx.mock

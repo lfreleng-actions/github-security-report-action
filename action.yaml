@@ -66,6 +66,20 @@ inputs:
     description: "Post to Slack regardless of report_day"
     required: false
     default: "false"
+  hide:
+    # Space- or comma-separated category keys. Outranks the configuration and
+    # is one-way: it can suppress a category the config would show, but cannot
+    # re-enable one the config disabled.
+    #
+    # Deliberately empty by default. The personal review-queue table it would
+    # most obviously name is already terminal-only, so no published surface
+    # renders it and report.json omits it too (a category no published surface
+    # carries is left out of that file). A non-empty default would also be
+    # passed to whichever published version the runtime pin installs, which
+    # fails with "No such option" on any release predating the flag.
+    description: "Category keys to suppress on every output (space- or comma-separated; overrides config)"
+    required: false
+    default: ""
   tool_version:
     description: "Published PyPI version to run; ignored on pull_request or when use_local_source is true (both run from the checked-out source). Empty (the default) uses the Dependabot-managed pin in .github/runtime-pin/requirements.txt"
     required: false
@@ -119,6 +133,7 @@ runs:
         INPUT_TOP_N_SLACK: ${{ inputs.top_n_slack }}
         INPUT_FAIL_THRESHOLD: ${{ inputs.fail_threshold }}
         INPUT_FORCE_NOTIFY: ${{ inputs.force_notify }}
+        INPUT_HIDE: ${{ inputs.hide }}
         TOOL_VERSION: ${{ inputs.tool_version }}
         USE_LOCAL_SOURCE: ${{ inputs.use_local_source }}
         EVENT_NAME: ${{ github.event_name }}
@@ -203,5 +218,14 @@ runs:
         [ -n "$INPUT_TOP_N_SLACK" ] && args+=(--top-n-slack "$INPUT_TOP_N_SLACK")
         [ -n "$INPUT_FAIL_THRESHOLD" ] && args+=(--fail-threshold "$INPUT_FAIL_THRESHOLD")
         [ "$INPUT_FORCE_NOTIFY" = "true" ] && args+=(--force-notify)
+        # One --hide per category. Commas become spaces so either separator
+        # works in a workflow, and the unquoted expansion is deliberate word
+        # splitting; empty fields collapse, so a trailing separator cannot
+        # produce a bare --hide with no value.
+        if [ -n "$INPUT_HIDE" ]; then
+          for category in $(printf '%s' "$INPUT_HIDE" | tr ',' ' '); do
+            args+=(--hide "$category")
+          done
+        fi
 
         uvx --from "$SOURCE" github-security-report "${args[@]}"
