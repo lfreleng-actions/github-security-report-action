@@ -362,6 +362,10 @@ def resolve_signal_terms(
             folded = _SIGNAL_ALIASES.get(folded, folded)
         column = columns.get(folded)
         if column is None:
+            # ``columns`` holds sort-column headings, never a finding value.
+            # CodeQL's py/clear-text-logging-sensitive-data fires only because
+            # ``_SECRET_SCANNING_COLUMNS`` matches its "secret" heuristic -- a
+            # feature name. Alert 68 is dismissed as a false positive.
             log.warning(
                 "ignoring unknown sort column %r for the %s table; available "
                 "columns are: %s",
