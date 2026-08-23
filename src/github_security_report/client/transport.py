@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import socket
+from dataclasses import dataclass
 from typing import TypeVar
 
 import httpx
@@ -102,6 +103,102 @@ class AuthError(NetworkError):
     """
 
 
+def _auth_error(method: str, url: str) -> AuthError:
+    """The :class:`AuthError` for credentials GitHub rejected on ``url``.
+
+    Built on the very first 401 rather than retried or degraded, for the
+    reasons :class:`AuthError` gives. The message names the remedy, because
+    the operator's next action is to check the token, not to retry.
+    """
+    return AuthError(
+        "Authentication error: GitHub rejected the credentials "
+        "(HTTP 401); aborting because every subsequent read would "
+        "fail the same way and the report would render as "
+        "'no data' or 'all clean' rather than as a failure.\n  "
+        f"endpoint={method} {url}\n  "
+        "Check that the token is set, has not expired, and has not "
+        "been revoked or rotated."
+    )
+
+
+async def _transport_failure_result(
+    exc: httpx.HTTPError,
+    method: str,
+    url: str,
+    *,
+    attempt: int,
+    is_external: bool,
+) -> httpx.Response:
+    """Resolve a transport failure that outlived the whole retry budget.
+
+    A third-party (Scorecard) endpoint degrades to an indeterminate 503 so one
+    flaky external API never aborts the GitHub report. The GitHub API instead
+    raises :class:`NetworkError`: a report built without live data is actively
+    misleading, so the run aborts, carrying a diagnostics line that names the
+    endpoint that could not be reached.
+    """
+    if is_external:
+        log.warning(
+            "external request to %s failed after %d attempt(s): "
+            "%s; signal degraded to unknown",
+            url,
+            attempt + 1,
+            exc,
+        )
+        return httpx.Response(503, request=httpx.Request(method, url))
+    diagnostics = await _endpoint_diagnostics(url)
+    raise NetworkError(
+        "Network error: the GitHub API is unreachable after "
+        f"{attempt + 1} attempt(s) within "
+        f"{API_MAX_TOTAL_WAIT_SECONDS:.0f}s; aborting because a "
+        "security report cannot be produced without live API "
+        "data.\n  "
+        f"endpoint={method} {url} {diagnostics} "
+        f"cause={exc!s}"
+    ) from exc
+
+
+class _RetryBudget:
+    """Attempts spent and seconds slept so far within one ``_request`` call.
+
+    Holds the state the retry loop carries across iterations, so deciding that
+    the budget has run out and spending it (sleep, then count the attempt) stay
+    together instead of being open-coded at every backoff site.
+    """
+
+    def __init__(self, max_retries: int) -> None:
+        self.attempt = 0
+        self.waited = 0.0
+        self._max_retries = max_retries
+
+    def exhausted(self, delay: float) -> bool:
+        """Whether sleeping ``delay`` would exceed the retry or wait budget."""
+        return (
+            self.attempt >= self._max_retries
+            or self.waited + delay > API_MAX_TOTAL_WAIT_SECONDS
+        )
+
+    async def sleep(self, delay: float) -> None:
+        """Back off for ``delay`` seconds and charge them to the budget."""
+        await asyncio.sleep(delay)
+        self.waited += delay
+        self.attempt += 1
+
+
+@dataclass(frozen=True)
+class _RetryPlan:
+    """How a reachable-but-degraded (403/429/5xx) response should be treated.
+
+    ``retriable`` is false for a genuine permission error, which is handed
+    straight back to the caller; ``server_error`` only selects the wording of
+    the retry warning.
+    """
+
+    retriable: bool
+    server_error: bool
+    delay: float
+
+
 class Transport:
     """Connection lifecycle plus the shared retry/backoff request primitives."""
 
@@ -175,25 +272,20 @@ class Transport:
 
         Retries follow the shared retry/backoff policy: exponential backoff,
         at most ``max_retries`` retries (the constructor argument, defaulting to
-        ``API_MAX_RETRIES``), and at most
-        ``API_MAX_TOTAL_WAIT_SECONDS`` of cumulative waiting. A transport
-        failure (DNS/TLS/connect or read timeout) to the GitHub API that
-        outlives the whole budget raises :class:`NetworkError` to abort the run
-        -- a report built without live data would be misleading. The same
-        failure against the third-party Scorecard endpoint instead degrades to
-        an indeterminate 503, so one flaky external API never aborts the report.
-        Server errors (5xx) and rate-limit responses (403/429) back off on the
-        same schedule and, once exhausted, return the response for the caller
-        to handle: per-signal probes degrade to unknown, while callers whose
-        data is load-bearing (the GraphQL prefetch) abort the run instead of
-        fabricating results. A 401 from the GitHub API is never degraded or
-        retried: it condemns every remaining read, so it raises
-        :class:`AuthError` immediately.
+        ``API_MAX_RETRIES``), and at most ``API_MAX_TOTAL_WAIT_SECONDS`` of
+        cumulative waiting -- the two ceilings :class:`_RetryBudget` tracks.
+        What happens once that budget is spent depends on the failure and lives
+        in the helpers below: :func:`_transport_failure_result` for an endpoint
+        that could not be reached at all, and :meth:`_plan_degraded_retry` for a
+        server error (5xx) or a rate limit (403/429), which ends by returning
+        the response for the caller to handle -- per-signal probes degrade to
+        unknown, while callers whose data is load-bearing (the GraphQL
+        prefetch) abort the run instead of fabricating results. A 401 from the
+        GitHub API is never degraded or retried; see :func:`_auth_error`.
         """
         http = client or self._client
         is_external = http is self._ext_client
-        attempt = 0
-        waited = 0.0
+        budget = _RetryBudget(self._max_retries)
         while True:
             try:
                 async with self._sem:
@@ -201,114 +293,103 @@ class Transport:
             except httpx.HTTPError as exc:
                 # Transport failure: the endpoint could not be reached at all
                 # (DNS, connection, TLS, or read timeout).
-                delay = self._backoff_delay(attempt)
-                exhausted = (
-                    attempt >= self._max_retries
-                    or waited + delay > API_MAX_TOTAL_WAIT_SECONDS
-                )
-                if exhausted:
-                    if is_external:
-                        # Third-party (Scorecard) endpoint: degrade this one
-                        # signal rather than aborting the whole GitHub report.
-                        log.warning(
-                            "external request to %s failed after %d attempt(s): "
-                            "%s; signal degraded to unknown",
-                            url,
-                            attempt + 1,
-                            exc,
-                        )
-                        return httpx.Response(503, request=httpx.Request(method, url))
-                    diagnostics = await _endpoint_diagnostics(url)
-                    raise NetworkError(
-                        "Network error: the GitHub API is unreachable after "
-                        f"{attempt + 1} attempt(s) within "
-                        f"{API_MAX_TOTAL_WAIT_SECONDS:.0f}s; aborting because a "
-                        "security report cannot be produced without live API "
-                        "data.\n  "
-                        f"endpoint={method} {url} {diagnostics} "
-                        f"cause={exc!s}"
-                    ) from exc
-                log.warning(
-                    "request to %s failed: %s; retrying in %.0fs (retry %d of %d)",
-                    url,
-                    exc,
-                    delay,
-                    attempt + 1,
-                    self._max_retries,
-                )
-                await asyncio.sleep(delay)
-                waited += delay
-                attempt += 1
+                delay = self._backoff_delay(budget.attempt)
+                if budget.exhausted(delay):
+                    return await _transport_failure_result(
+                        exc,
+                        method,
+                        url,
+                        attempt=budget.attempt,
+                        is_external=is_external,
+                    )
+                self._log_transport_retry(url, exc, delay, budget.attempt)
+                await budget.sleep(delay)
                 continue
             if resp.status_code == 401 and not is_external:
                 # Credentials rejected: fail fast on the very first request
                 # rather than letting a hundred more rejections accumulate into
                 # an empty, plausible-looking report.
                 await resp.aclose()  # unread body would leak a pooled connection
-                raise AuthError(
-                    "Authentication error: GitHub rejected the credentials "
-                    "(HTTP 401); aborting because every subsequent read would "
-                    "fail the same way and the report would render as "
-                    "'no data' or 'all clean' rather than as a failure.\n  "
-                    f"endpoint={method} {url}\n  "
-                    "Check that the token is set, has not expired, and has not "
-                    "been revoked or rotated."
-                )
+                raise _auth_error(method, url)
             if resp.status_code not in (403, 429) and resp.status_code < 500:
                 return resp
             # Reachable but degraded: a 5xx (GitHub infrastructure trouble) or
             # a possible rate limit. Distinguish secondary/primary rate
             # limiting from a genuine 403, then back off on the shared
             # schedule (honouring Retry-After) within the wait budget.
-            retry_after = resp.headers.get("retry-after")
-            remaining = resp.headers.get("x-ratelimit-remaining")
-            retry_after_secs = _parse_retry_after(retry_after)
-            # A 429 is by definition "Too Many Requests", so always back off on
-            # it even when GitHub (or an intermediary) omits Retry-After and the
-            # x-ratelimit-remaining header; falling through would return the 429
-            # un-retried. A 403 is a rate limit only when one of those headers
-            # says so (otherwise it is a genuine permission error); the mere
-            # *presence* of Retry-After counts, so a malformed/unparsable value
-            # still triggers a backoff (falling back to the exponential schedule
-            # below) rather than being mistaken for a permission error.
-            rate_limited = (
-                resp.status_code == 429 or retry_after is not None or remaining == "0"
-            )
-            # Any 5xx is retried: GitHub's infrastructure wobbles produce
-            # transient 500/502/503 responses that, if returned un-retried,
-            # would silently degrade (or falsify) whole report sections.
-            server_error = resp.status_code >= 500
-            delay = (
-                retry_after_secs
-                if retry_after_secs is not None
-                else self._backoff_delay(attempt)
-            )
-            if (
-                not (rate_limited or server_error)
-                or attempt >= self._max_retries
-                or waited + delay > API_MAX_TOTAL_WAIT_SECONDS
-            ):
+            plan = self._plan_degraded_retry(resp, budget.attempt)
+            if not plan.retriable or budget.exhausted(plan.delay):
                 # Retries exhausted (or a genuine 403): hand the response back
                 # so the caller can degrade its signal to unknown -- or, when
                 # its data is load-bearing, abort the run.
                 return resp
-            if server_error:
-                log.warning(
-                    "server error %d on %s; retrying in %.0fs (retry %d of %d)",
-                    resp.status_code,
-                    url,
-                    delay,
-                    attempt + 1,
-                    self._max_retries,
-                )
-            else:
-                log.warning("rate limited on %s; backing off %.0fs", url, delay)
+            self._log_degraded_retry(resp, url, plan, budget.attempt)
             # The discarded response must be closed; we are retrying and will
             # not read its body, so leaving it open would leak a pool connection.
             await resp.aclose()
-            await asyncio.sleep(delay)
-            waited += delay
-            attempt += 1
+            await budget.sleep(plan.delay)
+
+    def _plan_degraded_retry(self, resp: httpx.Response, attempt: int) -> _RetryPlan:
+        """Decide whether a 403/429/5xx response is retriable, and after how long.
+
+        A 429 is by definition "Too Many Requests", so always back off on it
+        even when GitHub (or an intermediary) omits Retry-After and the
+        x-ratelimit-remaining header; falling through would return the 429
+        un-retried. A 403 is a rate limit only when one of those headers
+        says so (otherwise it is a genuine permission error); the mere
+        *presence* of Retry-After counts, so a malformed/unparsable value
+        still triggers a backoff (falling back to the exponential schedule)
+        rather than being mistaken for a permission error.
+
+        Any 5xx is retried: GitHub's infrastructure wobbles produce transient
+        500/502/503 responses that, if returned un-retried, would silently
+        degrade (or falsify) whole report sections.
+        """
+        retry_after = resp.headers.get("retry-after")
+        remaining = resp.headers.get("x-ratelimit-remaining")
+        retry_after_secs = _parse_retry_after(retry_after)
+        rate_limited = (
+            resp.status_code == 429 or retry_after is not None or remaining == "0"
+        )
+        server_error = resp.status_code >= 500
+        return _RetryPlan(
+            retriable=rate_limited or server_error,
+            server_error=server_error,
+            delay=(
+                retry_after_secs
+                if retry_after_secs is not None
+                else self._backoff_delay(attempt)
+            ),
+        )
+
+    def _log_transport_retry(
+        self, url: str, exc: httpx.HTTPError, delay: float, attempt: int
+    ) -> None:
+        """Warn that an unreachable endpoint will be retried after ``delay``."""
+        log.warning(
+            "request to %s failed: %s; retrying in %.0fs (retry %d of %d)",
+            url,
+            exc,
+            delay,
+            attempt + 1,
+            self._max_retries,
+        )
+
+    def _log_degraded_retry(
+        self, resp: httpx.Response, url: str, plan: _RetryPlan, attempt: int
+    ) -> None:
+        """Warn that a degraded response will be retried after ``plan.delay``."""
+        if plan.server_error:
+            log.warning(
+                "server error %d on %s; retrying in %.0fs (retry %d of %d)",
+                resp.status_code,
+                url,
+                plan.delay,
+                attempt + 1,
+                self._max_retries,
+            )
+        else:
+            log.warning("rate limited on %s; backing off %.0fs", url, plan.delay)
 
     async def _get_list(self, url: str, **params: object) -> tuple[int, list[dict]]:
         """GET a paginated list, returning (status, items collected).
