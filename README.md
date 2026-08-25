@@ -230,7 +230,8 @@ environment-variable name, never embedded.
     "include_archived": false,
     "include_test": false,
     "repo_min_age_days": 28,
-    "release_max_age_days": 60
+    "release_max_age_days": 60,
+    "order": { "style": "auto" }
   },
   "organizations": [
     {
@@ -461,6 +462,81 @@ Omitting `sort` keeps each signal's default ranking, which is not expressible as
 a column list — Scorecard cascades through the worst severity rung any offender
 actually carries, so a lone Critical is never buried by a weaker repository with
 a lower score.
+
+### Output order
+
+`sort` above orders the rows *within* a table. `report.order` orders the
+**sections themselves** — which category a reader meets first.
+
+By default the report sorts its sections into three bands:
+
+| Band | Contains | Why |
+| ---- | -------- | --- |
+| **Priority** | Secret Scanning, Dependabot: Security Alerts, CodeQL, Mutable Releases | Findings worth acting on today |
+| **Middle** | Everything else | Neither urgent nor constant |
+| **BAU** | OpenSSF Scorecard, GitHub Issues, Pull Requests, Assigned to Me | Carry data every run, so none of it is news |
+
+The bands are not fixed slots. **A band member with nothing to report moves
+into the middle**: a clean priority category is noise at the top of a page, and
+a clean BAU category has stopped being background. Demoted priority categories
+sit at the top of the middle band and demoted BAU ones at the bottom, so
+whatever survives in each band still bounds the middle from its own side. A
+section skipped by [feature gating](#organisation-feature-gating) renders a
+notice rather than results, so it demotes too.
+
+The order is resolved **once**, when the report is assembled, and every surface
+draws it — the terminal, the Slack digest, the Markdown artifact and the Pages
+HTML cannot disagree. `report.json` publishes the resolved sequence as
+`section_order` so a machine consumer can reproduce the same layout.
+
+Four styles are available via `report.order.style`:
+
+| Style | Reads | Behaviour |
+| ----- | ----- | --------- |
+| `auto` (default) | — | The bands above, with the built-in membership. `automatic` is accepted as the same thing |
+| `dual` | `priority`, `bau` | The same algorithm over your own band lists. Omit either to keep the built-in one |
+| `single` | `sequence` | A strict hierarchy, applied verbatim with **no** demotion. Categories the list omits keep their assembly order behind it |
+| `fixed` | — | No reordering at all — the order this tool produced before `report.order` existed |
+
+Two bands of your own:
+
+```json
+{
+  "report": {
+    "order": {
+      "style": "dual",
+      "priority": ["secret_scanning", "codeql"],
+      "bau": ["github_issues", "pull_requests"]
+    }
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
+
+Or one strict hierarchy, honoured whatever the data says:
+
+```json
+{
+  "report": {
+    "order": {
+      "style": "single",
+      "sequence": ["secret_scanning", "dependabot_alerts", "codeql"]
+    }
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
+
+A list key paired with a style that does not read it is an **error** rather than
+a silent no-op: writing a `priority` band and leaving the style at `auto` asks
+for a custom band and would otherwise quietly get the built-in one. Listing a
+category twice, or in both bands, is rejected for the same reason — a category
+holds exactly one position.
+
+The three Dependabot posture tables (alerts enabled, security updates enabled,
+cooldown) are not independently placeable. They render beneath the Dependabot
+Alerts signal on every surface and travel with it, since three near-identical
+headings adrift in the report would not say which signal they qualified.
 
 ### GitHub Issues
 

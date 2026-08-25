@@ -73,6 +73,14 @@ def _org_to_dict(org: OrgReport, hidden: Collection[CategoryKey] = ()) -> dict:
         "partial": org.partial,
         # Repositories explicitly excluded from analysis (per-org exclude list).
         "excluded": [r.full_name for r in org.excluded_repos],
+        # The category sequence the rendered surfaces drew this report in,
+        # resolved once at assembly time. The keyed structure below is stable
+        # regardless, but a consumer building its own view can reproduce the
+        # published layout instead of inventing one. Empty means assembly
+        # order (the `fixed` ordering style, or a report built without one).
+        "section_order": [
+            key.value for key in org.section_order if key not in suppressed
+        ],
         "sections": [
             {
                 "signal": s.signal.value,

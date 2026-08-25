@@ -8,32 +8,25 @@ then hand off to :mod:`cli.modes`.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
-import re
 import sys
-from collections.abc import Sequence
 from pathlib import Path
 
 import typer
 from rich.console import Console
 
-from github_security_report import __version__, gitctx, runner
+from github_security_report import __version__, runner
 from github_security_report import remediate as remediate_mod
-from github_security_report.categories import CategoryKey
+from github_security_report.cli import boundary
 from github_security_report.cli.modes import (
-    OrgRunOptions,
-    ReportOverrides,
-    _abort_auth,
-    _abort_network,
     _load_config,
     _run_org,
     _run_remediate,
     _run_repo,
 )
+from github_security_report.cli.options import OrgRunOptions, ReportOverrides
 from github_security_report.cli.outputs import TopNLimits
-from github_security_report.client import AuthError, NetworkError
 
 app = typer.Typer(
     name="github-security-report",
@@ -76,63 +69,6 @@ def _console(no_color: bool) -> Console:
     """A console that drops colour in CI, when piped, or on request."""
     plain = no_color or bool(os.environ.get("CI")) or not sys.stdout.isatty()
     return Console(no_color=plain, highlight=False)
-
-
-def _check_non_negative(console: Console, name: str, value: int | None) -> None:
-    """Reject a negative numeric override at the CLI boundary.
-
-    Mirrors the config schema, whose minimum for these controls is 0; 0 itself
-    is permitted and carries the "no limit" / "no threshold" meaning.
-    """
-    if value is not None and value < 0:
-        console.print(f"[red]{name} must be 0 or greater[/red]")
-        raise typer.Exit(2)
-
-
-def _resolve_hidden(console: Console, hide: list[str] | None) -> frozenset[CategoryKey]:
-    """Validate ``--hide`` values into category keys, or abort.
-
-    An unrecognised category is rejected rather than ignored: the point of the
-    flag is to keep something off a published surface, so a typo that silently
-    published it anyway would be the one failure mode that matters.
-    """
-    if not hide:
-        return frozenset()
-    valid = {key.value: key for key in CategoryKey}
-    unknown = sorted({name for name in hide if name not in valid})
-    if unknown:
-        # markup=False: the user-supplied values are printed literally, so
-        # bracketed input cannot be interpreted as Rich markup.
-        console.print(
-            f"Unknown --hide category: {', '.join(unknown)}. "
-            f"Valid values: {', '.join(sorted(valid))}",
-            style="red",
-            markup=False,
-        )
-        raise typer.Exit(2)
-    return frozenset(valid[name] for name in hide)
-
-
-def _reject_org_only(console: Console, supplied: Sequence[str]) -> None:
-    """Refuse organisation-only flags once the run has resolved to repo mode.
-
-    Repo mode renders a single repository to the terminal and the job summary:
-    it publishes no Pages directory, posts no digest, and builds no
-    Releases/Tagging table, so none of these flags has anything to act on.
-    Accepting them silently is the one failure mode worth ruling out -- the
-    caller would have no signal that the run ignored what they asked for -- so
-    they are rejected with the flags named rather than dropped.
-    """
-    if not supplied:
-        return
-    console.print(
-        f"{', '.join(supplied)} apply to organisation mode only, but this run "
-        "resolved to repo mode. Drop the flag, or pass --scope org with a "
-        "configuration that names an organisation.",
-        style="red",
-        markup=False,
-    )
-    raise typer.Exit(2)
 
 
 @app.command()
@@ -234,66 +170,26 @@ def report(
 ) -> None:
     """Generate a security and quality report."""
     console = _console(no_color)
-
-    # Match the config schema (top_n minimum is 0): reject a negative override
-    # at the boundary. 0 is permitted and disables the limit (show everything).
-    for name, value in (
-        ("--top-n", top_n),
-        ("--top-n-report", top_n_report),
-        ("--top-n-cli", top_n_cli),
-        ("--top-n-slack", top_n_slack),
-    ):
-        if value is not None and value < 0:
-            console.print(f"[red]{name} must be 0 or greater (0 = no limit)[/red]")
-            raise typer.Exit(2)
-
-    _check_non_negative(console, "--repo-min-age-days", repo_min_age_days)
-    _check_non_negative(console, "--release-max-age-days", release_max_age_days)
-
-    hidden = _resolve_hidden(console, hide)
+    boundary.check_limits(
+        console,
+        [
+            ("--top-n", top_n),
+            ("--top-n-report", top_n_report),
+            ("--top-n-cli", top_n_cli),
+            ("--top-n-slack", top_n_slack),
+        ],
+    )
+    boundary.check_non_negative(console, "--repo-min-age-days", repo_min_age_days)
+    boundary.check_non_negative(console, "--release-max-age-days", release_max_age_days)
+    hidden = boundary.resolve_hidden(console, hide)
 
     cfg = _load_config(config_file, config_data, org, token_env, console=console)
-    detected: tuple[str, str] | None = None
-    if repo:
-        # An explicit --repo must be exactly 'owner/name' (one slash, both
-        # parts non-empty). A malformed value would otherwise be split
-        # incorrectly or fall back to git detection, risking a report against
-        # an unintended repository.
-        if not re.fullmatch(r"[^/]+/[^/]+", repo):
-            console.print("[red]--repo must be in 'owner/name' format[/red]")
-            raise typer.Exit(2)
-        owner, name = repo.split("/", 1)
-        detected = (owner, name)
-    elif scope != "org":
-        detected = gitctx.detect_repo()
-
-    try:
-        mode = runner.resolve_mode(
-            scope, has_org_config=cfg is not None, detected_repo=detected
-        )
-    except runner.ModeError as exc:
-        console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(2) from exc
+    detected = boundary.detect_target(console, repo, scope)
+    mode = boundary.resolve_mode(console, scope, cfg=cfg, detected=detected)
 
     if mode is runner.Mode.ORG:
         assert cfg is not None
-        # A single --releases-exclude list would replace the per-org list of
-        # every configured organisation, so a three-org config with three
-        # curated lists would lose all three. The flag cannot name which
-        # organisation it means, and inventing an "org/repo" syntax for it
-        # would be a worse answer than pointing at the config key that already
-        # expresses this per organisation.
-        if releases_exclude and len(cfg.organizations) > 1:
-            names = ", ".join(o.name for o in cfg.organizations)
-            console.print(
-                "--releases-exclude replaces the configured list for every "
-                f"organisation, and this run covers {len(cfg.organizations)} "
-                f"of them ({names}). Set releases_exclude per organisation in "
-                "the configuration instead.",
-                style="red",
-                markup=False,
-            )
-            raise typer.Exit(2)
+        boundary.check_releases_exclude(console, cfg, releases_exclude)
         options = OrgRunOptions(
             output_dir=Path(output_dir) if output_dir else None,
             pages_url=pages_url,
@@ -317,19 +213,14 @@ def report(
             ),
             hidden=hidden,
         )
-        try:
-            code = asyncio.run(_run_org(cfg, options, console=console))
-        except AuthError as exc:
-            _abort_auth(console, exc)
-        except NetworkError as exc:
-            _abort_network(console, exc)
+        code = boundary.run_guarded(console, _run_org(cfg, options, console=console))
     else:
         assert detected is not None
-        # Every organisation-only flag is refused here rather than accepted and
-        # discarded further down. The remaining flags (--top-n, --top-n-cli,
-        # --top-n-report, --hide) and the config's report block are threaded
-        # into the run, so what repo mode accepts is what repo mode applies.
-        _reject_org_only(
+        # Every organisation-only flag is refused rather than accepted and
+        # discarded. The remaining flags (--top-n, --top-n-cli, --top-n-report,
+        # --hide) and the config's report block are threaded into the run, so
+        # what repo mode accepts is what repo mode applies.
+        boundary.reject_org_only(
             console,
             [
                 name
@@ -349,27 +240,19 @@ def report(
                 if supplied
             ],
         )
-        # In repo mode there is no per-org config; honour the global report
-        # block from a supplied config (e.g. --scope repo with --config) so the
-        # category toggles, row limits and ruleset keywords apply, falling back
-        # to the built-in defaults otherwise.
-        try:
-            code = asyncio.run(
-                _run_repo(
-                    detected[0],
-                    detected[1],
-                    token_env=token_env or "GITHUB_TOKEN",
-                    console=console,
-                    fail_threshold=fail_threshold,
-                    report_cfg=cfg.report if cfg is not None else None,
-                    limits=TopNLimits(shared=top_n, report=top_n_report, cli=top_n_cli),
-                    hidden=hidden,
-                )
-            )
-        except AuthError as exc:
-            _abort_auth(console, exc)
-        except NetworkError as exc:
-            _abort_network(console, exc)
+        code = boundary.run_guarded(
+            console,
+            _run_repo(
+                detected[0],
+                detected[1],
+                token_env=token_env or "GITHUB_TOKEN",
+                console=console,
+                fail_threshold=fail_threshold,
+                report_cfg=cfg.report if cfg is not None else None,
+                limits=TopNLimits(shared=top_n, report=top_n_report, cli=top_n_cli),
+                hidden=hidden,
+            ),
+        )
     raise typer.Exit(code)
 
 
@@ -450,18 +333,14 @@ def remediate(
         )
         raise typer.Exit(2)
 
-    try:
-        code = asyncio.run(
-            _run_remediate(
-                cfg,
-                console=console,
-                token=token,
-                categories=categories,
-                apply=apply,
-            )
-        )
-    except AuthError as exc:
-        _abort_auth(console, exc)
-    except NetworkError as exc:
-        _abort_network(console, exc)
+    code = boundary.run_guarded(
+        console,
+        _run_remediate(
+            cfg,
+            console=console,
+            token=token,
+            categories=categories,
+            apply=apply,
+        ),
+    )
     raise typer.Exit(code)

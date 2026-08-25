@@ -11,6 +11,8 @@ The command surface is split across:
 
 - :mod:`cli.app` -- the Typer application, options and validation
 - :mod:`cli.modes` -- the org, repo and remediate run modes
+- :mod:`cli.options` -- what a run takes from the command line
+- :mod:`cli.publish` -- the Pages files, Slack digest and job summary
 - :mod:`cli.outputs` -- offender limits, category visibility, file writing
 - :mod:`cli.serialise` -- the machine-readable ``report.json`` shape
 """
@@ -25,8 +27,6 @@ from github_security_report.cli.app import (
     report,
 )
 from github_security_report.cli.modes import (
-    OrgRunOptions,
-    ReportOverrides,
     _abort_auth,
     _abort_network,
     _load_config,
@@ -34,6 +34,7 @@ from github_security_report.cli.modes import (
     _run_remediate,
     _run_repo,
 )
+from github_security_report.cli.options import OrgRunOptions, ReportOverrides
 from github_security_report.cli.outputs import (
     TopNLimits,
     _safe_component,

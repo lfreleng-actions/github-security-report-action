@@ -16,8 +16,9 @@ from collections.abc import Callable, Mapping, Sequence
 
 from jinja2 import Environment, PackageLoader, select_autoescape
 
+from github_security_report import layout
 from github_security_report.categories import CategoryKey
-from github_security_report.models import Repo, RepoSignal, SignalType
+from github_security_report.models import Repo, RepoSignal
 from github_security_report.render import markdown
 from github_security_report.report import (
     ORG_SETUP_DOC_URL,
@@ -240,29 +241,31 @@ def render_org_html(
             section, excluded=excluded, top_n=limit_for(section.category.key)
         )
 
-    def dependabot_tables() -> list[dict]:
-        return [ctx for t in org.dependabot_tables if (ctx := table(t)) is not None]
-
     sections: list[dict] = []
-    for section in org.sections:
-        key = section.signal.category_key
-        parent_visible = visible(key)
-        if parent_visible:
-            ctx = _section_context(section, excluded=excluded, top_n=limit_for(key))
-            # When the parent Dependabot Alerts signal is shown, its posture
-            # sub-tables render beneath it inside the same card.
-            if section.signal is SignalType.DEPENDABOT:
-                ctx["extra_tables"] = dependabot_tables()
+    for item in layout.plan(org):
+        if isinstance(item.section, TableSection):
+            ctx = table(item.section)
+            if ctx is not None:
+                sections.append(ctx)
+            continue
+        key = item.section.signal.category_key
+        children = [ctx for t in item.children if (ctx := table(t)) is not None]
+        if visible(key):
+            ctx = _section_context(
+                item.section, excluded=excluded, top_n=limit_for(key)
+            )
+            # When the parent signal is shown, its posture sub-tables render
+            # beneath it inside the same card.
+            if children:
+                ctx["extra_tables"] = children
             sections.append(ctx)
-        elif section.signal is SignalType.DEPENDABOT:
-            # The parent Dependabot Alerts signal is hidden, but the posture
-            # tables are toggled independently: surface any enabled ones as
-            # their own top-level sections so per-category toggles for
-            # dependabot_alerts_enabled / _updates_enabled / _cooldown are
-            # honoured on the HTML surface too -- matching the terminal,
-            # Markdown and Slack renderers, which decouple them from the
-            # parent signal's visibility.
-            sections.extend(dependabot_tables())
+        else:
+            # The parent signal is hidden, but the posture tables are toggled
+            # independently: surface any enabled ones as their own top-level
+            # sections so their per-category toggles are honoured here too --
+            # matching the terminal, Markdown and Slack renderers, which
+            # likewise decouple them from the parent signal's visibility.
+            sections.extend(children)
     return str(
         template.render(
             org=org.org,
@@ -270,12 +273,6 @@ def render_org_html(
             generated_at=org.generated_at.strftime("%Y-%m-%d %H:%M UTC"),
             partial=org.partial,
             sections=sections,
-            releases=table(org.releases),
-            mutable_releases=table(org.mutable_releases),
-            private_vulnerability_reporting=table(org.private_vulnerability_reporting),
-            issues=table(org.issues),
-            pull_requests=table(org.pull_requests),
-            assigned_pull_requests=table(org.assigned_pull_requests),
             datatables_version=DATATABLES_VERSION,
             datatables_css_sri=DATATABLES_CSS_SRI,
             datatables_js_sri=DATATABLES_JS_SRI,

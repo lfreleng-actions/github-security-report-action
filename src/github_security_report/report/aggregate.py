@@ -16,6 +16,7 @@ from collections.abc import Set
 from dataclasses import dataclass, field
 
 from github_security_report import scope
+from github_security_report.categories import CategoryKey
 from github_security_report.models import (
     Repo,
     RepoSignal,
@@ -72,6 +73,11 @@ class OrgReport:
     # The same table narrowed to the running account's own assigned pull
     # requests. None in repo mode / when not collected.
     assigned_pull_requests: TableSection | None = None
+    # The category sequence every render surface draws this report in, resolved
+    # once at assembly time by :mod:`github_security_report.layout`. Plain keys
+    # rather than the ordering configuration, so the report model stays free of
+    # a dependency on the config tree. Empty means assembly order.
+    section_order: tuple[CategoryKey, ...] = ()
 
 
 @dataclass

@@ -29,6 +29,7 @@ from github_security_report.config.models import (
     ReportDay,
     SlackConfig,
 )
+from github_security_report.config.order import order_from
 from github_security_report.config.schema import (
     _TOKEN_PREFIXES,
     CONFIG_SCHEMA,
@@ -182,6 +183,8 @@ def _report_from(data: dict, base: ReportConfig) -> ReportConfig:
             result,
             categories=_categories_from(data["categories"], base.categories),
         )
+    if "order" in data:
+        result = replace(result, order=order_from(data["order"], base.order))
     if (
         result.dependabot_error_threshold
         and result.dependabot_error_threshold <= result.dependabot_warn_threshold

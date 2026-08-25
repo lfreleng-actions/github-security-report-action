@@ -18,6 +18,7 @@ from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
+from github_security_report import layout
 from github_security_report.categories import CategoryKey
 from github_security_report.models import Repo, RepoSignal, SignalType
 from github_security_report.remediate import CategoryRemediation
@@ -311,21 +312,20 @@ def render_org(
             "[yellow]\u26a0 Incomplete: the repository listing could not be fully "
             "read; some repositories may be missing.[/yellow]\n"
         )
-    for section in org.sections:
-        key = section.signal.category_key
+    for item in layout.plan(org):
+        if isinstance(item.section, TableSection):
+            table(item.section)
+            continue
+        key = item.section.signal.category_key
         if visible(key):
             render_section(
-                section, console, excluded=org.excluded_repos, top_n=limit_for(key)
+                item.section,
+                console,
+                excluded=org.excluded_repos,
+                top_n=limit_for(key),
             )
-        if section.signal is SignalType.DEPENDABOT:
-            for dependabot_table in org.dependabot_tables:
-                table(dependabot_table)
-    table(org.releases)
-    table(org.mutable_releases)
-    table(org.private_vulnerability_reporting)
-    table(org.issues)
-    table(org.pull_requests)
-    table(org.assigned_pull_requests)
+        for dependabot_table in item.children:
+            table(dependabot_table)
 
 
 def render_orgs(

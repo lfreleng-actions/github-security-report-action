@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 
 from github_security_report.categories import CategoryKey
+from github_security_report.config.order import OrderConfig
 from github_security_report.severity import Severity
 
 
@@ -193,6 +194,9 @@ class ReportConfig:
     categories: Mapping[str, CategoryToggle] = field(
         default_factory=lambda: DEFAULT_CATEGORIES
     )
+    # Where each category sits in the rendered output. Defaults to the automatic
+    # three-band layout; see :mod:`github_security_report.layout`.
+    order: OrderConfig = field(default_factory=OrderConfig)
 
     def shows_category(self, key: CategoryKey, output: str) -> bool:
         """Whether category ``key`` renders on ``output`` under this config.

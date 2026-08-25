@@ -3,49 +3,44 @@
 """The three run modes behind the commands: org, repo, and remediate.
 
 Each ``_run_*`` coroutine returns the process exit code. ``_run_org`` reads as a
-short sequence of stages -- collect, render, publish -- with each stage a helper
-in this module.
+short sequence of stages -- collect, render, publish -- with the options they
+take in :mod:`~github_security_report.cli.options` and the artifacts they emit
+in :mod:`~github_security_report.cli.publish`.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import json
 import logging
 import os
 from collections.abc import Sequence
-from dataclasses import dataclass, field, replace
-from pathlib import Path
+from dataclasses import replace
 from typing import NoReturn
 
 import typer
 from rich.console import Console
 
-from github_security_report import collect, config, runner
+from github_security_report import collect, config, layout, runner
 from github_security_report import remediate as remediate_mod
 from github_security_report.categories import CategoryKey
+from github_security_report.cli import publish
+from github_security_report.cli.options import (
+    OrgPair,
+    OrgRunOptions,
+    ReportOverrides,
+)
 from github_security_report.cli.outputs import (
     TopNLimits,
-    _safe_component,
-    most_generous,
     repo_outputs,
     show,
-    slack_limit,
-    slack_show,
-    write_org_files,
 )
 from github_security_report.client import AuthError, GitHubClient, NetworkError
 from github_security_report.config import Config, OrgConfig, ReportConfig
-from github_security_report.render import html as html_render
 from github_security_report.render import markdown as md_render
-from github_security_report.render import slack as slack_render
 from github_security_report.render import terminal as term_render
-from github_security_report.report import OrgReport, build_org_report
+from github_security_report.report import build_org_report
 
 log = logging.getLogger(__name__)
-
-# An org config paired with the report collected for it.
-OrgPair = tuple[OrgConfig, OrgReport]
 
 
 # --------------------------------------------------------------------------- #
@@ -120,83 +115,6 @@ def _abort_auth(console: Console, exc: AuthError) -> NoReturn:
     raise typer.Exit(4)
 
 
-# --------------------------------------------------------------------------- #
-# Org mode
-# --------------------------------------------------------------------------- #
-@dataclass(frozen=True)
-class ReportOverrides:
-    """Command-line overrides for the ``report`` block of every organisation.
-
-    CLI overrides win over config; an unset override (``None``) leaves the
-    org's own configured value in place. Each field is ``None`` rather than a
-    concrete default for exactly the reason ``--token-env`` needed the same
-    treatment: an eager default cannot be told apart from an unset one, so it
-    could never be applied as an override.
-
-    The three booleans are one-way. ``--no-gating`` can switch gating off but
-    not on, and ``--include-archived`` / ``--include-test`` can widen the scope
-    but not narrow it, so a flag can loosen what the configuration asked for
-    without being able to tighten it behind the operator's back.
-    """
-
-    repo_min_age_days: int | None = None
-    release_max_age_days: int | None = None
-    releases_exclude: tuple[str, ...] | None = None
-    gating: bool | None = None
-    include_archived: bool | None = None
-    include_test: bool | None = None
-
-    def apply(self, org_cfg: OrgConfig) -> tuple[OrgConfig, ReportConfig]:
-        """The org and report configs to collect with, overrides applied.
-
-        The two age thresholds and the three booleans are scalar policy, so
-        applying one uniformly across every configured organisation is what a
-        reader of the flag expects, and matches how ``--top-n`` already
-        behaves.
-
-        ``releases_exclude`` is not scalar: it is a curated per-organisation
-        list, and one flag replacing all of them loses data the config
-        deliberately carried. The command line refuses it outright for a
-        multi-org run rather than silently flattening them (see cli/app.py), so
-        by the time this runs there is only one organisation it could mean.
-        """
-        report_cfg = org_cfg.report
-        for name in (
-            "repo_min_age_days",
-            "release_max_age_days",
-            "gating",
-            "include_archived",
-            "include_test",
-        ):
-            value = getattr(self, name)
-            if value is not None:
-                report_cfg = replace(report_cfg, **{name: value})
-        effective_cfg = org_cfg
-        if self.releases_exclude is not None:
-            effective_cfg = replace(org_cfg, releases_exclude=self.releases_exclude)
-        return effective_cfg, report_cfg
-
-
-@dataclass(frozen=True)
-class OrgRunOptions:
-    """Everything an org-mode run takes from the command line.
-
-    Bundled into one value so each run stage receives a single options argument
-    rather than a dozen individually-threaded parameters.
-    """
-
-    output_dir: Path | None = None
-    pages_url: str | None = None
-    slack_channel: str | None = None
-    force_notify: bool = False
-    limits: TopNLimits = field(default_factory=TopNLimits)
-    overrides: ReportOverrides = field(default_factory=ReportOverrides)
-    # Categories the invocation suppressed outright. Outranks the config, so a
-    # scheduled run can keep a reader-specific category out of its published
-    # artifacts without editing (or contradicting) the shared configuration.
-    hidden: frozenset[CategoryKey] = frozenset()
-
-
 async def _collect_reports(
     cfg: Config,
     *,
@@ -226,121 +144,6 @@ async def _collect_reports(
     return pairs
 
 
-def _write_pages(
-    pairs: list[OrgPair],
-    output_dir: Path,
-    *,
-    console: Console,
-    limits: TopNLimits,
-    hidden: frozenset[CategoryKey] = frozenset(),
-) -> None:
-    """Write the GitHub Pages artifacts: per-org files plus the shared index."""
-    for org_cfg, org_report in pairs:
-        write_org_files(
-            org_report,
-            output_dir,
-            top_n=limits.resolve(org_cfg.report, "report"),
-            limit=limits.resolver(org_cfg.report, "report"),
-            report_cfg=org_cfg.report,
-            hidden=hidden,
-        )
-    (output_dir / "index.html").write_text(
-        html_render.render_index_html([report for _, report in pairs]),
-        encoding="utf-8",
-    )
-    (output_dir / ".nojekyll").write_text("", encoding="utf-8")
-    console.print(f"[green]Wrote reports to {output_dir}[/green]")
-
-
-def _slack_digest(
-    pairs: list[OrgPair], options: OrgRunOptions, *, now: dt.datetime
-) -> dict[str, str]:
-    """Build the Slack payloads and the action outputs describing them.
-
-    An org notifies on its own ``report_day`` (so ``should_notify`` reflects the
-    schedule, independent of channel availability). The channel comes from the
-    ``--slack-channel`` override (e.g. the ``SLACK_CHANNEL_ID`` variable) when
-    given, otherwise the per-org config channel; notifying orgs are grouped by
-    channel so each distinct channel gets one digest.
-    """
-    notifying = [
-        (org_cfg, org_report)
-        for org_cfg, org_report in pairs
-        if org_cfg.slack.report_day.should_notify(
-            now=now.date(), force=options.force_notify
-        )
-    ]
-    outputs = {
-        "should_notify": "true" if notifying else "false",
-        "failed": "false",
-        # Always declared so the action output is stable even when no digest is
-        # produced (no notifying org or no configured channel).
-        "slack_payload": "",
-    }
-
-    by_channel: dict[str, list[OrgPair]] = {}
-    for org_cfg, org_report in notifying:
-        channel = options.slack_channel or org_cfg.slack.channel
-        if not channel:
-            continue
-        by_channel.setdefault(channel, []).append((org_cfg, org_report))
-
-    # The Slack digest uses each org's slack offender limit (category override >
-    # shared --top-n > config slack_top_n). Orgs sharing a channel render into
-    # one payload, so take the most generous configured value for that channel.
-    payloads = [
-        slack_render.render_payload(
-            [report for _, report in items],
-            channel=channel,
-            top_n=most_generous(
-                [options.limits.resolve(oc.report, "slack") for oc, _ in items]
-            ),
-            pages_url=options.pages_url,
-            # Visibility is resolved per organisation, so each org's rows obey
-            # its own Slack toggles. Unlike the row limits above, it is
-            # deliberately not pooled: one org's opt-in must never publish
-            # another's data into the shared channel.
-            show=slack_show(items, options.hidden),
-            limit=slack_limit(items, options.limits),
-        )
-        for channel, items in by_channel.items()
-    ]
-    if payloads:
-        # The single action output carries the first channel's payload (the
-        # common single-channel case); every payload is also written to disk.
-        outputs["slack_payload"] = json.dumps(payloads[0])
-        if options.output_dir:
-            _write_slack_payloads(payloads, options.output_dir)
-    return outputs
-
-
-def _write_slack_payloads(payloads: list[dict], output_dir: Path) -> None:
-    """Write one ``slack-payload-<channel>.json`` per rendered digest."""
-    for payload in payloads:
-        dest = output_dir / f"slack-payload-{_safe_component(payload['channel'])}.json"
-        dest.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-
-
-def _summary(
-    pairs: list[OrgPair],
-    limits: TopNLimits,
-    hidden: frozenset[CategoryKey] = frozenset(),
-) -> str:
-    """The job summary, mirroring the GitHub Pages Markdown for every org."""
-    return (
-        "\n\n".join(
-            md_render.render_org(
-                org_report,
-                top_n=limits.resolve(org_cfg.report, "report"),
-                show=show(org_cfg.report, "markdown", hidden),
-                limit=limits.resolver(org_cfg.report, "report"),
-            )
-            for org_cfg, org_report in pairs
-        ).rstrip()
-        + "\n"
-    )
-
-
 async def _run_org(cfg: Config, options: OrgRunOptions, *, console: Console) -> int:
     """Collect every configured org, then render, publish and notify."""
     now = dt.datetime.now(dt.timezone.utc)
@@ -360,7 +163,7 @@ async def _run_org(cfg: Config, options: OrgRunOptions, *, console: Console) -> 
             limit=limits.resolver(org_cfg.report, "cli"),
         )
     if options.output_dir:
-        _write_pages(
+        publish.write_pages(
             pairs,
             options.output_dir,
             console=console,
@@ -368,8 +171,8 @@ async def _run_org(cfg: Config, options: OrgRunOptions, *, console: Console) -> 
             hidden=options.hidden,
         )
 
-    runner.write_github_output(_slack_digest(pairs, options, now=now))
-    runner.append_step_summary(_summary(pairs, limits, options.hidden))
+    runner.write_github_output(publish.slack_digest(pairs, options, now=now))
+    runner.append_step_summary(publish.summary(pairs, limits, options.hidden))
     return 0
 
 
@@ -408,6 +211,10 @@ async def _run_repo(
     org = build_org_report(
         f"{owner}/{repo_name}", signals, repo_count=1, generated_at=now
     )
+    # Repo mode renders the same categories, so it resolves the same ordering.
+    # The generic tables are never collected here, and the layout skips keys
+    # naming a section this report does not carry.
+    org.section_order = layout.resolve(org, cfg.order)
     # Every flag that survives into repo mode is applied here. A flag accepted,
     # validated and then ignored is worse than one rejected, because nothing
     # tells the caller it did nothing; the org-only flags are refused at the

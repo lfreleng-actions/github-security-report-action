@@ -17,7 +17,8 @@ from typer.testing import CliRunner
 
 from github_security_report.categories import CategoryKey
 from github_security_report.cli import _safe_component, app
-from github_security_report.cli.modes import ReportOverrides, _load_config
+from github_security_report.cli.modes import _load_config
+from github_security_report.cli.options import ReportOverrides
 from github_security_report.cli.outputs import (
     TopNLimits,
     most_generous,
@@ -155,6 +156,19 @@ def test_org_mode_writes_pages(tmp_path: Path) -> None:
     assert (out / "o" / "report.html").exists()
     assert (out / "o" / "report.md").exists()
     assert (out / "o" / "report.json").exists()
+    # The whole pipeline resolves a section order and publishes it, so a JSON
+    # consumer can reproduce the layout the rendered surfaces used.
+    payload = json.loads((out / "o" / "report.json").read_text())
+    assert payload["section_order"], payload
+    # Nothing is invented or lost by the reordering.
+    assert len(set(payload["section_order"])) == len(payload["section_order"])
+    # This org is entirely clean, so every priority band member demotes and
+    # the BAU categories still hold the bottom. "Assigned to Me" is not built
+    # at all here (the run did not authenticate as a personal account), so the
+    # band's last *present* member trails instead -- which also pins that a key
+    # naming an uncollected category is skipped rather than invented.
+    assert payload["section_order"][-1] == CategoryKey.PULL_REQUESTS.value
+    assert CategoryKey.PULL_REQUESTS_ASSIGNED.value not in payload["section_order"]
     # --slack-channel supplies the channel even though the config has none,
     # so a payload is written for that channel.
     assert (out / "slack-payload-CTEST123.json").exists()
