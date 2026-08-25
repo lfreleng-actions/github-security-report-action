@@ -575,6 +575,64 @@ def test_repo_mode_accepts_the_limits_it_applies(flag: str) -> None:
     assert "organisation mode only" not in result.stdout
 
 
+def test_releases_exclude_refused_across_many_orgs(tmp_path: Path) -> None:
+    # One flag would replace the curated list of every configured org, so a
+    # three-org config would lose all three lists. Refuse rather than flatten.
+    config = tmp_path / "c.json"
+    config.write_text(
+        json.dumps(
+            {
+                "organizations": [
+                    {"name": "one", "releases_exclude": ["a"]},
+                    {"name": "two", "releases_exclude": ["b"]},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = cli.invoke(
+        app,
+        [
+            "report",
+            "--config",
+            str(config),
+            "--scope",
+            "org",
+            "--releases-exclude",
+            "c",
+            "--no-color",
+        ],
+    )
+    assert result.exit_code == 2, result.stdout
+    assert "--releases-exclude" in result.stdout
+    assert "one, two" in result.stdout
+
+
+def test_releases_exclude_allowed_for_a_single_org(tmp_path: Path) -> None:
+    # With one organisation there is no ambiguity about which list it replaces,
+    # so the flag stays usable for the case it was written for. Resolution
+    # stops at the missing token, past the validation under test.
+    config = tmp_path / "c.json"
+    config.write_text(
+        json.dumps({"organizations": [{"name": "one", "releases_exclude": ["a"]}]}),
+        encoding="utf-8",
+    )
+    result = cli.invoke(
+        app,
+        [
+            "report",
+            "--config",
+            str(config),
+            "--scope",
+            "org",
+            "--releases-exclude",
+            "c",
+            "--no-color",
+        ],
+    )
+    assert "--releases-exclude replaces" not in result.stdout
+
+
 def test_org_to_dict_includes_partial_flag() -> None:
     # The JSON artifact must expose whether the org report is partial so
     # downstream consumers can distinguish complete from incomplete results.

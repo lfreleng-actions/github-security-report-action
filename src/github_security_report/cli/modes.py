@@ -119,7 +119,19 @@ class ReleaseOverrides:
     releases_exclude: tuple[str, ...] | None = None
 
     def apply(self, org_cfg: OrgConfig) -> tuple[OrgConfig, ReportConfig]:
-        """The org and report configs to collect with, overrides applied."""
+        """The org and report configs to collect with, overrides applied.
+
+        The two age thresholds are scalar policy ("expect a release inside N
+        days"), so applying one uniformly across every configured organisation
+        is what a reader of the flag expects, and matches how ``--top-n``
+        already behaves.
+
+        ``releases_exclude`` is not scalar: it is a curated per-organisation
+        list, and one flag replacing all of them loses data the config
+        deliberately carried. The command line refuses it outright for a
+        multi-org run rather than silently flattening them (see cli/app.py), so
+        by the time this runs there is only one organisation it could mean.
+        """
         report_cfg = org_cfg.report
         if self.repo_min_age_days is not None:
             report_cfg = replace(report_cfg, repo_min_age_days=self.repo_min_age_days)

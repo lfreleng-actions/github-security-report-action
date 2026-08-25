@@ -206,7 +206,7 @@ def report(
     releases_exclude: list[str] | None = typer.Option(
         None,
         "--releases-exclude",
-        help="Repository name to omit from the Releases/Tagging table (repeatable; overrides config).",
+        help="Repository name to omit from the Releases/Tagging table (repeatable; replaces the configured list, so it is refused when the run covers more than one organisation).",
     ),
     hide: list[str] | None = typer.Option(
         None,
@@ -260,6 +260,23 @@ def report(
 
     if mode is runner.Mode.ORG:
         assert cfg is not None
+        # A single --releases-exclude list would replace the per-org list of
+        # every configured organisation, so a three-org config with three
+        # curated lists would lose all three. The flag cannot name which
+        # organisation it means, and inventing an "org/repo" syntax for it
+        # would be a worse answer than pointing at the config key that already
+        # expresses this per organisation.
+        if releases_exclude and len(cfg.organizations) > 1:
+            names = ", ".join(o.name for o in cfg.organizations)
+            console.print(
+                "--releases-exclude replaces the configured list for every "
+                f"organisation, and this run covers {len(cfg.organizations)} "
+                f"of them ({names}). Set releases_exclude per organisation in "
+                "the configuration instead.",
+                style="red",
+                markup=False,
+            )
+            raise typer.Exit(2)
         options = OrgRunOptions(
             output_dir=Path(output_dir) if output_dir else None,
             pages_url=pages_url,

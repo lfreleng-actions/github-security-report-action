@@ -265,7 +265,12 @@ The Releases / Tagging section has two independent freshness levers:
   repositories drop out of the table. CLI: `--release-max-age-days`.
 
 The per-org `releases_exclude` (CLI `--releases-exclude`, repeatable) drops
-named repositories from the section entirely.
+named repositories from the section entirely. The flag *replaces* the
+configured list rather than adding to it, and cannot say which organisation it
+means, so it is refused when the run covers more than one — set
+`releases_exclude` per organisation in the configuration for that case. The two
+age levers above are scalar policy and do apply to every configured
+organisation, as `--top-n` does.
 
 > The former `release_min_age_days` key was a misleading name for
 > `repo_min_age_days` (it gates *repository* age, not *release* age). It is
