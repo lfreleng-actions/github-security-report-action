@@ -202,6 +202,15 @@ digest only on the configured `report_day` (default Tuesday).
   # requires: permissions: { security-events: read }
 ```
 
+Repo mode renders one repository to the terminal and the job summary. It
+honours `top_n`, `top_n_report`, `top_n_cli`, `hide`, and the `report` block of
+a supplied `config` (including every `report.categories.*` toggle). The inputs
+that only shape an organisation-wide run — `output_dir`, `pages_url`,
+`slack_channel`, `force_notify`, `top_n_slack`, and the Releases/Tagging levers
+— are **rejected** with exit code 2 rather than accepted and discarded, so a
+misconfigured workflow says so instead of quietly producing a report that
+ignores them.
+
 ## Configuration
 
 Configuration is JSON, supplied as a plain `vars.` entry or base64-encoded in a

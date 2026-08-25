@@ -482,6 +482,31 @@ def test_repo_mode_fail_threshold(tmp_path: Path) -> None:
     # Only the named category goes; the rest of the report is untouched.
     assert "Secret Scanning" in hidden.stdout
 
+    # A config's per-category toggles reach repo mode too. They were collected,
+    # validated and then never consulted: the run rendered with bare defaults,
+    # so every report.categories.* switch was inert here.
+    configured = cli.invoke(
+        app,
+        [
+            "report",
+            "--repo",
+            "o/r",
+            "--scope",
+            "repo",
+            "--config-data",
+            json.dumps(
+                {
+                    "organizations": [{"name": "o"}],
+                    "report": {"categories": {"codeql": {"enabled": False}}},
+                }
+            ),
+            "--no-color",
+        ],
+    )
+    assert configured.exit_code == 0, configured.stdout
+    assert "CodeQL" not in configured.stdout
+    assert "Secret Scanning" in configured.stdout
+
 
 def test_unresolvable_scope_errors() -> None:
     # No config and an explicit org scope -> mode error, exit 2.
@@ -510,6 +535,44 @@ def test_malformed_repo_rejected(bad: str) -> None:
     result = cli.invoke(app, ["report", "--repo", bad, "--scope", "repo", "--no-color"])
     assert result.exit_code == 2
     assert "owner/name" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        ["--output-dir", "out"],
+        ["--pages-url", "https://example.invalid"],
+        ["--slack-channel", "C123"],
+        ["--force-notify"],
+        ["--top-n-slack", "3"],
+        ["--repo-min-age-days", "7"],
+        ["--release-max-age-days", "7"],
+        ["--releases-exclude", "r"],
+    ],
+)
+def test_org_only_flags_rejected_in_repo_mode(flag: list[str]) -> None:
+    # Each of these shapes an organisation-wide run only. Repo mode publishes
+    # no Pages directory, posts no digest and builds no Releases table, so
+    # accepting one and discarding it would leave the caller no signal that the
+    # run ignored what they asked for.
+    result = cli.invoke(
+        app, ["report", "--repo", "o/r", "--scope", "repo", "--no-color", *flag]
+    )
+    assert result.exit_code == 2, result.stdout
+    assert flag[0] in result.stdout
+    assert "organisation mode only" in result.stdout
+
+
+@pytest.mark.parametrize("flag", ["--top-n", "--top-n-cli", "--top-n-report"])
+def test_repo_mode_accepts_the_limits_it_applies(flag: str) -> None:
+    # The counterpart of the rejection above: a limit repo mode can act on is
+    # not refused. Resolution stops at the missing token, which is enough to
+    # show the flag cleared validation rather than being rejected as org-only.
+    result = cli.invoke(
+        app,
+        ["report", "--repo", "o/r", "--scope", "repo", "--no-color", flag, "3"],
+    )
+    assert "organisation mode only" not in result.stdout
 
 
 def test_org_to_dict_includes_partial_flag() -> None:

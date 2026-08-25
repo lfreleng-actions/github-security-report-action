@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import typer
@@ -110,6 +111,28 @@ def _resolve_hidden(console: Console, hide: list[str] | None) -> frozenset[Categ
         )
         raise typer.Exit(2)
     return frozenset(valid[name] for name in hide)
+
+
+def _reject_org_only(console: Console, supplied: Sequence[str]) -> None:
+    """Refuse organisation-only flags once the run has resolved to repo mode.
+
+    Repo mode renders a single repository to the terminal and the job summary:
+    it publishes no Pages directory, posts no digest, and builds no
+    Releases/Tagging table, so none of these flags has anything to act on.
+    Accepting them silently is the one failure mode worth ruling out -- the
+    caller would have no signal that the run ignored what they asked for -- so
+    they are rejected with the flags named rather than dropped.
+    """
+    if not supplied:
+        return
+    console.print(
+        f"{', '.join(supplied)} apply to organisation mode only, but this run "
+        "resolved to repo mode. Drop the flag, or pass --scope org with a "
+        "configuration that names an organisation.",
+        style="red",
+        markup=False,
+    )
+    raise typer.Exit(2)
 
 
 @app.command()
@@ -263,10 +286,31 @@ def report(
             _abort_network(console, exc)
     else:
         assert detected is not None
-        # In repo mode there is no per-org config; honour report.ruleset_workflows
-        # from a supplied config (e.g. --scope repo with --config) so keyword
-        # customisation applies, falling back to the built-in default otherwise.
-        rw = cfg.report.ruleset_workflows if cfg is not None else None
+        # Every organisation-only flag is refused here rather than accepted and
+        # discarded further down. The remaining flags (--top-n, --top-n-cli,
+        # --top-n-report, --hide) and the config's report block are threaded
+        # into the run, so what repo mode accepts is what repo mode applies.
+        _reject_org_only(
+            console,
+            [
+                name
+                for name, supplied in (
+                    ("--output-dir", output_dir is not None),
+                    ("--pages-url", pages_url is not None),
+                    ("--slack-channel", slack_channel is not None),
+                    ("--force-notify", force_notify),
+                    ("--top-n-slack", top_n_slack is not None),
+                    ("--repo-min-age-days", repo_min_age_days is not None),
+                    ("--release-max-age-days", release_max_age_days is not None),
+                    ("--releases-exclude", bool(releases_exclude)),
+                )
+                if supplied
+            ],
+        )
+        # In repo mode there is no per-org config; honour the global report
+        # block from a supplied config (e.g. --scope repo with --config) so the
+        # category toggles, row limits and ruleset keywords apply, falling back
+        # to the built-in defaults otherwise.
         try:
             code = asyncio.run(
                 _run_repo(
@@ -275,7 +319,8 @@ def report(
                     token_env=token_env,
                     console=console,
                     fail_threshold=fail_threshold,
-                    ruleset_workflows=rw,
+                    report_cfg=cfg.report if cfg is not None else None,
+                    limits=TopNLimits(shared=top_n, report=top_n_report, cli=top_n_cli),
                     hidden=hidden,
                 )
             )

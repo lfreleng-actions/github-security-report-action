@@ -13,7 +13,7 @@ import datetime as dt
 import json
 import logging
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import NoReturn
@@ -339,16 +339,23 @@ async def _run_repo(
     token_env: str,
     console: Console,
     fail_threshold: str,
-    ruleset_workflows: Mapping[str, str] | None = None,
+    report_cfg: ReportConfig | None = None,
+    limits: TopNLimits | None = None,
     hidden: frozenset[CategoryKey] = frozenset(),
 ) -> int:
+    # Repo mode has no per-org block, so the report config is whatever a
+    # supplied --config carried globally, falling back to the built-in
+    # defaults. Threading it through is what makes the per-category toggles,
+    # row limits and ruleset keywords mean the same thing in both modes.
+    cfg = report_cfg if report_cfg is not None else ReportConfig()
+    caps = limits if limits is not None else TopNLimits()
     token = os.environ.get(token_env, "").strip()
     if not token:
         console.print(f"[red]No token in ${token_env}[/red]")
         return 2
     async with GitHubClient(token) as client:
         repo, signals = await collect.collect_repo(
-            client, owner, repo_name, ruleset_workflows=ruleset_workflows
+            client, owner, repo_name, ruleset_workflows=cfg.ruleset_workflows
         )
     if repo is None:
         return 2
@@ -357,14 +364,25 @@ async def _run_repo(
     org = build_org_report(
         f"{owner}/{repo_name}", signals, repo_count=1, generated_at=now
     )
-    # ``--hide`` promises suppression on every output, so it has to reach repo
-    # mode too: a flag accepted, validated and then ignored is worse than one
-    # rejected, because nothing tells the caller it did nothing.
-    visible = show(ReportConfig(), "cli", hidden)
-    term_render.render_org(org, console, show=visible)
+    # Every flag that survives into repo mode is applied here. A flag accepted,
+    # validated and then ignored is worse than one rejected, because nothing
+    # tells the caller it did nothing; the org-only flags are refused at the
+    # boundary instead (see cli/app.py).
+    term_render.render_org(
+        org,
+        console,
+        top_n=caps.resolve(cfg, "cli"),
+        show=show(cfg, "cli", hidden),
+        limit=caps.resolver(cfg, "cli"),
+    )
 
     runner.append_step_summary(
-        md_render.render_org(org, show=show(ReportConfig(), "markdown", hidden))
+        md_render.render_org(
+            org,
+            top_n=caps.resolve(cfg, "report"),
+            show=show(cfg, "markdown", hidden),
+            limit=caps.resolver(cfg, "report"),
+        )
     )
     outputs = repo_outputs(signals, fail_threshold)
     # Keep the action's declared outputs stable across modes.
