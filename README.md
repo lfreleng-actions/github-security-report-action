@@ -51,8 +51,8 @@ no alerts, no analyses on a sample of repositories — gets a single
 `⏩ Skipping feature: organisation support missing` line for that section
 instead of a nag list. See the
 [organisation scan setup guide](docs/org-scan-setup.md) for the required
-workflows, and disable the check with `report.gating: false` if you want to
-probe everything regardless.
+workflows, and disable the check with `report.gating: false` (or `--no-gating`)
+if you want to probe everything regardless.
 
 Further sections report **configuration posture** and **freshness** as plain
 tables (org mode):
@@ -281,6 +281,10 @@ organisation, as `--top-n` does.
 The per-org `exclude` list removes repositories from analysis entirely; they are
 reported as **excluded** (distinct from "not enabled"), so an intentional
 exclusion is visible rather than silently dropped.
+
+Archived and test repositories are excluded from analysis by default. Opt them
+back in with `report.include_archived` / `report.include_test` in the config, or
+for a single run with `--include-archived` / `--include-test`.
 
 ### Per-category render toggles
 
@@ -913,7 +917,8 @@ code-scanning alerts from the tool, analyses on a sample of repositories, or
 **skipped** — not probed per repository, not classified — and its section
 shows a single `⏩ Skipping feature: organisation support missing` line
 linking the setup guide, on every output surface. Set `report.gating` to
-`false` (globally or per organisation) to always probe everything:
+`false` (globally or per organisation), or pass `--no-gating` for a single run,
+to always probe everything:
 
 ```json
 {
@@ -921,6 +926,10 @@ linking the setup guide, on every output surface. Set `report.gating` to
   "organizations": [{ "name": "lfreleng-actions" }]
 }
 ```
+
+Because a skipped section is the most likely prompt for "why is zizmor missing
+from my report?", `--no-gating` exists so that question can be answered without
+writing a configuration file to set one boolean.
 
 Gating decides **collection**; the per-category render toggles above decide
 **presentation**. A skipped section still renders (as the one-line notice)

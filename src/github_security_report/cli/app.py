@@ -24,7 +24,7 @@ from github_security_report import remediate as remediate_mod
 from github_security_report.categories import CategoryKey
 from github_security_report.cli.modes import (
     OrgRunOptions,
-    ReleaseOverrides,
+    ReportOverrides,
     _abort_auth,
     _abort_network,
     _load_config,
@@ -215,6 +215,21 @@ def report(
         "--hide",
         help="Category to suppress on every output (repeatable; overrides config, which cannot re-enable it).",
     ),
+    no_gating: bool = typer.Option(
+        False,
+        "--no-gating",
+        help="Always probe the workflow-driven signals (Scorecard, zizmor, aislop) instead of skipping those the organisation appears not to support.",
+    ),
+    include_archived: bool = typer.Option(
+        False,
+        "--include-archived",
+        help="Analyse archived repositories, which are excluded by default.",
+    ),
+    include_test: bool = typer.Option(
+        False,
+        "--include-test",
+        help="Analyse test repositories, which are excluded by default.",
+    ),
     no_color: bool = typer.Option(False, "--no-color", help="Disable coloured output."),
 ) -> None:
     """Generate a security and quality report."""
@@ -290,10 +305,15 @@ def report(
                 cli=top_n_cli,
                 slack=top_n_slack,
             ),
-            releases=ReleaseOverrides(
+            overrides=ReportOverrides(
                 repo_min_age_days=repo_min_age_days,
                 release_max_age_days=release_max_age_days,
                 releases_exclude=tuple(releases_exclude) if releases_exclude else None,
+                # One-way: the flags can only loosen what the config asked for,
+                # so an unset flag stays None rather than asserting the default.
+                gating=False if no_gating else None,
+                include_archived=True if include_archived else None,
+                include_test=True if include_test else None,
             ),
             hidden=hidden,
         )
@@ -322,6 +342,9 @@ def report(
                     ("--repo-min-age-days", repo_min_age_days is not None),
                     ("--release-max-age-days", release_max_age_days is not None),
                     ("--releases-exclude", bool(releases_exclude)),
+                    ("--no-gating", no_gating),
+                    ("--include-archived", include_archived),
+                    ("--include-test", include_test),
                 )
                 if supplied
             ],

@@ -124,24 +124,35 @@ def _abort_auth(console: Console, exc: AuthError) -> NoReturn:
 # Org mode
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
-class ReleaseOverrides:
-    """Command-line overrides for the Releases/Tagging controls.
+class ReportOverrides:
+    """Command-line overrides for the ``report`` block of every organisation.
 
-    CLI overrides win over config; an unset override leaves the org's own
-    configured value in place.
+    CLI overrides win over config; an unset override (``None``) leaves the
+    org's own configured value in place. Each field is ``None`` rather than a
+    concrete default for exactly the reason ``--token-env`` needed the same
+    treatment: an eager default cannot be told apart from an unset one, so it
+    could never be applied as an override.
+
+    The three booleans are one-way. ``--no-gating`` can switch gating off but
+    not on, and ``--include-archived`` / ``--include-test`` can widen the scope
+    but not narrow it, so a flag can loosen what the configuration asked for
+    without being able to tighten it behind the operator's back.
     """
 
     repo_min_age_days: int | None = None
     release_max_age_days: int | None = None
     releases_exclude: tuple[str, ...] | None = None
+    gating: bool | None = None
+    include_archived: bool | None = None
+    include_test: bool | None = None
 
     def apply(self, org_cfg: OrgConfig) -> tuple[OrgConfig, ReportConfig]:
         """The org and report configs to collect with, overrides applied.
 
-        The two age thresholds are scalar policy ("expect a release inside N
-        days"), so applying one uniformly across every configured organisation
-        is what a reader of the flag expects, and matches how ``--top-n``
-        already behaves.
+        The two age thresholds and the three booleans are scalar policy, so
+        applying one uniformly across every configured organisation is what a
+        reader of the flag expects, and matches how ``--top-n`` already
+        behaves.
 
         ``releases_exclude`` is not scalar: it is a curated per-organisation
         list, and one flag replacing all of them loses data the config
@@ -150,12 +161,16 @@ class ReleaseOverrides:
         by the time this runs there is only one organisation it could mean.
         """
         report_cfg = org_cfg.report
-        if self.repo_min_age_days is not None:
-            report_cfg = replace(report_cfg, repo_min_age_days=self.repo_min_age_days)
-        if self.release_max_age_days is not None:
-            report_cfg = replace(
-                report_cfg, release_max_age_days=self.release_max_age_days
-            )
+        for name in (
+            "repo_min_age_days",
+            "release_max_age_days",
+            "gating",
+            "include_archived",
+            "include_test",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                report_cfg = replace(report_cfg, **{name: value})
         effective_cfg = org_cfg
         if self.releases_exclude is not None:
             effective_cfg = replace(org_cfg, releases_exclude=self.releases_exclude)
@@ -175,7 +190,7 @@ class OrgRunOptions:
     slack_channel: str | None = None
     force_notify: bool = False
     limits: TopNLimits = field(default_factory=TopNLimits)
-    releases: ReleaseOverrides = field(default_factory=ReleaseOverrides)
+    overrides: ReportOverrides = field(default_factory=ReportOverrides)
     # Categories the invocation suppressed outright. Outranks the config, so a
     # scheduled run can keep a reader-specific category out of its published
     # artifacts without editing (or contradicting) the shared configuration.
@@ -187,7 +202,7 @@ async def _collect_reports(
     *,
     console: Console,
     now: dt.datetime,
-    overrides: ReleaseOverrides,
+    overrides: ReportOverrides,
 ) -> list[OrgPair] | None:
     """Collect every configured org's report, or None if a token is missing."""
     pairs: list[OrgPair] = []
@@ -330,7 +345,7 @@ async def _run_org(cfg: Config, options: OrgRunOptions, *, console: Console) -> 
     """Collect every configured org, then render, publish and notify."""
     now = dt.datetime.now(dt.timezone.utc)
     pairs = await _collect_reports(
-        cfg, console=console, now=now, overrides=options.releases
+        cfg, console=console, now=now, overrides=options.overrides
     )
     if pairs is None:
         return 2

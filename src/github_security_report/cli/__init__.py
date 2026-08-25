@@ -26,7 +26,7 @@ from github_security_report.cli.app import (
 )
 from github_security_report.cli.modes import (
     OrgRunOptions,
-    ReleaseOverrides,
+    ReportOverrides,
     _abort_auth,
     _abort_network,
     _load_config,
@@ -47,7 +47,7 @@ from github_security_report.cli.serialise import _org_to_dict, _table_to_dict
 # tests reach for, so splitting the module changed no caller's import path.
 __all__ = [
     "OrgRunOptions",
-    "ReleaseOverrides",
+    "ReportOverrides",
     "TopNLimits",
     "_abort_auth",
     "_abort_network",

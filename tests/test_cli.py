@@ -17,7 +17,7 @@ from typer.testing import CliRunner
 
 from github_security_report.categories import CategoryKey
 from github_security_report.cli import _safe_component, app
-from github_security_report.cli.modes import _load_config
+from github_security_report.cli.modes import ReportOverrides, _load_config
 from github_security_report.cli.outputs import (
     TopNLimits,
     most_generous,
@@ -685,6 +685,61 @@ class TestTokenEnvOverride:
         cfg = _load_config(None, None, "o")
         assert cfg is not None
         assert cfg.organizations[0].token_env == "GITHUB_TOKEN"
+
+
+class TestReportOverrides:
+    """The run-scoped booleans reach every organisation's report config.
+
+    Each was reachable only by writing a JSON config file to set a single
+    boolean, which is a debugging switch wearing a config file's clothes.
+    ``docs/BRIEF.md`` already documented two of them as flags that had never
+    been implemented.
+    """
+
+    def _org(self) -> OrgConfig:
+        return OrgConfig(name="o")
+
+    def test_unset_leaves_the_configured_values(self) -> None:
+        _, report_cfg = ReportOverrides().apply(self._org())
+        assert report_cfg.gating is True
+        assert report_cfg.include_archived is False
+        assert report_cfg.include_test is False
+
+    def test_each_override_is_applied(self) -> None:
+        overrides = ReportOverrides(
+            gating=False, include_archived=True, include_test=True
+        )
+        _, report_cfg = overrides.apply(self._org())
+        assert report_cfg.gating is False
+        assert report_cfg.include_archived is True
+        assert report_cfg.include_test is True
+
+    def test_overrides_beat_a_configured_value(self) -> None:
+        org = OrgConfig(name="o", report=ReportConfig(gating=True))
+        _, report_cfg = ReportOverrides(gating=False).apply(org)
+        assert report_cfg.gating is False
+
+    def test_release_levers_still_apply(self) -> None:
+        overrides = ReportOverrides(
+            repo_min_age_days=1,
+            release_max_age_days=2,
+            releases_exclude=("skip-me",),
+        )
+        org_cfg, report_cfg = overrides.apply(self._org())
+        assert report_cfg.repo_min_age_days == 1
+        assert report_cfg.release_max_age_days == 2
+        assert org_cfg.releases_exclude == ("skip-me",)
+
+
+@pytest.mark.parametrize(
+    "flag", ["--no-gating", "--include-archived", "--include-test"]
+)
+def test_new_flags_are_accepted_in_org_mode(flag: str) -> None:
+    # Resolution stops at the missing token, which is past option parsing:
+    # enough to show the flag exists and was not rejected as unknown.
+    result = cli.invoke(app, ["report", "--org", "o", flag, "--no-color"])
+    assert "No such option" not in result.stdout
+    assert result.exit_code != 2 or "No token" in result.stdout
 
 
 def test_org_to_dict_includes_partial_flag() -> None:
