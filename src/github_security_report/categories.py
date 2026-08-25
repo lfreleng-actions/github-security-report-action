@@ -337,6 +337,33 @@ def category_meta(key: CategoryKey) -> CategoryMeta:
     return _CATEGORIES[key]
 
 
+# Categories rendered as sub-tables beneath another category rather than as
+# sections of their own. The three Dependabot posture tables qualify their
+# parent signal -- "Alerts Enabled" means nothing adrift from "Dependabot:
+# Security Alerts" -- so they travel with it and cannot be positioned
+# independently. Named here rather than in the layout module so the config
+# schema can refuse to accept one in an ordering list, which would otherwise be
+# a setting that validates and then does nothing.
+NESTED_CATEGORIES: frozenset[CategoryKey] = frozenset(
+    {
+        CategoryKey.DEPENDABOT_ALERTS_ENABLED,
+        CategoryKey.DEPENDABOT_UPDATES_ENABLED,
+        CategoryKey.DEPENDABOT_COOLDOWN,
+    }
+)
+
+
+def orderable_categories() -> tuple[CategoryMeta, ...]:
+    """Categories an ordering list may name, in registry order.
+
+    Every category except the nested ones, which have no position of their own
+    to configure.
+    """
+    return tuple(
+        meta for meta in _CATEGORIES.values() if meta.key not in NESTED_CATEGORIES
+    )
+
+
 def all_categories() -> tuple[CategoryMeta, ...]:
     """Every category's metadata, in registry (render) order."""
     return tuple(_CATEGORIES.values())

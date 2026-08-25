@@ -43,9 +43,15 @@ from github_security_report.cli.outputs import (
 )
 from github_security_report.cli.serialise import _org_to_dict, _table_to_dict
 
-# The package façade: every name previously importable from
-# ``github_security_report.cli`` still is, including the private helpers the
-# tests reach for, so splitting the module changed no caller's import path.
+# The package façade: every name the module split moved is still importable
+# from ``github_security_report.cli``, including the private helpers the tests
+# reach for, so relocating a definition changes no caller's import path.
+#
+# ``ReleaseOverrides`` is the one deliberate exception. It gained the gating
+# and inclusion overrides and became ``ReportOverrides``, so it is a rename
+# rather than a move. No alias is kept: the old name now describes only a third
+# of what the class carries, and a façade entry that points somewhere
+# misleading is worse than an import error that says exactly what happened.
 __all__ = [
     "OrgRunOptions",
     "ReportOverrides",

@@ -97,6 +97,11 @@ def _check_style_reads(data: Mapping[str, Any], style: OrderStyle) -> None:
     Almost always a misunderstanding rather than a harmless extra: an operator
     who writes a ``priority`` list and leaves the style at ``auto`` has asked
     for a custom band and been given the built-in one, silently.
+
+    Reads the block as written rather than the inherited result, because the
+    question is what this block asked for. Whether ``single`` ends up with a
+    sequence is a separate question, settled against the effective value once
+    inheritance has been applied.
     """
     reads = _READS[style]
     ignored = sorted(key for key in _LIST_KEYS if key in data and key not in reads)
@@ -106,12 +111,6 @@ def _check_style_reads(data: Mapping[str, Any], style: OrderStyle) -> None:
             f"{', '.join(repr(key) for key in ignored)}; "
             f"it reads {', '.join(repr(key) for key in reads) or 'no list keys'}. "
             "Use style 'dual' for priority/bau lists, or 'single' for a sequence."
-        )
-    if style is OrderStyle.SINGLE and not data.get("sequence"):
-        raise ConfigError(
-            "report.order.style 'single' needs a non-empty 'sequence' listing "
-            "the categories in the order you want them; without one it is "
-            "equivalent to style 'fixed'"
         )
 
 
@@ -142,8 +141,25 @@ def order_from(data: Mapping[str, Any], base: OrderConfig) -> OrderConfig:
     """Validate and build the ``report.order`` block over an inherited one."""
     style = _style_from(data, base)
     _check_style_reads(data, style)
+    if style is OrderStyle.AUTO:
+        # ``auto`` is defined as the built-in bands, and it reads no list keys,
+        # so it must not inherit them either. Without this, an organisation
+        # switching a global ``dual`` back to ``auto`` would silently keep the
+        # parent's custom bands -- the one thing naming ``auto`` rules out.
+        return OrderConfig()
     priority = _keys(data, "priority", base.priority)
     bau = _keys(data, "bau", base.bau)
+    sequence = _keys(data, "sequence", base.sequence)
+    # Checked against the effective value, not the block as written: an
+    # organisation restating `style: single` without repeating the global
+    # sequence has inherited a perfectly good one, and rejecting that would
+    # contradict the inheritance the rest of the config offers.
+    if style is OrderStyle.SINGLE and not sequence:
+        raise ConfigError(
+            "report.order.style 'single' needs a non-empty 'sequence' listing "
+            "the categories in the order you want them; without one it is "
+            "equivalent to style 'fixed'"
+        )
     overlap = sorted({key.value for key in priority} & {key.value for key in bau})
     if overlap:
         raise ConfigError(
@@ -155,5 +171,5 @@ def order_from(data: Mapping[str, Any], base: OrderConfig) -> OrderConfig:
         style=style,
         priority=priority,
         bau=bau,
-        sequence=_keys(data, "sequence", base.sequence),
+        sequence=sequence,
     )

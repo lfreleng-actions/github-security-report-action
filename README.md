@@ -480,14 +480,19 @@ The bands are not fixed slots. **A band member with nothing to report moves
 into the middle**: a clean priority category is noise at the top of a page, and
 a clean BAU category has stopped being background. Demoted priority categories
 sit at the top of the middle band and demoted BAU ones at the bottom, so
-whatever survives in each band still bounds the middle from its own side. A
+whatever survives in each band still bounds the middle from its own side.
+
+"Nothing to report" means no rows and no named repositories — no offenders, and
+nobody nagged for having the tool disabled. The bare counts every category
+prints regardless (`All Clean`, an unknown tally) do not hold a band position. A
 section skipped by [feature gating](#organisation-feature-gating) renders a
 notice rather than results, so it demotes too.
 
 The order is resolved **once**, when the report is assembled, and every surface
 draws it — the terminal, the Slack digest, the Markdown artifact and the Pages
 HTML cannot disagree. `report.json` publishes the resolved sequence as
-`section_order` so a machine consumer can reproduce the same layout.
+`section_order`, listing each nested posture table after the signal it renders
+beneath, so a machine consumer can reproduce the same layout.
 
 Four styles are available via `report.order.style`:
 
@@ -533,10 +538,16 @@ for a custom band and would otherwise quietly get the built-in one. Listing a
 category twice, or in both bands, is rejected for the same reason — a category
 holds exactly one position.
 
+An organisation inherits the global `order` block and may override it. Setting
+`style` back to `"auto"` restores the built-in bands rather than keeping the
+ones a global `dual` block supplied, since the built-in bands are what `auto`
+means.
+
 The three Dependabot posture tables (alerts enabled, security updates enabled,
 cooldown) are not independently placeable. They render beneath the Dependabot
 Alerts signal on every surface and travel with it, since three near-identical
 headings adrift in the report would not say which signal they qualified.
+Naming one in an ordering list is rejected rather than accepted and ignored.
 
 ### GitHub Issues
 

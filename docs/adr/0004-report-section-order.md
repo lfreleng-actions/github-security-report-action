@@ -50,18 +50,25 @@ Pages report it links to is worse than either order alone.
    resolved `OrderConfig` instead would have made the report model depend on
    the config tree, which nothing else in `report/` does; `ordering.py` keeps
    the same separation by taking config as a parameter. An empty tuple means
-   assembly order, so a report built without a resolution — repo mode, and
-   every test that calls `build_org_report` directly — behaves exactly as
-   before.
+   assembly order, so a report built straight from `build_org_report` — as the
+   tests do — behaves exactly as before. Both real pipelines resolve one: org
+   mode in `attach_extra_tables`, repo mode in `_run_repo`.
 
 4. **Three bands, with movement between them.** The default `auto` style puts
    actionable findings first (secret scanning, Dependabot alerts, CodeQL,
    mutable releases), business-as-usual categories last (Scorecard, issues,
-   pull requests), and everything else between. A band member with no rows
+   pull requests), and everything else between. A band member with no results
    **moves into the middle**: a clean priority category is noise at the top of
    a page, and a clean BAU category has stopped being background. Demoted
    members sit at the edge of the middle nearest their own band, so whatever
    survives in each band still bounds the middle from its own side.
+
+   "Results" means rows and named repositories -- offenders, or repositories
+   nagged for having the tool disabled. The bare counts every category prints
+   regardless (clean, unknown) do not qualify: a category reporting only "All
+   Clean" plainly has nothing to say, and counting an unknown tally would pin a
+   signal to the top of the page on the strength of repositories it could not
+   read.
 
 5. **Automatic is the default, not an opt-in.** A configuration that says
    nothing about ordering gets the band layout. The alternative — defaulting to
@@ -81,7 +88,15 @@ Pages report it links to is worse than either order alone.
 8. **The Dependabot posture tables are not independently placeable.** They
    travel with their parent signal as `LayoutItem.children`. Detaching them
    would leave three near-identical headings adrift with nothing to say which
-   signal they qualified.
+   signal they qualified. The config schema refuses to accept one in an
+   ordering list, rather than validating a setting that would do nothing.
+
+9. **`section_order` is always the realised sequence.** `resolve()` returns
+   what the renderers will actually draw -- every section the report carries,
+   in order -- rather than what the configuration listed. A `single` sequence
+   naming three categories, or naming one this report has no section for,
+   would otherwise be stored verbatim and leave the published order describing
+   a report that was never rendered.
 
 ## Consequences
 
@@ -90,8 +105,11 @@ Pages report it links to is worse than either order alone.
 - **The default output order changes for every user.** This is intended, and
   `report.order.style: "fixed"` restores the previous sequence exactly.
 - `report.json` gains `section_order`, so a machine consumer can reproduce the
-  published layout rather than inventing one. The file's keyed structure is
-  otherwise unchanged, so existing consumers are unaffected.
+  published layout rather than inventing one. It lists each nested posture
+  table after the signal it renders beneath, so those tables remain placeable
+  even when their parent is suppressed and the surfaces promote them to top
+  level. The file's keyed structure is otherwise unchanged, so existing
+  consumers are unaffected.
 - `report.order.*` joins the configuration contract, and the ordering lists
   name category keys — reinforcing ADR-0002's point that those keys must be
   renamed with care.

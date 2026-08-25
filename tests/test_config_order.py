@@ -109,6 +109,21 @@ class TestValidation:
         with pytest.raises(ConfigError, match="more than once"):
             _load({"style": "dual", "priority": ["codeql", "codeql"]})
 
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "dependabot_alerts_enabled",
+            "dependabot_updates_enabled",
+            "dependabot_cooldown",
+        ],
+    )
+    def test_a_nested_category_is_rejected(self, key: str) -> None:
+        # The Dependabot posture tables render beneath their parent signal and
+        # have no position of their own, so accepting one here would validate
+        # and then do nothing.
+        with pytest.raises(ConfigError):
+            _load({"style": "dual", "priority": [key]})
+
 
 class TestInheritance:
     def test_an_org_inherits_the_global_order(self) -> None:
@@ -147,6 +162,53 @@ class TestInheritance:
         org_order = cfg.organizations[0].report.order
         assert org_order.priority == (CategoryKey.CODEQL,)
         assert org_order.bau == (CategoryKey.SCORECARD,)
+
+    def test_an_org_may_restate_single_without_repeating_the_sequence(self) -> None:
+        # The sequence is inherited, so demanding the org repeat it would
+        # contradict the inheritance the rest of the config block offers.
+        cfg = config.build_config(
+            {
+                "report": {"order": {"style": "single", "sequence": ["codeql"]}},
+                "organizations": [
+                    {"name": "o", "report": {"order": {"style": "single"}}}
+                ],
+            }
+        )
+        org_order = cfg.organizations[0].report.order
+        assert org_order.style is OrderStyle.SINGLE
+        assert org_order.sequence == (CategoryKey.CODEQL,)
+
+    def test_an_org_inherits_single_through_an_empty_order_block(self) -> None:
+        cfg = config.build_config(
+            {
+                "report": {"order": {"style": "single", "sequence": ["codeql"]}},
+                "organizations": [{"name": "o", "report": {"order": {}}}],
+            }
+        )
+        assert cfg.organizations[0].report.order.sequence == (CategoryKey.CODEQL,)
+
+    def test_returning_to_auto_restores_the_built_in_bands(self) -> None:
+        # 'auto' is defined as the built-in bands and reads no list keys, so it
+        # must not inherit a parent's custom ones -- keeping them is the single
+        # thing naming 'auto' rules out.
+        cfg = config.build_config(
+            {
+                "report": {
+                    "order": {
+                        "style": "dual",
+                        "priority": ["codeql"],
+                        "bau": ["scorecard"],
+                    }
+                },
+                "organizations": [
+                    {"name": "o", "report": {"order": {"style": "auto"}}}
+                ],
+            }
+        )
+        org_order = cfg.organizations[0].report.order
+        assert org_order.style is OrderStyle.AUTO
+        assert org_order.priority == DEFAULT_PRIORITY
+        assert org_order.bau == DEFAULT_BAU
 
 
 class TestPriorityDefaults:

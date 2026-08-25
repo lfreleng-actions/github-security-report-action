@@ -8,7 +8,7 @@ weekdays), the error raised on invalid input, and ``CONFIG_SCHEMA`` itself.
 
 from __future__ import annotations
 
-from github_security_report.categories import all_categories
+from github_security_report.categories import all_categories, orderable_categories
 
 # The render surfaces a category can be toggled on or off for, independently of
 # whether the data is collected (collection is always exhaustive). ``cli`` is
@@ -34,8 +34,10 @@ WEEKDAYS = (
 # :mod:`github_security_report.layout` for what each one does.
 ORDER_STYLES = ("auto", "automatic", "dual", "single", "fixed")
 
-# Every category key, as the ordering lists may name them.
-CATEGORY_KEYS = [meta.key.value for meta in all_categories()]
+# Categories an ordering list may name. The nested Dependabot posture tables are
+# excluded: they render beneath their parent signal and have no position of
+# their own, so accepting one here would validate and then do nothing.
+CATEGORY_KEYS = [meta.key.value for meta in orderable_categories()]
 
 # Heuristic to warn when a token value, rather than an env-var name, is given.
 _TOKEN_PREFIXES = ("ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_")

@@ -210,6 +210,27 @@ class TestSingleStyle:
         assert keys[:2] == [CategoryKey.GITHUB_ISSUES, CategoryKey.CODEQL]
         assert keys.index(CategoryKey.SECRET_SCANNING) > 1
 
+    def test_resolves_to_the_full_realised_sequence(self) -> None:
+        # Storing the configured prefix verbatim would leave section_order
+        # describing three categories while the renderers drew every one of
+        # them, so a consumer could not reproduce the layout from it.
+        report = _report()
+        stored = layout.resolve(
+            report,
+            OrderConfig(style=OrderStyle.SINGLE, sequence=(CategoryKey.GITHUB_ISSUES,)),
+        )
+        report.section_order = stored
+        assert list(stored) == _keys(report)
+        assert len(stored) == len(layout.default_items(report))
+
+    def test_a_sequence_key_for_an_absent_category_is_dropped(self) -> None:
+        report = build_org_report("o/r", [], repo_count=1)
+        stored = layout.resolve(
+            report,
+            OrderConfig(style=OrderStyle.SINGLE, sequence=(CategoryKey.RELEASES,)),
+        )
+        assert CategoryKey.RELEASES not in stored
+
     def test_unnamed_categories_keep_assembly_order_behind_it(self) -> None:
         report = _report()
         order = OrderConfig(
@@ -230,10 +251,13 @@ class TestFixedStyle:
         before = _keys(report)
         assert _resolved(report, OrderConfig(style=OrderStyle.FIXED)) == before
 
-    def test_resolves_to_the_empty_sequence(self) -> None:
-        # Empty means "assembly order", which is what an unresolved report
-        # already renders in, so fixed needs to store nothing.
-        assert layout.resolve(_report(), OrderConfig(style=OrderStyle.FIXED)) == ()
+    def test_resolves_to_the_realised_assembly_order(self) -> None:
+        # Every style resolves to what the renderers will actually draw, so
+        # section_order never disagrees with the report it describes.
+        report = _report()
+        assert layout.resolve(report, OrderConfig(style=OrderStyle.FIXED)) == tuple(
+            _keys(report)
+        )
 
 
 class TestNoDuplication:
@@ -305,10 +329,13 @@ class TestEverySurfaceAgrees:
         report.section_order = layout.resolve(report, OrderConfig())
         return report
 
-    def test_markdown_slack_and_html_share_the_resolved_order(self) -> None:
+    def test_every_surface_shares_the_resolved_order(self) -> None:
+        from rich.console import Console
+
         from github_security_report.render import html as html_render
         from github_security_report.render import markdown as md_render
         from github_security_report.render import slack as slack_render
+        from github_security_report.render import terminal as term_render
 
         report = self._report()
         expected = [category_meta(key).title for key in report.section_order]
@@ -319,10 +346,17 @@ class TestEverySurfaceAgrees:
                 report, top_n=10, pages_url=None
             )
         )
+        # The terminal writes its headings as bold lines rather than markup, so
+        # it is captured and compared on the plain text a reader would see.
+        console = Console(record=True, width=200, no_color=True, highlight=False)
+        term_render.render_org(report, console)
+        terminal_text = console.export_text()
+
         surfaces = {
             "markdown": (md_render.render_org(report), "## {title}"),
             "html": (html_render.render_org_html(report), "<h2>{title}</h2>"),
             "slack": (slack_text, "*{title}*"),
+            "terminal": (terminal_text, "\n{title}"),
         }
 
         for name, (text, pattern) in surfaces.items():
@@ -331,6 +365,7 @@ class TestEverySurfaceAgrees:
             # resolved order -- and must render enough of them for that to
             # mean something.
             assert len(rendered) > 4, name
+            assert rendered == [title for title in expected if title in rendered], name
             assert rendered == [title for title in expected if title in rendered], name
 
     def test_secret_scanning_leads_the_rendered_markdown(self) -> None:
@@ -351,6 +386,26 @@ class TestPopulated:
         section = SignalSection(signal=SignalType.CODEQL, skipped=True)
         assert layout.LayoutItem(section).populated is False
 
+    def test_a_skipped_section_demotes_even_carrying_nags(self) -> None:
+        # Nothing was collected, so whatever else the section holds it has no
+        # results to show.
+        section = SignalSection(
+            signal=SignalType.CODEQL, skipped=True, nag_repos=[_repo("a")]
+        )
+        assert layout.LayoutItem(section).populated is False
+
+    def test_nagged_repositories_count_as_results(self) -> None:
+        # A signal with no findings but repositories that have the tool
+        # disabled still names those repositories, and that list is both
+        # visible and actionable -- demoting it would bury real work.
+        section = SignalSection(signal=SignalType.CODEQL, nag_repos=[_repo("a")])
+        assert layout.LayoutItem(section).populated is True
+
+    def test_a_clean_count_alone_does_not_count(self) -> None:
+        # "All Clean" is exactly the case the demotion exists for.
+        section = SignalSection(signal=SignalType.CODEQL, clean_count=12)
+        assert layout.LayoutItem(section).populated is False
+
     def test_offenders_count_as_populated(self) -> None:
         section = SignalSection(
             signal=SignalType.CODEQL, offenders=[_offender(SignalType.CODEQL)]
@@ -363,3 +418,24 @@ class TestPopulated:
             children=(_table(CategoryKey.DEPENDABOT_ALERTS_ENABLED, rows=1),),
         )
         assert item.populated is True
+
+
+class TestDrawnOrder:
+    """The sequence of headings, as opposed to configurable positions."""
+
+    def test_nested_tables_follow_their_parent(self) -> None:
+        report = _report(dependabot_tables=True)
+        report.section_order = layout.resolve(report, OrderConfig())
+        drawn = layout.drawn_order(report)
+        assert (
+            drawn.index(CategoryKey.DEPENDABOT_ALERTS_ENABLED)
+            == drawn.index(CategoryKey.DEPENDABOT_ALERTS) + 1
+        )
+
+    def test_every_top_level_position_is_preserved(self) -> None:
+        report = _report(dependabot_tables=True)
+        report.section_order = layout.resolve(report, OrderConfig())
+        drawn = layout.drawn_order(report)
+        assert [key for key in drawn if key in report.section_order] == list(
+            report.section_order
+        )

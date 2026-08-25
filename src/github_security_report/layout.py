@@ -102,16 +102,26 @@ class LayoutItem:
 
     @property
     def populated(self) -> bool:
-        """Whether this item has rows to show, counting its children.
+        """Whether this item has results to show, counting its children.
 
-        A skipped signal section has no offenders and so reports ``False``: it
-        renders one line of explanation rather than results, which is not a
-        reason to hold a priority slot. An item whose own section is empty but
-        whose posture sub-tables are not still counts as populated, since the
-        reader sees rows either way.
+        "Results" means rows and named repositories -- a signal's offender
+        table, the repositories it nags as having the tool disabled, or a
+        table's rows. Those are what a reader sees when they look at the
+        section, and what a band position is worth holding for.
+
+        The bare counts every category prints regardless (clean, unknown) do
+        not count. A category reporting only "All Clean" plainly has nothing to
+        say; an unknown tally has nothing a reader can act on either, and
+        counting it would keep a signal pinned at the top of the page on the
+        strength of repositories it could not read.
+
+        A skipped signal section is short-circuited: feature gating collected
+        nothing, so it renders one line of explanation rather than results.
         """
         if isinstance(self.section, SignalSection):
-            own = bool(self.section.offenders)
+            own = not self.section.skipped and bool(
+                self.section.offenders or self.section.nag_repos
+            )
         else:
             own = bool(self.section.rows)
         return own or any(child.rows for child in self.children)
@@ -215,23 +225,48 @@ def resolve(
 
     Called once during assembly; the result is stored on the report as
     :attr:`OrgReport.section_order` and applied by :func:`plan` on every
-    surface. An empty tuple means "assembly order", which is what the ``fixed``
-    style resolves to.
+    surface.
+
+    Always the **realised** sequence -- every section this report actually
+    carries, in the order it will be drawn -- rather than whatever the
+    configuration listed. A ``single`` sequence naming three categories, or
+    naming one the report does not carry, would otherwise be stored verbatim
+    and leave ``section_order`` disagreeing with what the renderers drew.
     """
     resolved = order if order is not None else OrderConfig()
-    if resolved.style is OrderStyle.FIXED:
-        return ()
     items = default_items(org)
-    if resolved.style is OrderStyle.SINGLE:
-        return tuple(resolved.sequence)
-    return tuple(_banded(items, resolved.priority, resolved.bau))
+    if resolved.style is OrderStyle.FIXED:
+        keys: list[CategoryKey] = [item.key for item in items]
+    elif resolved.style is OrderStyle.SINGLE:
+        keys = [item.key for item in _in_order(items, resolved.sequence)]
+    else:
+        keys = _banded(items, resolved.priority, resolved.bau)
+    return tuple(keys)
 
 
 def plan(org: OrgReport) -> list[LayoutItem]:
     """The ordered sections every render surface should draw, in order.
 
     Applies the sequence resolved at assembly time. A report that never had one
-    resolved (a bare :func:`report.build_org_report`, as the tests and repo mode
-    use) renders in assembly order, which is the pre-existing behaviour.
+    resolved -- one built straight from :func:`report.build_org_report`, as the
+    tests do -- renders in assembly order, which is the pre-existing behaviour.
+    Both real pipelines resolve one: org mode in ``attach_extra_tables`` and
+    repo mode in ``_run_repo``.
     """
     return _in_order(default_items(org), org.section_order)
+
+
+def drawn_order(org: OrgReport) -> list[CategoryKey]:
+    """Every category in the order it is drawn, nested tables included.
+
+    :attr:`OrgReport.section_order` holds top-level positions only, because a
+    nested table has no position of its own to configure. A reader of the
+    report still meets those tables somewhere definite, though, so this expands
+    each parent to the children that follow it -- the sequence of headings, as
+    opposed to the sequence of configurable slots.
+    """
+    return [
+        key
+        for item in plan(org)
+        for key in (item.key, *(child.category.key for child in item.children))
+    ]
