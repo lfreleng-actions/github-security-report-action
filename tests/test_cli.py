@@ -742,14 +742,11 @@ class TestTopNLimits:
         top_n_report: int | None = None,
         top_n_cli: int | None = None,
         top_n_slack: int | None = None,
-    ) -> OrgConfig:
-        return OrgConfig(
-            name="o",
-            report=ReportConfig(
-                top_n_report=top_n_report,
-                top_n_cli=top_n_cli,
-                top_n_slack=top_n_slack,
-            ),
+    ) -> ReportConfig:
+        return ReportConfig(
+            top_n_report=top_n_report,
+            top_n_cli=top_n_cli,
+            top_n_slack=top_n_slack,
         )
 
     def test_config_value_used_when_no_override(self) -> None:
@@ -808,13 +805,11 @@ def test_module_form_entry_point_still_runs() -> None:
 class TestPerCategoryLimits:
     """CLI/config precedence for a category's own row limit."""
 
-    def _org(self, categories: dict, *, top_n_cli: int) -> OrgConfig:
+    def _org(self, categories: dict, *, top_n_cli: int) -> ReportConfig:
         toggles = {
             key: CategoryToggle(top_n=value) for key, value in categories.items()
         }
-        return OrgConfig(
-            name="o", report=ReportConfig(categories=toggles, top_n_cli=top_n_cli)
-        )
+        return ReportConfig(categories=toggles, top_n_cli=top_n_cli)
 
     def test_category_config_beats_output_config(self) -> None:
         org = self._org({"releases": 0}, top_n_cli=10)

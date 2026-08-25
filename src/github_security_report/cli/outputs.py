@@ -36,8 +36,12 @@ class TopNLimits:
 
     Resolution order for one category on one output, most specific first: the
     category-specific CLI override, then the shared ``--top-n`` override, then
-    the category's configured ``top_n``, then the org's configured value for
-    that output. A value of 0 means "no limit" at every level.
+    the category's configured ``top_n``, then the configured value for that
+    output. A value of 0 means "no limit" at every level.
+
+    Resolved against a :class:`ReportConfig` rather than an :class:`OrgConfig`:
+    every level of the fallback reads the report block alone, and repo mode has
+    one of those without an organisation to hang it from.
 
     Command-line flags deliberately outrank the per-category configuration: a
     flag is a decision about this one run, so ``--top-n 5`` caps every category
@@ -50,7 +54,7 @@ class TopNLimits:
     slack: int | None = None
 
     def resolve(
-        self, org_cfg: OrgConfig, output: str, category: CategoryKey | None = None
+        self, report_cfg: ReportConfig, output: str, category: CategoryKey | None = None
     ) -> int:
         """The effective limit for ``output`` (``report``/``cli``/``slack``).
 
@@ -64,16 +68,16 @@ class TopNLimits:
         if self.shared is not None:
             return self.shared
         if category is not None:
-            return org_cfg.report.category_top_n(category, output)
-        return org_cfg.report.output_top_n(output)
+            return report_cfg.category_top_n(category, output)
+        return report_cfg.output_top_n(output)
 
-    def resolver(self, org_cfg: OrgConfig, output: str) -> LimitFor:
-        """A per-category limit lookup for one org and output.
+    def resolver(self, report_cfg: ReportConfig, output: str) -> LimitFor:
+        """A per-category limit lookup for one report config and output.
 
         Renderers take this alongside the ``show`` predicate, so a category with
         its own configured ``top_n`` truncates independently of the rest.
         """
-        return lambda key: self.resolve(org_cfg, output, key)
+        return lambda key: self.resolve(report_cfg, output, key)
 
 
 def most_generous(limits: list[int]) -> int:
@@ -161,7 +165,7 @@ def slack_limit(
     per-category counterpart of :func:`slack_show`.
     """
     return lambda key: most_generous(
-        [limits.resolve(oc, "slack", key) for oc, _ in items]
+        [limits.resolve(oc.report, "slack", key) for oc, _ in items]
     )
 
 

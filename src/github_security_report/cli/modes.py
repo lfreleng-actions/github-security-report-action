@@ -195,8 +195,8 @@ def _write_pages(
         write_org_files(
             org_report,
             output_dir,
-            top_n=limits.resolve(org_cfg, "report"),
-            limit=limits.resolver(org_cfg, "report"),
+            top_n=limits.resolve(org_cfg.report, "report"),
+            limit=limits.resolver(org_cfg.report, "report"),
             report_cfg=org_cfg.report,
             hidden=hidden,
         )
@@ -249,7 +249,7 @@ def _slack_digest(
             [report for _, report in items],
             channel=channel,
             top_n=most_generous(
-                [options.limits.resolve(oc, "slack") for oc, _ in items]
+                [options.limits.resolve(oc.report, "slack") for oc, _ in items]
             ),
             pages_url=options.pages_url,
             # Visibility is resolved per organisation, so each org's rows obey
@@ -287,9 +287,9 @@ def _summary(
         "\n\n".join(
             md_render.render_org(
                 org_report,
-                top_n=limits.resolve(org_cfg, "report"),
+                top_n=limits.resolve(org_cfg.report, "report"),
                 show=show(org_cfg.report, "markdown", hidden),
-                limit=limits.resolver(org_cfg, "report"),
+                limit=limits.resolver(org_cfg.report, "report"),
             )
             for org_cfg, org_report in pairs
         ).rstrip()
@@ -311,9 +311,9 @@ async def _run_org(cfg: Config, options: OrgRunOptions, *, console: Console) -> 
         term_render.render_org(
             org_report,
             console,
-            top_n=limits.resolve(org_cfg, "cli"),
+            top_n=limits.resolve(org_cfg.report, "cli"),
             show=show(org_cfg.report, "cli", options.hidden),
-            limit=limits.resolver(org_cfg, "cli"),
+            limit=limits.resolver(org_cfg.report, "cli"),
         )
     if options.output_dir:
         _write_pages(
