@@ -150,8 +150,10 @@ def report(
     repo: str | None = typer.Option(
         None, "--repo", help="owner/name for repo mode (else git-detected)."
     ),
-    token_env: str = typer.Option(
-        "GITHUB_TOKEN", "--token-env", help="Env var holding the repo-mode token."
+    token_env: str | None = typer.Option(
+        None,
+        "--token-env",
+        help="Env var holding the token (default: GITHUB_TOKEN). When given, overrides every organisation's configured token_env.",
     ),
     output_dir: str | None = typer.Option(
         None, "--output-dir", "-o", help="Directory for Pages output (org mode)."
@@ -333,7 +335,7 @@ def report(
                 _run_repo(
                     detected[0],
                     detected[1],
-                    token_env=token_env,
+                    token_env=token_env or "GITHUB_TOKEN",
                     console=console,
                     fail_threshold=fail_threshold,
                     report_cfg=cfg.report if cfg is not None else None,
@@ -369,10 +371,10 @@ def remediate(
         "--category",
         help="Remediable category to act on (repeatable; default: all). One of: codeql, secret_scanning, dependabot_alerts_enabled, dependabot_updates_enabled, private_vulnerability_reporting.",
     ),
-    token_env: str = typer.Option(
-        "GITHUB_TOKEN",
+    token_env: str | None = typer.Option(
+        None,
         "--token-env",
-        help="Env var holding a WRITE-capable org-admin PAT. Used for both reading posture and enabling features across every configured org.",
+        help="Env var holding a WRITE-capable org-admin PAT (default: GITHUB_TOKEN). Used for both reading posture and enabling features across every configured org.",
     ),
     apply: bool = typer.Option(
         False,
@@ -414,11 +416,12 @@ def remediate(
         )
         raise typer.Exit(2)
 
-    token = os.environ.get(token_env, "").strip()
+    token_var = token_env or "GITHUB_TOKEN"
+    token = os.environ.get(token_var, "").strip()
     if not token:
         # markup=False guards the user-supplied --token-env value.
         console.print(
-            f"No token in ${token_env} (a write-capable org-admin PAT is required).",
+            f"No token in ${token_var} (a write-capable org-admin PAT is required).",
             style="red",
             markup=False,
         )

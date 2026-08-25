@@ -179,7 +179,8 @@ organisations. Grant these scopes:
     scope: "org"
     config: "${{ secrets.GSR_CONFIG || vars.GSR_CONFIG }}"
     token: "${{ secrets.LFRELENG_ACTIONS_REPORT_PAT }}"
-    # Must match the per-org "token_env" in your config (below).
+    # Exports the token under this name, and overrides the per-org
+    # "token_env" in the config (below) so the two cannot drift apart.
     token_env: "LFRELENG_ACTIONS_REPORT_PAT"
     output_dir: "site"
     pages_url: "https://lfreleng-actions.github.io/github-security-report-action/"
@@ -991,7 +992,7 @@ and the Slack **bot token** is consumed by the workflow, not the CLI.
 | `org` | No | — | Single organisation (shorthand for org mode) |
 | `repo` | No | detected | `owner/name` for repo mode |
 | `token` | No | `${{ github.token }}` | PAT (org mode) or `GITHUB_TOKEN` (repo mode) |
-| `token_env` | No | `GITHUB_TOKEN` | Env var name the token is exported under. In org mode it **must match** the per-org `token_env` in your config (e.g. `LFRELENG_ACTIONS_REPORT_PAT`), otherwise the tool looks up an unset variable and reports no token. |
+| `token_env` | No | `GITHUB_TOKEN` | Env var name the token is exported under. When set it **overrides** the per-org `token_env` in your config, so the two no longer have to be kept in step; leave it unset to let each organisation use its own configured variable. |
 | `output_dir` | No | — | Directory for Pages output (org mode) |
 | `pages_url` | No | — | Published Pages URL (used in the Slack link) |
 | `slack_channel` | No | — | Slack channel ID; overrides the config `slack.channel` (e.g. the `SLACK_CHANNEL_ID` variable) |

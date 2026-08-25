@@ -55,26 +55,43 @@ def _load_config(
     config_file: str | None,
     config_data: str | None,
     org: str | None,
-    token_env: str = "GITHUB_TOKEN",
+    token_env: str | None = None,
     *,
     console: Console | None = None,
 ) -> Config | None:
+    """Resolve the configuration, applying an explicit ``--token-env`` over it.
+
+    ``token_env`` is ``None`` when the flag was not given, which is what makes
+    it usable as an override at all: with an eager ``"GITHUB_TOKEN"`` default
+    the code could not tell "the user asked for this" from "unset", so the only
+    safe reading was to ignore it wherever a config supplied its own value. A
+    value that was actually typed now wins over every organisation's configured
+    ``token_env``, which is the one thing an operator can mean by passing it
+    alongside ``--config``.
+    """
+    cfg: Config | None = None
     if config_file:
-        return config.load_file(config_file)
-    if config_data:
-        return config.loads(config_data)
-    if org:
-        # Honour the selected token env var so --org works with non-default
-        # token environment variable names (e.g. a classic PAT secret).
-        return Config(organizations=(OrgConfig(name=org, token_env=token_env),))
-    # No explicit configuration: fall back to the per-user config file if one
-    # exists, so a local run with no flags works instead of erroring.
-    default_path = config.find_default_config()
-    if default_path is not None:
-        if console is not None:
-            console.print(f"[dim]Using config: {default_path}[/dim]")
-        return config.load_file(str(default_path))
-    return None
+        cfg = config.load_file(config_file)
+    elif config_data:
+        cfg = config.loads(config_data)
+    elif org:
+        cfg = Config(organizations=(OrgConfig(name=org),))
+    else:
+        # No explicit configuration: fall back to the per-user config file if
+        # one exists, so a local run with no flags works instead of erroring.
+        default_path = config.find_default_config()
+        if default_path is not None:
+            if console is not None:
+                console.print(f"[dim]Using config: {default_path}[/dim]")
+            cfg = config.load_file(str(default_path))
+    if cfg is None or token_env is None:
+        return cfg
+    return replace(
+        cfg,
+        organizations=tuple(
+            replace(org_cfg, token_env=token_env) for org_cfg in cfg.organizations
+        ),
+    )
 
 
 def _abort_network(console: Console, exc: NetworkError) -> NoReturn:

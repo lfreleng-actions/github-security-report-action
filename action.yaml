@@ -27,9 +27,15 @@ inputs:
     required: false
     default: ""
   token_env:
-    description: "Environment variable name the tool reads the token from"
+    # Deliberately empty by default. The tool now treats a supplied
+    # --token-env as an override of every organisation's configured
+    # token_env, so passing one unconditionally would flatten a multi-org
+    # config whose organisations each read a different variable. Empty means
+    # "say nothing", leaving each organisation on its own configured name;
+    # the token is still exported under GITHUB_TOKEN in that case.
+    description: "Environment variable name the token is exported under. When set it overrides the per-org token_env in your config; leave empty to let each organisation use its own"
     required: false
-    default: "GITHUB_TOKEN"
+    default: ""
   output_dir:
     description: "Directory for GitHub Pages output (org mode)"
     required: false
@@ -113,7 +119,11 @@ runs:
       env:
         # Expose the token under the configured environment-variable name so
         # the tool resolves it by name (per-org token_env, default GITHUB_TOKEN).
-        TOKEN_ENV: ${{ inputs.token_env }}
+        TOKEN_ENV: ${{ inputs.token_env || 'GITHUB_TOKEN' }}
+        # The raw input, empty when the caller did not ask for a specific name.
+        # Only a value that was actually supplied is passed through as an
+        # override; see the token_env input above.
+        INPUT_TOKEN_ENV: ${{ inputs.token_env }}
         # Input defaults are literal strings, so the github.token fallback is
         # applied here in env: where the expression is evaluated.
         TOKEN_VALUE: ${{ inputs.token || github.token }}
@@ -205,7 +215,8 @@ runs:
           fi
         fi
 
-        args=(report --scope "$INPUT_SCOPE" --token-env "$TOKEN_ENV" --no-color)
+        args=(report --scope "$INPUT_SCOPE" --no-color)
+        [ -n "$INPUT_TOKEN_ENV" ] && args+=(--token-env "$INPUT_TOKEN_ENV")
         [ -n "$INPUT_CONFIG" ] && args+=(--config-data "$INPUT_CONFIG")
         [ -n "$INPUT_ORG" ] && args+=(--org "$INPUT_ORG")
         [ -n "$INPUT_REPO" ] && args+=(--repo "$INPUT_REPO")
