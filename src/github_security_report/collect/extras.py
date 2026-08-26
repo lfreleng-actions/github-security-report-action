@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from github_security_report import posture
+from github_security_report import layout, posture
 from github_security_report.collect.context import (
     OrgCollectContext,
     gather_in_batches,
@@ -150,3 +150,9 @@ async def attach_extra_tables(
     # render surface (and report.json) presents the same order.
     apply_configured_order(report_tables(report), report_cfg)
     apply_configured_signal_order(report.sections, report_cfg)
+    # The sequence the sections themselves are drawn in, resolved once for the
+    # same reason: a table's position is a property of the report, so a Slack
+    # digest must not run in a different order from the page it links to. This
+    # comes last because the automatic layout demotes empty categories, and the
+    # tables above are what decide which ones are empty.
+    report.section_order = layout.resolve(report, report_cfg.order)

@@ -8,7 +8,7 @@ weekdays), the error raised on invalid input, and ``CONFIG_SCHEMA`` itself.
 
 from __future__ import annotations
 
-from github_security_report.categories import all_categories
+from github_security_report.categories import all_categories, orderable_categories
 
 # The render surfaces a category can be toggled on or off for, independently of
 # whether the data is collected (collection is always exhaustive). ``cli`` is
@@ -29,6 +29,15 @@ WEEKDAYS = (
     "saturday",
     "sunday",
 )
+
+# Output-ordering styles, plus the "automatic" spelling of the default. See
+# :mod:`github_security_report.layout` for what each one does.
+ORDER_STYLES = ("auto", "automatic", "dual", "single", "fixed")
+
+# Categories an ordering list may name. The nested Dependabot posture tables are
+# excluded: they render beneath their parent signal and have no position of
+# their own, so accepting one here would validate and then do nothing.
+CATEGORY_KEYS = [meta.key.value for meta in orderable_categories()]
 
 # Heuristic to warn when a token value, rather than an env-var name, is given.
 _TOKEN_PREFIXES = ("ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_")
@@ -109,6 +118,31 @@ CONFIG_SCHEMA: dict = {
                     "additionalProperties": {
                         "type": "array",
                         "items": {"type": "string", "minLength": 1},
+                    },
+                },
+                # Where each category sits in the rendered output. `style`
+                # picks the algorithm; the list keys supply membership for the
+                # styles that take it. The loader rejects a list key paired
+                # with a style that does not read it, and a `single` style with
+                # no sequence: JSON Schema can express neither with a usable
+                # error message.
+                "order": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "style": {"enum": list(ORDER_STYLES)},
+                        "priority": {
+                            "type": "array",
+                            "items": {"enum": CATEGORY_KEYS},
+                        },
+                        "bau": {
+                            "type": "array",
+                            "items": {"enum": CATEGORY_KEYS},
+                        },
+                        "sequence": {
+                            "type": "array",
+                            "items": {"enum": CATEGORY_KEYS},
+                        },
                     },
                 },
                 # Per-category render toggles. Each known category may set a

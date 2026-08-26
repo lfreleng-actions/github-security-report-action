@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 
+from github_security_report import layout
 from github_security_report.categories import CategoryKey
 from github_security_report.models import Repo, RepoSignal, SignalType
 from github_security_report.report import (
@@ -313,12 +314,15 @@ def render_org(
             )
         )
 
-    for section in org.sections:
-        key = section.signal.category_key
+    for item in layout.plan(org):
+        if isinstance(item.section, TableSection):
+            table(item.section)
+            continue
+        key = item.section.signal.category_key
         parent_visible = visible(key)
         if parent_visible:
             parts.append(
-                render_section(section, excluded=excluded, top_n=limit_for(key))
+                render_section(item.section, excluded=excluded, top_n=limit_for(key))
             )
         # The Dependabot configuration-posture sub-tables normally nest beneath
         # the Dependabot signal heading as level-3 sub-sections. When the parent
@@ -327,16 +331,8 @@ def render_org(
         # the heading structure correct and consistent with the HTML surface,
         # which likewise promotes them to top-level sections when the parent is
         # hidden.
-        if section.signal is SignalType.DEPENDABOT:
-            table_level = 3 if parent_visible else 2
-            for dependabot_table in org.dependabot_tables:
-                table(dependabot_table, level=table_level)
-    table(org.releases)
-    table(org.mutable_releases)
-    table(org.private_vulnerability_reporting)
-    table(org.issues)
-    table(org.pull_requests)
-    table(org.assigned_pull_requests)
+        for dependabot_table in item.children:
+            table(dependabot_table, level=3 if parent_visible else 2)
     return "\n".join(parts).rstrip() + "\n"
 
 

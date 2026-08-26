@@ -51,8 +51,8 @@ no alerts, no analyses on a sample of repositories — gets a single
 `⏩ Skipping feature: organisation support missing` line for that section
 instead of a nag list. See the
 [organisation scan setup guide](docs/org-scan-setup.md) for the required
-workflows, and disable the check with `report.gating: false` if you want to
-probe everything regardless.
+workflows, and disable the check with `report.gating: false` (or `--no-gating`)
+if you want to probe everything regardless.
 
 Further sections report **configuration posture** and **freshness** as plain
 tables (org mode):
@@ -179,7 +179,8 @@ organisations. Grant these scopes:
     scope: "org"
     config: "${{ secrets.GSR_CONFIG || vars.GSR_CONFIG }}"
     token: "${{ secrets.LFRELENG_ACTIONS_REPORT_PAT }}"
-    # Must match the per-org "token_env" in your config (below).
+    # Exports the token under this name, and overrides the per-org
+    # "token_env" in the config (below) so the two cannot drift apart.
     token_env: "LFRELENG_ACTIONS_REPORT_PAT"
     output_dir: "site"
     pages_url: "https://lfreleng-actions.github.io/github-security-report-action/"
@@ -202,6 +203,15 @@ digest only on the configured `report_day` (default Tuesday).
   # requires: permissions: { security-events: read }
 ```
 
+Repo mode renders one repository to the terminal and the job summary. It
+honours `top_n`, `top_n_report`, `top_n_cli`, `hide`, and the `report` block of
+a supplied `config` (including every `report.categories.*` toggle). The inputs
+that only shape an organisation-wide run — `output_dir`, `pages_url`,
+`slack_channel`, `force_notify`, `top_n_slack`, and the Releases/Tagging levers
+— are **rejected** with exit code 2 rather than accepted and discarded, so a
+misconfigured workflow says so instead of quietly producing a report that
+ignores them.
+
 ## Configuration
 
 Configuration is JSON, supplied as a plain `vars.` entry or base64-encoded in a
@@ -220,7 +230,8 @@ environment-variable name, never embedded.
     "include_archived": false,
     "include_test": false,
     "repo_min_age_days": 28,
-    "release_max_age_days": 60
+    "release_max_age_days": 60,
+    "order": { "style": "auto" }
   },
   "organizations": [
     {
@@ -256,7 +267,12 @@ The Releases / Tagging section has two independent freshness levers:
   repositories drop out of the table. CLI: `--release-max-age-days`.
 
 The per-org `releases_exclude` (CLI `--releases-exclude`, repeatable) drops
-named repositories from the section entirely.
+named repositories from the section entirely. The flag *replaces* the
+configured list rather than adding to it, and cannot say which organisation it
+means, so it is refused when the run covers more than one — set
+`releases_exclude` per organisation in the configuration for that case. The two
+age levers above are scalar policy and do apply to every configured
+organisation, as `--top-n` does.
 
 > The former `release_min_age_days` key was a misleading name for
 > `repo_min_age_days` (it gates *repository* age, not *release* age). It is
@@ -266,6 +282,10 @@ named repositories from the section entirely.
 The per-org `exclude` list removes repositories from analysis entirely; they are
 reported as **excluded** (distinct from "not enabled"), so an intentional
 exclusion is visible rather than silently dropped.
+
+Archived and test repositories are excluded from analysis by default. Opt them
+back in with `report.include_archived` / `report.include_test` in the config, or
+for a single run with `--include-archived` / `--include-test`.
 
 ### Per-category render toggles
 
@@ -442,6 +462,92 @@ Omitting `sort` keeps each signal's default ranking, which is not expressible as
 a column list — Scorecard cascades through the worst severity rung any offender
 actually carries, so a lone Critical is never buried by a weaker repository with
 a lower score.
+
+### Output order
+
+`sort` above orders the rows *within* a table. `report.order` orders the
+**sections themselves** — which category a reader meets first.
+
+By default the report sorts its sections into three bands:
+
+| Band | Contains | Why |
+| ---- | -------- | --- |
+| **Priority** | Secret Scanning, Dependabot: Security Alerts, CodeQL, Mutable Releases | Findings worth acting on today |
+| **Middle** | Everything else | Neither urgent nor constant |
+| **BAU** | OpenSSF Scorecard, GitHub Issues, Pull Requests, Assigned to Me | Carry data every run, so none of it is news |
+
+The bands are not fixed slots. **A band member with nothing to report moves
+into the middle**: a clean priority category is noise at the top of a page, and
+a clean BAU category has stopped being background. Demoted priority categories
+sit at the top of the middle band and demoted BAU ones at the bottom, so
+whatever survives in each band still bounds the middle from its own side.
+
+"Nothing to report" means no rows and no named repositories — no offenders, and
+nobody nagged for having the tool disabled. The bare counts every category
+prints regardless (`All Clean`, an unknown tally) do not hold a band position. A
+section skipped by [feature gating](#organisation-feature-gating) renders a
+notice rather than results, so it demotes too.
+
+The order is resolved **once**, when the report is assembled, and every surface
+draws it — the terminal, the Slack digest, the Markdown artifact and the Pages
+HTML cannot disagree. `report.json` publishes the resolved sequence as
+`section_order`, listing each nested posture table after the signal it renders
+beneath, so a machine consumer can reproduce the same layout.
+
+Four styles are available via `report.order.style`:
+
+| Style | Reads | Behaviour |
+| ----- | ----- | --------- |
+| `auto` (default) | — | The bands above, with the built-in membership. `automatic` is accepted as the same thing |
+| `dual` | `priority`, `bau` | The same algorithm over your own band lists. Omit either to keep the built-in one |
+| `single` | `sequence` | A strict hierarchy, applied verbatim with **no** demotion. Categories the list omits keep their assembly order behind it |
+| `fixed` | — | No reordering at all — the order this tool produced before `report.order` existed |
+
+Two bands of your own:
+
+```json
+{
+  "report": {
+    "order": {
+      "style": "dual",
+      "priority": ["secret_scanning", "codeql"],
+      "bau": ["github_issues", "pull_requests"]
+    }
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
+
+Or one strict hierarchy, honoured whatever the data says:
+
+```json
+{
+  "report": {
+    "order": {
+      "style": "single",
+      "sequence": ["secret_scanning", "dependabot_alerts", "codeql"]
+    }
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
+
+A list key paired with a style that does not read it is an **error** rather than
+a silent no-op: writing a `priority` band and leaving the style at `auto` asks
+for a custom band and would otherwise quietly get the built-in one. Listing a
+category twice, or in both bands, is rejected for the same reason — a category
+holds exactly one position.
+
+An organisation inherits the global `order` block and may override it. Setting
+`style` back to `"auto"` restores the built-in bands rather than keeping the
+ones a global `dual` block supplied, since the built-in bands are what `auto`
+means.
+
+The three Dependabot posture tables (alerts enabled, security updates enabled,
+cooldown) are not independently placeable. They render beneath the Dependabot
+Alerts signal on every surface and travel with it, since three near-identical
+headings adrift in the report would not say which signal they qualified.
+Naming one in an ordering list is rejected rather than accepted and ignored.
 
 ### GitHub Issues
 
@@ -898,7 +1004,8 @@ code-scanning alerts from the tool, analyses on a sample of repositories, or
 **skipped** — not probed per repository, not classified — and its section
 shows a single `⏩ Skipping feature: organisation support missing` line
 linking the setup guide, on every output surface. Set `report.gating` to
-`false` (globally or per organisation) to always probe everything:
+`false` (globally or per organisation), or pass `--no-gating` for a single run,
+to always probe everything:
 
 ```json
 {
@@ -906,6 +1013,10 @@ linking the setup guide, on every output surface. Set `report.gating` to
   "organizations": [{ "name": "lfreleng-actions" }]
 }
 ```
+
+Because a skipped section is the most likely prompt for "why is zizmor missing
+from my report?", `--no-gating` exists so that question can be answered without
+writing a configuration file to set one boolean.
 
 Gating decides **collection**; the per-category render toggles above decide
 **presentation**. A skipped section still renders (as the one-line notice)
@@ -977,7 +1088,7 @@ and the Slack **bot token** is consumed by the workflow, not the CLI.
 | `org` | No | — | Single organisation (shorthand for org mode) |
 | `repo` | No | detected | `owner/name` for repo mode |
 | `token` | No | `${{ github.token }}` | PAT (org mode) or `GITHUB_TOKEN` (repo mode) |
-| `token_env` | No | `GITHUB_TOKEN` | Env var name the token is exported under. In org mode it **must match** the per-org `token_env` in your config (e.g. `LFRELENG_ACTIONS_REPORT_PAT`), otherwise the tool looks up an unset variable and reports no token. |
+| `token_env` | No | `GITHUB_TOKEN` | Env var name the token is exported under. When set it **overrides** the per-org `token_env` in your config, so the two no longer have to be kept in step; leave it unset to let each organisation use its own configured variable. |
 | `output_dir` | No | — | Directory for Pages output (org mode) |
 | `pages_url` | No | — | Published Pages URL (used in the Slack link) |
 | `slack_channel` | No | — | Slack channel ID; overrides the config `slack.channel` (e.g. the `SLACK_CHANNEL_ID` variable) |

@@ -268,9 +268,10 @@ repos auto-skipped.
   removed from analysis but **surfaced as "excluded"** (counted and listed once
   per org, on every render surface), so an explicit exclusion is visible and
   clearly distinct from a "not enabled" nag rather than silently dropped.
-- **Archived** — fully excluded by default; opt back in via config option +
-  CLI flag.
-- **Test repos** — excluded by default; opt back in via `--include-test`.
+- **Archived** — fully excluded by default; opt back in via
+  `report.include_archived` or `--include-archived`.
+- **Test repos** — excluded by default; opt back in via `report.include_test`
+  or `--include-test`.
   Matched as a **delimited token** (`test`/`tests` as a segment after splitting
   on `-`, `_`, `.`, `/`) — **not** a raw substring (so `latest`, `attestation`,
   `contest` are NOT excluded).

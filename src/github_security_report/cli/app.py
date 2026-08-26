@@ -8,31 +8,25 @@ then hand off to :mod:`cli.modes`.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
-import re
 import sys
 from pathlib import Path
 
 import typer
 from rich.console import Console
 
-from github_security_report import __version__, gitctx, runner
+from github_security_report import __version__, runner
 from github_security_report import remediate as remediate_mod
-from github_security_report.categories import CategoryKey
+from github_security_report.cli import boundary
 from github_security_report.cli.modes import (
-    OrgRunOptions,
-    ReleaseOverrides,
-    _abort_auth,
-    _abort_network,
     _load_config,
     _run_org,
     _run_remediate,
     _run_repo,
 )
+from github_security_report.cli.options import OrgRunOptions, ReportOverrides
 from github_security_report.cli.outputs import TopNLimits
-from github_security_report.client import AuthError, NetworkError
 
 app = typer.Typer(
     name="github-security-report",
@@ -77,41 +71,6 @@ def _console(no_color: bool) -> Console:
     return Console(no_color=plain, highlight=False)
 
 
-def _check_non_negative(console: Console, name: str, value: int | None) -> None:
-    """Reject a negative numeric override at the CLI boundary.
-
-    Mirrors the config schema, whose minimum for these controls is 0; 0 itself
-    is permitted and carries the "no limit" / "no threshold" meaning.
-    """
-    if value is not None and value < 0:
-        console.print(f"[red]{name} must be 0 or greater[/red]")
-        raise typer.Exit(2)
-
-
-def _resolve_hidden(console: Console, hide: list[str] | None) -> frozenset[CategoryKey]:
-    """Validate ``--hide`` values into category keys, or abort.
-
-    An unrecognised category is rejected rather than ignored: the point of the
-    flag is to keep something off a published surface, so a typo that silently
-    published it anyway would be the one failure mode that matters.
-    """
-    if not hide:
-        return frozenset()
-    valid = {key.value: key for key in CategoryKey}
-    unknown = sorted({name for name in hide if name not in valid})
-    if unknown:
-        # markup=False: the user-supplied values are printed literally, so
-        # bracketed input cannot be interpreted as Rich markup.
-        console.print(
-            f"Unknown --hide category: {', '.join(unknown)}. "
-            f"Valid values: {', '.join(sorted(valid))}",
-            style="red",
-            markup=False,
-        )
-        raise typer.Exit(2)
-    return frozenset(valid[name] for name in hide)
-
-
 @app.command()
 def report(
     config_file: str | None = typer.Option(
@@ -127,8 +86,10 @@ def report(
     repo: str | None = typer.Option(
         None, "--repo", help="owner/name for repo mode (else git-detected)."
     ),
-    token_env: str = typer.Option(
-        "GITHUB_TOKEN", "--token-env", help="Env var holding the repo-mode token."
+    token_env: str | None = typer.Option(
+        None,
+        "--token-env",
+        help="Env var holding the token (default: GITHUB_TOKEN). When given, overrides every organisation's configured token_env.",
     ),
     output_dir: str | None = typer.Option(
         None, "--output-dir", "-o", help="Directory for Pages output (org mode)."
@@ -183,60 +144,52 @@ def report(
     releases_exclude: list[str] | None = typer.Option(
         None,
         "--releases-exclude",
-        help="Repository name to omit from the Releases/Tagging table (repeatable; overrides config).",
+        help="Repository name to omit from the Releases/Tagging table (repeatable; replaces the configured list, so it is refused when the run covers more than one organisation).",
     ),
     hide: list[str] | None = typer.Option(
         None,
         "--hide",
         help="Category to suppress on every output (repeatable; overrides config, which cannot re-enable it).",
     ),
+    no_gating: bool = typer.Option(
+        False,
+        "--no-gating",
+        help="Always probe the workflow-driven signals (Scorecard, zizmor, aislop) instead of skipping those the organisation appears not to support.",
+    ),
+    include_archived: bool = typer.Option(
+        False,
+        "--include-archived",
+        help="Analyse archived repositories, which are excluded by default.",
+    ),
+    include_test: bool = typer.Option(
+        False,
+        "--include-test",
+        help="Analyse test repositories, which are excluded by default.",
+    ),
     no_color: bool = typer.Option(False, "--no-color", help="Disable coloured output."),
 ) -> None:
     """Generate a security and quality report."""
     console = _console(no_color)
-
-    # Match the config schema (top_n minimum is 0): reject a negative override
-    # at the boundary. 0 is permitted and disables the limit (show everything).
-    for name, value in (
-        ("--top-n", top_n),
-        ("--top-n-report", top_n_report),
-        ("--top-n-cli", top_n_cli),
-        ("--top-n-slack", top_n_slack),
-    ):
-        if value is not None and value < 0:
-            console.print(f"[red]{name} must be 0 or greater (0 = no limit)[/red]")
-            raise typer.Exit(2)
-
-    _check_non_negative(console, "--repo-min-age-days", repo_min_age_days)
-    _check_non_negative(console, "--release-max-age-days", release_max_age_days)
-
-    hidden = _resolve_hidden(console, hide)
+    boundary.check_limits(
+        console,
+        [
+            ("--top-n", top_n),
+            ("--top-n-report", top_n_report),
+            ("--top-n-cli", top_n_cli),
+            ("--top-n-slack", top_n_slack),
+        ],
+    )
+    boundary.check_non_negative(console, "--repo-min-age-days", repo_min_age_days)
+    boundary.check_non_negative(console, "--release-max-age-days", release_max_age_days)
+    hidden = boundary.resolve_hidden(console, hide)
 
     cfg = _load_config(config_file, config_data, org, token_env, console=console)
-    detected: tuple[str, str] | None = None
-    if repo:
-        # An explicit --repo must be exactly 'owner/name' (one slash, both
-        # parts non-empty). A malformed value would otherwise be split
-        # incorrectly or fall back to git detection, risking a report against
-        # an unintended repository.
-        if not re.fullmatch(r"[^/]+/[^/]+", repo):
-            console.print("[red]--repo must be in 'owner/name' format[/red]")
-            raise typer.Exit(2)
-        owner, name = repo.split("/", 1)
-        detected = (owner, name)
-    elif scope != "org":
-        detected = gitctx.detect_repo()
-
-    try:
-        mode = runner.resolve_mode(
-            scope, has_org_config=cfg is not None, detected_repo=detected
-        )
-    except runner.ModeError as exc:
-        console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(2) from exc
+    detected = boundary.detect_target(console, repo, scope)
+    mode = boundary.resolve_mode(console, scope, cfg=cfg, detected=detected)
 
     if mode is runner.Mode.ORG:
         assert cfg is not None
+        boundary.check_releases_exclude(console, cfg, releases_exclude)
         options = OrgRunOptions(
             output_dir=Path(output_dir) if output_dir else None,
             pages_url=pages_url,
@@ -248,41 +201,58 @@ def report(
                 cli=top_n_cli,
                 slack=top_n_slack,
             ),
-            releases=ReleaseOverrides(
+            overrides=ReportOverrides(
                 repo_min_age_days=repo_min_age_days,
                 release_max_age_days=release_max_age_days,
                 releases_exclude=tuple(releases_exclude) if releases_exclude else None,
+                # One-way: the flags can only loosen what the config asked for,
+                # so an unset flag stays None rather than asserting the default.
+                gating=False if no_gating else None,
+                include_archived=True if include_archived else None,
+                include_test=True if include_test else None,
             ),
             hidden=hidden,
         )
-        try:
-            code = asyncio.run(_run_org(cfg, options, console=console))
-        except AuthError as exc:
-            _abort_auth(console, exc)
-        except NetworkError as exc:
-            _abort_network(console, exc)
+        code = boundary.run_guarded(console, _run_org(cfg, options, console=console))
     else:
         assert detected is not None
-        # In repo mode there is no per-org config; honour report.ruleset_workflows
-        # from a supplied config (e.g. --scope repo with --config) so keyword
-        # customisation applies, falling back to the built-in default otherwise.
-        rw = cfg.report.ruleset_workflows if cfg is not None else None
-        try:
-            code = asyncio.run(
-                _run_repo(
-                    detected[0],
-                    detected[1],
-                    token_env=token_env,
-                    console=console,
-                    fail_threshold=fail_threshold,
-                    ruleset_workflows=rw,
-                    hidden=hidden,
+        # Every organisation-only flag is refused rather than accepted and
+        # discarded. The remaining flags (--top-n, --top-n-cli, --top-n-report,
+        # --hide) and the config's report block are threaded into the run, so
+        # what repo mode accepts is what repo mode applies.
+        boundary.reject_org_only(
+            console,
+            [
+                name
+                for name, supplied in (
+                    ("--output-dir", output_dir is not None),
+                    ("--pages-url", pages_url is not None),
+                    ("--slack-channel", slack_channel is not None),
+                    ("--force-notify", force_notify),
+                    ("--top-n-slack", top_n_slack is not None),
+                    ("--repo-min-age-days", repo_min_age_days is not None),
+                    ("--release-max-age-days", release_max_age_days is not None),
+                    ("--releases-exclude", bool(releases_exclude)),
+                    ("--no-gating", no_gating),
+                    ("--include-archived", include_archived),
+                    ("--include-test", include_test),
                 )
-            )
-        except AuthError as exc:
-            _abort_auth(console, exc)
-        except NetworkError as exc:
-            _abort_network(console, exc)
+                if supplied
+            ],
+        )
+        code = boundary.run_guarded(
+            console,
+            _run_repo(
+                detected[0],
+                detected[1],
+                token_env=token_env or "GITHUB_TOKEN",
+                console=console,
+                fail_threshold=fail_threshold,
+                report_cfg=cfg.report if cfg is not None else None,
+                limits=TopNLimits(shared=top_n, report=top_n_report, cli=top_n_cli),
+                hidden=hidden,
+            ),
+        )
     raise typer.Exit(code)
 
 
@@ -307,10 +277,10 @@ def remediate(
         "--category",
         help="Remediable category to act on (repeatable; default: all). One of: codeql, secret_scanning, dependabot_alerts_enabled, dependabot_updates_enabled, private_vulnerability_reporting.",
     ),
-    token_env: str = typer.Option(
-        "GITHUB_TOKEN",
+    token_env: str | None = typer.Option(
+        None,
         "--token-env",
-        help="Env var holding a WRITE-capable org-admin PAT. Used for both reading posture and enabling features across every configured org.",
+        help="Env var holding a WRITE-capable org-admin PAT (default: GITHUB_TOKEN). Used for both reading posture and enabling features across every configured org.",
     ),
     apply: bool = typer.Option(
         False,
@@ -352,28 +322,25 @@ def remediate(
         )
         raise typer.Exit(2)
 
-    token = os.environ.get(token_env, "").strip()
+    token_var = token_env or "GITHUB_TOKEN"
+    token = os.environ.get(token_var, "").strip()
     if not token:
         # markup=False guards the user-supplied --token-env value.
         console.print(
-            f"No token in ${token_env} (a write-capable org-admin PAT is required).",
+            f"No token in ${token_var} (a write-capable org-admin PAT is required).",
             style="red",
             markup=False,
         )
         raise typer.Exit(2)
 
-    try:
-        code = asyncio.run(
-            _run_remediate(
-                cfg,
-                console=console,
-                token=token,
-                categories=categories,
-                apply=apply,
-            )
-        )
-    except AuthError as exc:
-        _abort_auth(console, exc)
-    except NetworkError as exc:
-        _abort_network(console, exc)
+    code = boundary.run_guarded(
+        console,
+        _run_remediate(
+            cfg,
+            console=console,
+            token=token,
+            categories=categories,
+            apply=apply,
+        ),
+    )
     raise typer.Exit(code)

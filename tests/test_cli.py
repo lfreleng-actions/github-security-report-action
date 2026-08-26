@@ -17,6 +17,8 @@ from typer.testing import CliRunner
 
 from github_security_report.categories import CategoryKey
 from github_security_report.cli import _safe_component, app
+from github_security_report.cli.modes import _load_config
+from github_security_report.cli.options import ReportOverrides
 from github_security_report.cli.outputs import (
     TopNLimits,
     most_generous,
@@ -154,6 +156,19 @@ def test_org_mode_writes_pages(tmp_path: Path) -> None:
     assert (out / "o" / "report.html").exists()
     assert (out / "o" / "report.md").exists()
     assert (out / "o" / "report.json").exists()
+    # The whole pipeline resolves a section order and publishes it, so a JSON
+    # consumer can reproduce the layout the rendered surfaces used.
+    payload = json.loads((out / "o" / "report.json").read_text())
+    assert payload["section_order"], payload
+    # Nothing is invented or lost by the reordering.
+    assert len(set(payload["section_order"])) == len(payload["section_order"])
+    # This org is entirely clean, so every priority band member demotes and
+    # the BAU categories still hold the bottom. "Assigned to Me" is not built
+    # at all here (the run did not authenticate as a personal account), so the
+    # band's last *present* member trails instead -- which also pins that a key
+    # naming an uncollected category is skipped rather than invented.
+    assert payload["section_order"][-1] == CategoryKey.PULL_REQUESTS.value
+    assert CategoryKey.PULL_REQUESTS_ASSIGNED.value not in payload["section_order"]
     # --slack-channel supplies the channel even though the config has none,
     # so a payload is written for that channel.
     assert (out / "slack-payload-CTEST123.json").exists()
@@ -482,6 +497,31 @@ def test_repo_mode_fail_threshold(tmp_path: Path) -> None:
     # Only the named category goes; the rest of the report is untouched.
     assert "Secret Scanning" in hidden.stdout
 
+    # A config's per-category toggles reach repo mode too. They were collected,
+    # validated and then never consulted: the run rendered with bare defaults,
+    # so every report.categories.* switch was inert here.
+    configured = cli.invoke(
+        app,
+        [
+            "report",
+            "--repo",
+            "o/r",
+            "--scope",
+            "repo",
+            "--config-data",
+            json.dumps(
+                {
+                    "organizations": [{"name": "o"}],
+                    "report": {"categories": {"codeql": {"enabled": False}}},
+                }
+            ),
+            "--no-color",
+        ],
+    )
+    assert configured.exit_code == 0, configured.stdout
+    assert "CodeQL" not in configured.stdout
+    assert "Secret Scanning" in configured.stdout
+
 
 def test_unresolvable_scope_errors() -> None:
     # No config and an explicit org scope -> mode error, exit 2.
@@ -510,6 +550,210 @@ def test_malformed_repo_rejected(bad: str) -> None:
     result = cli.invoke(app, ["report", "--repo", bad, "--scope", "repo", "--no-color"])
     assert result.exit_code == 2
     assert "owner/name" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        ["--output-dir", "out"],
+        ["--pages-url", "https://example.invalid"],
+        ["--slack-channel", "C123"],
+        ["--force-notify"],
+        ["--top-n-slack", "3"],
+        ["--repo-min-age-days", "7"],
+        ["--release-max-age-days", "7"],
+        ["--releases-exclude", "r"],
+    ],
+)
+def test_org_only_flags_rejected_in_repo_mode(flag: list[str]) -> None:
+    # Each of these shapes an organisation-wide run only. Repo mode publishes
+    # no Pages directory, posts no digest and builds no Releases table, so
+    # accepting one and discarding it would leave the caller no signal that the
+    # run ignored what they asked for.
+    result = cli.invoke(
+        app, ["report", "--repo", "o/r", "--scope", "repo", "--no-color", *flag]
+    )
+    assert result.exit_code == 2, result.stdout
+    assert flag[0] in result.stdout
+    assert "organisation mode only" in result.stdout
+
+
+@pytest.mark.parametrize("flag", ["--top-n", "--top-n-cli", "--top-n-report"])
+def test_repo_mode_accepts_the_limits_it_applies(flag: str) -> None:
+    # The counterpart of the rejection above: a limit repo mode can act on is
+    # not refused. Resolution stops at the missing token, which is enough to
+    # show the flag cleared validation rather than being rejected as org-only.
+    result = cli.invoke(
+        app,
+        ["report", "--repo", "o/r", "--scope", "repo", "--no-color", flag, "3"],
+    )
+    assert "organisation mode only" not in result.stdout
+
+
+def test_releases_exclude_refused_across_many_orgs(tmp_path: Path) -> None:
+    # One flag would replace the curated list of every configured org, so a
+    # three-org config would lose all three lists. Refuse rather than flatten.
+    config = tmp_path / "c.json"
+    config.write_text(
+        json.dumps(
+            {
+                "organizations": [
+                    {"name": "one", "releases_exclude": ["a"]},
+                    {"name": "two", "releases_exclude": ["b"]},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = cli.invoke(
+        app,
+        [
+            "report",
+            "--config",
+            str(config),
+            "--scope",
+            "org",
+            "--releases-exclude",
+            "c",
+            "--no-color",
+        ],
+    )
+    assert result.exit_code == 2, result.stdout
+    assert "--releases-exclude" in result.stdout
+    assert "one, two" in result.stdout
+
+
+def test_releases_exclude_allowed_for_a_single_org(tmp_path: Path) -> None:
+    # With one organisation there is no ambiguity about which list it replaces,
+    # so the flag stays usable for the case it was written for. Resolution
+    # stops at the missing token, past the validation under test.
+    config = tmp_path / "c.json"
+    config.write_text(
+        json.dumps({"organizations": [{"name": "one", "releases_exclude": ["a"]}]}),
+        encoding="utf-8",
+    )
+    result = cli.invoke(
+        app,
+        [
+            "report",
+            "--config",
+            str(config),
+            "--scope",
+            "org",
+            "--releases-exclude",
+            "c",
+            "--no-color",
+        ],
+    )
+    assert "--releases-exclude replaces" not in result.stdout
+
+
+class TestTokenEnvOverride:
+    """``--token-env`` is an override, not an eager default.
+
+    It used to default to the string ``"GITHUB_TOKEN"``, so nothing could tell
+    "the user asked for this" from "unset" and the flag was consulted only on
+    the ``--org`` shorthand path. Alongside ``--config`` the per-org
+    ``token_env`` always won and the flag did nothing.
+    """
+
+    def _config(self, tmp_path: Path) -> str:
+        path = tmp_path / "c.json"
+        path.write_text(
+            json.dumps(
+                {"organizations": [{"name": "o", "token_env": "CONFIGURED_PAT"}]}
+            ),
+            encoding="utf-8",
+        )
+        return str(path)
+
+    def test_unset_leaves_the_configured_value(self, tmp_path: Path) -> None:
+        cfg = _load_config(self._config(tmp_path), None, None)
+        assert cfg is not None
+        assert cfg.organizations[0].token_env == "CONFIGURED_PAT"
+
+    def test_explicit_value_overrides_the_configured_one(self, tmp_path: Path) -> None:
+        cfg = _load_config(self._config(tmp_path), None, None, "FLAG_PAT")
+        assert cfg is not None
+        assert cfg.organizations[0].token_env == "FLAG_PAT"
+
+    def test_override_reaches_every_organisation(self) -> None:
+        data = json.dumps(
+            {
+                "organizations": [
+                    {"name": "one", "token_env": "A"},
+                    {"name": "two", "token_env": "B"},
+                ]
+            }
+        )
+        cfg = _load_config(None, data, None, "FLAG_PAT")
+        assert cfg is not None
+        assert [o.token_env for o in cfg.organizations] == ["FLAG_PAT", "FLAG_PAT"]
+
+    def test_org_shorthand_still_honours_the_flag(self) -> None:
+        cfg = _load_config(None, None, "o", "FLAG_PAT")
+        assert cfg is not None
+        assert cfg.organizations[0].token_env == "FLAG_PAT"
+
+    def test_org_shorthand_defaults_to_github_token(self) -> None:
+        cfg = _load_config(None, None, "o")
+        assert cfg is not None
+        assert cfg.organizations[0].token_env == "GITHUB_TOKEN"
+
+
+class TestReportOverrides:
+    """The run-scoped booleans reach every organisation's report config.
+
+    Each was reachable only by writing a JSON config file to set a single
+    boolean, which is a debugging switch wearing a config file's clothes.
+    ``docs/BRIEF.md`` already documented two of them as flags that had never
+    been implemented.
+    """
+
+    def _org(self) -> OrgConfig:
+        return OrgConfig(name="o")
+
+    def test_unset_leaves_the_configured_values(self) -> None:
+        _, report_cfg = ReportOverrides().apply(self._org())
+        assert report_cfg.gating is True
+        assert report_cfg.include_archived is False
+        assert report_cfg.include_test is False
+
+    def test_each_override_is_applied(self) -> None:
+        overrides = ReportOverrides(
+            gating=False, include_archived=True, include_test=True
+        )
+        _, report_cfg = overrides.apply(self._org())
+        assert report_cfg.gating is False
+        assert report_cfg.include_archived is True
+        assert report_cfg.include_test is True
+
+    def test_overrides_beat_a_configured_value(self) -> None:
+        org = OrgConfig(name="o", report=ReportConfig(gating=True))
+        _, report_cfg = ReportOverrides(gating=False).apply(org)
+        assert report_cfg.gating is False
+
+    def test_release_levers_still_apply(self) -> None:
+        overrides = ReportOverrides(
+            repo_min_age_days=1,
+            release_max_age_days=2,
+            releases_exclude=("skip-me",),
+        )
+        org_cfg, report_cfg = overrides.apply(self._org())
+        assert report_cfg.repo_min_age_days == 1
+        assert report_cfg.release_max_age_days == 2
+        assert org_cfg.releases_exclude == ("skip-me",)
+
+
+@pytest.mark.parametrize(
+    "flag", ["--no-gating", "--include-archived", "--include-test"]
+)
+def test_new_flags_are_accepted_in_org_mode(flag: str) -> None:
+    # Resolution stops at the missing token, which is past option parsing:
+    # enough to show the flag exists and was not rejected as unknown.
+    result = cli.invoke(app, ["report", "--org", "o", flag, "--no-color"])
+    assert "No such option" not in result.stdout
+    assert result.exit_code != 2 or "No token" in result.stdout
 
 
 def test_org_to_dict_includes_partial_flag() -> None:
@@ -742,14 +986,11 @@ class TestTopNLimits:
         top_n_report: int | None = None,
         top_n_cli: int | None = None,
         top_n_slack: int | None = None,
-    ) -> OrgConfig:
-        return OrgConfig(
-            name="o",
-            report=ReportConfig(
-                top_n_report=top_n_report,
-                top_n_cli=top_n_cli,
-                top_n_slack=top_n_slack,
-            ),
+    ) -> ReportConfig:
+        return ReportConfig(
+            top_n_report=top_n_report,
+            top_n_cli=top_n_cli,
+            top_n_slack=top_n_slack,
         )
 
     def test_config_value_used_when_no_override(self) -> None:
@@ -808,13 +1049,11 @@ def test_module_form_entry_point_still_runs() -> None:
 class TestPerCategoryLimits:
     """CLI/config precedence for a category's own row limit."""
 
-    def _org(self, categories: dict, *, top_n_cli: int) -> OrgConfig:
+    def _org(self, categories: dict, *, top_n_cli: int) -> ReportConfig:
         toggles = {
             key: CategoryToggle(top_n=value) for key, value in categories.items()
         }
-        return OrgConfig(
-            name="o", report=ReportConfig(categories=toggles, top_n_cli=top_n_cli)
-        )
+        return ReportConfig(categories=toggles, top_n_cli=top_n_cli)
 
     def test_category_config_beats_output_config(self) -> None:
         org = self._org({"releases": 0}, top_n_cli=10)

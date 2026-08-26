@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
+from github_security_report import layout
 from github_security_report.categories import CategoryKey
 from github_security_report.models import Repo, RepoSignal, SignalType
 from github_security_report.render.html import slugify
@@ -350,7 +351,11 @@ def render_org_blocks(
         if block is not None:
             blocks.append(block)
 
-    for section in org.sections:
+    for item in layout.plan(org):
+        if isinstance(item.section, TableSection):
+            add_table(item.section)
+            continue
+        section = item.section
         key = section.signal.category_key
         if visible(key):
             if section.skipped:
@@ -364,18 +369,11 @@ def render_org_blocks(
                 blocks.append(
                     {"type": "section", "text": {"type": "mrkdwn", "text": text}}
                 )
-                continue
-            blocks.append(_signal_block(section, limit_for(key), excluded=excluded))
+            else:
+                blocks.append(_signal_block(section, limit_for(key), excluded=excluded))
         # Dependabot posture sub-tables follow the Dependabot signal block.
-        if section.signal is SignalType.DEPENDABOT:
-            for table_section in org.dependabot_tables:
-                add_table(table_section)
-    add_table(org.releases)
-    add_table(org.mutable_releases)
-    add_table(org.private_vulnerability_reporting)
-    add_table(org.issues)
-    add_table(org.pull_requests)
-    add_table(org.assigned_pull_requests)
+        for table_section in item.children:
+            add_table(table_section)
     if pages_url:
         # Link straight to this organisation's latest report page rather than
         # the Pages index: the digest is per-org, so the index is a detour.

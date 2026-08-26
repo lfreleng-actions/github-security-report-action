@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Collection
 
+from github_security_report import layout
 from github_security_report.categories import CategoryKey
 from github_security_report.report import OrgReport, TableSection, table_footer_rows
 
@@ -73,6 +74,15 @@ def _org_to_dict(org: OrgReport, hidden: Collection[CategoryKey] = ()) -> dict:
         "partial": org.partial,
         # Repositories explicitly excluded from analysis (per-org exclude list).
         "excluded": [r.full_name for r in org.excluded_repos],
+        # Every category below, in the order the rendered surfaces drew it.
+        # The keyed structure that follows is stable regardless, but a consumer
+        # building its own view can reproduce the published layout instead of
+        # inventing one. Nested posture tables are listed after the signal they
+        # render beneath, so a consumer can place them even when their parent
+        # is suppressed and the surfaces promoted them to top level.
+        "section_order": [
+            key.value for key in layout.drawn_order(org) if key not in suppressed
+        ],
         "sections": [
             {
                 "signal": s.signal.value,

@@ -42,6 +42,13 @@ from github_security_report.config.models import (
     ReportDay,
     SlackConfig,
 )
+from github_security_report.config.order import (
+    DEFAULT_BAU,
+    DEFAULT_PRIORITY,
+    OrderConfig,
+    OrderStyle,
+    order_from,
+)
 from github_security_report.config.schema import (
     _TOKEN_PREFIXES,
     CONFIG_SCHEMA,
@@ -53,9 +60,11 @@ from github_security_report.config.schema import (
 
 __all__ = [
     "CONFIG_SCHEMA",
+    "DEFAULT_BAU",
     "DEFAULT_CONFIG_DIR",
     "DEFAULT_CONFIG_FILE",
     "DEFAULT_ISSUE_LABELS",
+    "DEFAULT_PRIORITY",
     "DEFAULT_RULESET_WORKFLOWS",
     "REPORT_OUTPUTS",
     "SEVERITY_NAMES",
@@ -63,6 +72,8 @@ __all__ = [
     "CategoryToggle",
     "Config",
     "ConfigError",
+    "OrderConfig",
+    "OrderStyle",
     "OrgConfig",
     "OutputToggles",
     "ReportConfig",
@@ -77,6 +88,7 @@ __all__ = [
     "find_default_config",
     "load_file",
     "loads",
+    "order_from",
     "parse_report_day",
     "resolve_token",
 ]
