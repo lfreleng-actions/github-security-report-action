@@ -50,14 +50,29 @@ DATATABLES_JS_SRI = (
     "sha384-JYQd44jQWQbU+FdjWIUlbjzENGRHPdOQcj7dAgjJEvSyt2js5lE85kaPOdC53JVu"
 )
 
-# Rows per page, and the page-size options offered above each table.
-# Simple-DataTables ships 5/10/15/20/25, which are all smaller than a typical
-# section here -- an org-wide table runs to a row per repository, so a reader
-# comparing two of them spends the visit paging rather than reading. These
-# steps roughly double instead, so any table is a click or two from being shown
-# whole. The page limits (``top_n``) still decide how many rows reach the page
-# at all; this only governs how many of them are visible at once.
-DATATABLES_PER_PAGE_OPTIONS = (25, 50, 100, 200, 500)
+# Rows per page, and the page-size options offered above each table, as the
+# ``(label, value)`` pairs Simple-DataTables accepts.
+#
+# The library ships 5/10/15/20/25, which are all smaller than a typical section
+# here -- an org-wide table runs to a row per repository, so a reader comparing
+# two of them spends the visit paging rather than reading. These steps roughly
+# double instead.
+#
+# The final pair is what makes the scale complete rather than merely larger.
+# Row limits may be set to ``0`` for no limit, so a table has no bound this
+# list could be chosen to exceed; ``0`` is the library's own "one page, every
+# row" value, which answers any size rather than guessing at a ceiling.
+#
+# This governs only how many rows are visible at once. How many reach the page
+# at all is still the ``top_n`` limits' decision.
+DATATABLES_PER_PAGE_OPTIONS: tuple[tuple[str, int], ...] = (
+    ("25", 25),
+    ("50", 50),
+    ("100", 100),
+    ("200", 200),
+    ("500", 500),
+    ("All", 0),
+)
 DATATABLES_PER_PAGE = 50
 
 _env = Environment(

@@ -102,10 +102,20 @@ class TestOrgHtml:
         # table, so the page sizes are configured rather than defaulted, and
         # the default view must be one the selector actually offers.
         out = html.render_org_html(_org("o", []))
-        assert html.DATATABLES_PER_PAGE in html.DATATABLES_PER_PAGE_OPTIONS
-        options = ", ".join(str(n) for n in html.DATATABLES_PER_PAGE_OPTIONS)
+        sizes = [rows for _label, rows in html.DATATABLES_PER_PAGE_OPTIONS]
+        assert html.DATATABLES_PER_PAGE in sizes
+        options = ", ".join(
+            f'["{label}", {rows}]' for label, rows in html.DATATABLES_PER_PAGE_OPTIONS
+        )
         assert f"perPageSelect: [{options}]" in out
         assert f"perPage: {html.DATATABLES_PER_PAGE}" in out
+
+    def test_an_unbounded_table_can_still_be_shown_whole(self) -> None:
+        # A row limit of 0 means no limit, so no finite page size can be
+        # guaranteed to cover a table. Simple-DataTables reads 0 as "one page,
+        # every row", which is the only option that answers an unbounded one.
+        assert ("All", 0) in html.DATATABLES_PER_PAGE_OPTIONS
+        assert '["All", 0]' in html.render_org_html(_org("o", []))
 
     def test_html_escaping(self) -> None:
         # A pathological repo name must be escaped, not injected.

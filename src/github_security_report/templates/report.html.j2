@@ -137,7 +137,7 @@
         try {
           new simpleDatatables.DataTable(table, {
             perPage: {{ datatables_per_page }},
-            perPageSelect: [{{ datatables_per_page_options | join(', ') }}]
+            perPageSelect: [{% for label, rows in datatables_per_page_options %}["{{ label }}", {{ rows }}]{{ ", " if not loop.last }}{% endfor %}]
           });
         }
         catch (e) { console.error('DataTable init failed', e); }
