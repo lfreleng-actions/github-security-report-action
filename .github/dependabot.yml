@@ -31,9 +31,21 @@ updates:
     # Runtime pin for the published tool this action installs at runtime.
     directory: "/.github/runtime-pin"
     schedule:
-      interval: "weekly"
+      # Checked daily rather than weekly. The cooldown below already delays a
+      # new release by seven days; adding a weekly check on top meant a version
+      # that aged out of the cooldown then waited for the next Monday, by which
+      # point a later release had usually superseded it. The pin advanced one
+      # release per week at best, and the published Pages report -- which runs
+      # whatever this pin names -- trailed the tool this repository had shipped
+      # by a fortnight. A daily check removes that second delay: each release
+      # is proposed the day it becomes eligible.
+      interval: "daily"
     commit-message:
       prefix: "CI(deps)"
+    # Seven days is a floor, not a preference: zizmor's dependabot-cooldown
+    # audit reports anything shorter, and the workflow audit fails on any
+    # finding. Shortening it for this first-party package is therefore not
+    # available, which is why the schedule above carries the improvement.
     cooldown:
       default-days: 7
     open-pull-requests-limit: 15
