@@ -134,7 +134,12 @@
     document.addEventListener('DOMContentLoaded', function () {
       document.querySelectorAll('table.dt-enabled').forEach(function (table) {
         if (table.querySelectorAll('tbody tr').length < 3) { return; }
-        try { new simpleDatatables.DataTable(table, { perPage: 25 }); }
+        try {
+          new simpleDatatables.DataTable(table, {
+            perPage: {{ datatables_per_page }},
+            perPageSelect: [{{ datatables_per_page_options | join(', ') }}]
+          });
+        }
         catch (e) { console.error('DataTable init failed', e); }
       });
     });

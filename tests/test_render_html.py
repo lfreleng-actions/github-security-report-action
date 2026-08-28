@@ -97,6 +97,16 @@ class TestOrgHtml:
         assert f'integrity="{html.DATATABLES_JS_SRI}"' in out
         assert 'crossorigin="anonymous"' in out
 
+    def test_page_size_options_are_offered_whole(self) -> None:
+        # The library's own 5/10/15/20/25 are all smaller than an org-wide
+        # table, so the page sizes are configured rather than defaulted, and
+        # the default view must be one the selector actually offers.
+        out = html.render_org_html(_org("o", []))
+        assert html.DATATABLES_PER_PAGE in html.DATATABLES_PER_PAGE_OPTIONS
+        options = ", ".join(str(n) for n in html.DATATABLES_PER_PAGE_OPTIONS)
+        assert f"perPageSelect: [{options}]" in out
+        assert f"perPage: {html.DATATABLES_PER_PAGE}" in out
+
     def test_html_escaping(self) -> None:
         # A pathological repo name must be escaped, not injected.
         signals = [

@@ -50,6 +50,16 @@ DATATABLES_JS_SRI = (
     "sha384-JYQd44jQWQbU+FdjWIUlbjzENGRHPdOQcj7dAgjJEvSyt2js5lE85kaPOdC53JVu"
 )
 
+# Rows per page, and the page-size options offered above each table.
+# Simple-DataTables ships 5/10/15/20/25, which are all smaller than a typical
+# section here -- an org-wide table runs to a row per repository, so a reader
+# comparing two of them spends the visit paging rather than reading. These
+# steps roughly double instead, so any table is a click or two from being shown
+# whole. The page limits (``top_n``) still decide how many rows reach the page
+# at all; this only governs how many of them are visible at once.
+DATATABLES_PER_PAGE_OPTIONS = (25, 50, 100, 200, 500)
+DATATABLES_PER_PAGE = 50
+
 _env = Environment(
     loader=PackageLoader("github_security_report", "templates"),
     autoescape=select_autoescape(["html", "j2"]),
@@ -276,6 +286,8 @@ def render_org_html(
             datatables_version=DATATABLES_VERSION,
             datatables_css_sri=DATATABLES_CSS_SRI,
             datatables_js_sri=DATATABLES_JS_SRI,
+            datatables_per_page=DATATABLES_PER_PAGE,
+            datatables_per_page_options=DATATABLES_PER_PAGE_OPTIONS,
         )
     )
 
