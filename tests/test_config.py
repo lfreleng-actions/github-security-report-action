@@ -428,6 +428,15 @@ class TestCategoryToggles:
         for output in ("slack", "markdown", "html"):
             assert not rc.shows_category(CategoryKey.PULL_REQUESTS_ASSIGNED, output)
 
+    def test_the_shared_pull_requests_table_stays_published(self) -> None:
+        # The restriction above is about one account's inbox, not about pull
+        # requests. The organisation-wide table says nothing viewer-relative,
+        # so it stays on every surface -- including the Pages site, which is
+        # where the two are easiest to confuse.
+        rc = config.build_config(MINIMAL).report
+        for output in config.REPORT_OUTPUTS:
+            assert rc.shows_category(CategoryKey.PULL_REQUESTS, output)
+
     def test_configuring_another_field_keeps_the_restricted_surfaces(self) -> None:
         # Per-key merging means an operator tuning one setting must not silently
         # publish the category everywhere as a side effect.
