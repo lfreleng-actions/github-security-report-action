@@ -18,6 +18,7 @@ from github_security_report.pulls.columns import (
     AUTOMATION_COLUMN,
     BREAKDOWN_COLUMNS,
     CONFLICT_COLUMN,
+    COPILOT_COLUMN,
     DRAFT_COLUMN,
     EXTERNAL_COLUMN,
     FAILING_COLUMN,
@@ -74,13 +75,17 @@ def count_pull_requests(
             counts[DRAFT_COLUMN] += 1
         if not automation and _is_external(pull, members):
             counts[EXTERNAL_COLUMN] += 1
-        # Only an established failure or conflict counts. GitHub computes
-        # mergeability lazily and reports no rollup at all when no checks have
-        # run, and neither absence is evidence that a pull request is ready.
+        # Only an established failure, conflict or outstanding review counts.
+        # GitHub computes mergeability lazily and reports no rollup at all when
+        # no checks have run, and a review-thread window can fall short of a
+        # long review cycle; none of those absences is evidence that a pull
+        # request is ready.
         if pull.failing is True:
             counts[FAILING_COLUMN] += 1
         if pull.conflicting is True:
             counts[CONFLICT_COLUMN] += 1
+        if pull.copilot_unresolved is True:
+            counts[COPILOT_COLUMN] += 1
     return counts
 
 
@@ -128,13 +133,39 @@ def assignment_counts(pulls: tuple[PullRequestRef, ...], viewer: str) -> dict[st
     return counts
 
 
+def copilot_indeterminate(pulls: tuple[PullRequestRef, ...]) -> bool:
+    """Whether any of these pull requests left the Copilot question unsettled.
+
+    An indeterminate reading is dropped from the count, exactly like an
+    unestablished conflict or check failure, which renders it as an ordinary
+    zero. For Conflict and Fail that is fair: those absences are GitHub still
+    computing, and settle themselves on a later run. A Copilot absence is
+    different -- it is *this* collection's bounded thread window falling short,
+    a limit of the report rather than of the moment -- so a row carrying one is
+    a lower bound, and the table has to say so rather than presenting a zero it
+    has not earned.
+    """
+    return any(pull.copilot_unresolved is None for pull in pulls)
+
+
 def _blocked_count(pulls: tuple[PullRequestRef, ...]) -> int:
-    """Pull requests that are failing *or* conflicting, counted once each.
+    """Pull requests that are failing, conflicting *or* awaiting Copilot, once each.
 
     The ranking tie-breaker, and deliberately a union rather than the sum of
-    the two columns: those overlap, so adding them would count a pull request
+    the three columns: those overlap, so adding them would count a pull request
     that is both as two, letting one stuck pull request outrank two separately
-    stuck ones. The table already says the two columns overlap; the ranking has
+    stuck ones. The table already says the columns overlap; the ranking has
     to agree with it.
+
+    Unresolved Copilot feedback joins the union because it is the same kind of
+    fact as the other two -- work the pull request is waiting on a human for --
+    and the table already colours it as blocking. Leaving it out would rank a
+    repository whose whole backlog is awaiting review below an untouched one.
     """
-    return sum(1 for pull in pulls if pull.failing is True or pull.conflicting is True)
+    return sum(
+        1
+        for pull in pulls
+        if pull.failing is True
+        or pull.conflicting is True
+        or pull.copilot_unresolved is True
+    )

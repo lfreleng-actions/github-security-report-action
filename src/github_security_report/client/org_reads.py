@@ -86,6 +86,17 @@ def _alias_errors(errors: object, alias_count: int) -> tuple[set[str], set[str]]
     An error whose path names no alias cannot be attributed, so it implicates
     every alias in the batch: with no way to tell which repositories it
     touched, treating any of them as successfully read would be a guess.
+
+    An error *nested* inside an isolable field is classified by that field, and
+    deliberately so. ``reviewThreads`` is non-null in GitHub's schema
+    (``PullRequestReviewThreadConnection!``), so a resolver failure there does
+    not null the connection: it propagates up to the nearest nullable ancestor,
+    which is the pull-request node itself. The node arrives as ``null`` and
+    carries none of its facts, so ignoring the error would silently drop that
+    pull request from every column while ``totalCount`` still counted it --
+    understating the breakdown with nothing to say so. Failing the connection
+    reports the repository as unknown instead, which every table renders
+    correctly.
     """
     all_aliases = {f"r{i}" for i in range(alias_count)}
     if not isinstance(errors, list):

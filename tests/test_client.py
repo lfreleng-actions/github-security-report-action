@@ -1237,6 +1237,16 @@ async def test_repo_graph_batch_marks_a_truncated_label_window(
     assert out["a"].issues[0].labels_truncated is True
 
 
+def _copilot_thread(
+    resolved: bool, login: str = "copilot-pull-request-reviewer"
+) -> dict:
+    """One review thread node, opened by ``login``."""
+    return {
+        "isResolved": resolved,
+        "comments": {"nodes": [{"author": {"__typename": "Bot", "login": login}}]},
+    }
+
+
 def _graph_pull_request(
     number: int = 1,
     *,
@@ -1247,8 +1257,22 @@ def _graph_pull_request(
     mergeable: str | None = "MERGEABLE",
     rollup: str | None = "SUCCESS",
     assignees: Sequence[str] | None = (),
+    review_threads: Sequence[dict] | None = (),
+    review_thread_total: int | None = None,
 ) -> dict:
     """Build one pull-request node as the batched query returns it."""
+    threads = (
+        None
+        if review_threads is None
+        else {
+            "totalCount": (
+                len(review_threads)
+                if review_thread_total is None
+                else review_thread_total
+            ),
+            "nodes": list(review_threads),
+        }
+    )
     return {
         "number": number,
         "isDraft": draft,
@@ -1260,6 +1284,7 @@ def _graph_pull_request(
             if assignees is not None
             else None
         ),
+        "reviewThreads": threads,
         "commits": {
             "nodes": [
                 {
@@ -1361,6 +1386,106 @@ async def test_repo_graph_batch_unknown_mergeable_is_not_a_clean_merge(
 
 
 @respx.mock
+async def test_repo_graph_batch_parses_unresolved_copilot_feedback(
+    client: GitHubClient,
+) -> None:
+    # The reviewer is identified from the thread's *opening* comment: later
+    # replies are commonly the human answering the review, so keying on any
+    # comment would credit Copilot with threads it did not raise.
+    node = _graph_repo_node(
+        pull_requests=[
+            _graph_pull_request(1, review_threads=[_copilot_thread(resolved=False)]),
+            _graph_pull_request(2, review_threads=[_copilot_thread(resolved=True)]),
+            _graph_pull_request(
+                3, review_threads=[_copilot_thread(resolved=False, login="alice")]
+            ),
+            _graph_pull_request(4, review_threads=[]),
+        ],
+        pull_request_total=4,
+    )
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": {"r0": node}})
+    )
+    out = await client.repo_graph_batch("o", ["a"])
+    unresolved, resolved, human, none = out["a"].pull_requests
+    assert unresolved.copilot_unresolved is True
+    assert resolved.copilot_unresolved is False
+    # Another reviewer's open thread is somebody else's backlog.
+    assert human.copilot_unresolved is False
+    assert none.copilot_unresolved is False
+
+
+@respx.mock
+async def test_repo_graph_batch_truncated_review_threads_are_indeterminate(
+    client: GitHubClient,
+) -> None:
+    # A long review cycle can carry more threads than the window returns. With
+    # nothing qualifying inside it, an unresolved thread may sit among the ones
+    # never collected, so the run must not claim the pull request is clear --
+    # the same rule ``mergeable: UNKNOWN`` follows.
+    node = _graph_repo_node(
+        pull_requests=[
+            _graph_pull_request(
+                1,
+                review_threads=[_copilot_thread(resolved=True)],
+                review_thread_total=40,
+            ),
+            # A qualifying thread inside the window settles the question, so a
+            # truncated window is still a definite answer when it finds one.
+            _graph_pull_request(
+                2,
+                review_threads=[_copilot_thread(resolved=False)],
+                review_thread_total=40,
+            ),
+        ],
+        pull_request_total=2,
+    )
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": {"r0": node}})
+    )
+    out = await client.repo_graph_batch("o", ["a"])
+    truncated, found = out["a"].pull_requests
+    assert truncated.copilot_unresolved is None
+    assert found.copilot_unresolved is True
+
+
+@respx.mock
+async def test_repo_graph_batch_unreadable_review_threads_are_indeterminate(
+    client: GitHubClient,
+) -> None:
+    # A null connection is "never read", which must not read as "nothing
+    # outstanding".
+    node = _graph_repo_node(
+        pull_requests=[_graph_pull_request(1, review_threads=None)],
+        pull_request_total=1,
+    )
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": {"r0": node}})
+    )
+    out = await client.repo_graph_batch("o", ["a"])
+    assert out["a"].pull_requests[0].copilot_unresolved is None
+
+
+@respx.mock
+async def test_repo_graph_batch_unusable_thread_total_is_indeterminate(
+    client: GitHubClient,
+) -> None:
+    # Without a usable ``totalCount`` there is no evidence that the returned
+    # nodes covered every thread, so "none collected qualified" cannot be
+    # promoted to "nothing outstanding".
+    absent = _graph_pull_request(1, review_threads=[_copilot_thread(resolved=True)])
+    del absent["reviewThreads"]["totalCount"]
+    malformed = _graph_pull_request(2, review_threads=[_copilot_thread(resolved=True)])
+    malformed["reviewThreads"]["totalCount"] = "lots"
+    node = _graph_repo_node(pull_requests=[absent, malformed], pull_request_total=2)
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": {"r0": node}})
+    )
+    out = await client.repo_graph_batch("o", ["a"])
+    assert [p.copilot_unresolved for p in out["a"].pull_requests] == [None, None]
+
+
+@respx.mock
 async def test_pull_request_permission_error_spares_the_rest_of_the_repo(
     client: GitHubClient,
 ) -> None:
@@ -1390,6 +1515,48 @@ async def test_pull_request_permission_error_spares_the_rest_of_the_repo(
     assert out["a"].dependabot_config == "version: 2"
     # Only the pull-request data is unknown.
     assert out["a"].open_pull_requests is None
+
+
+@respx.mock
+async def test_review_thread_error_fails_the_pull_request_connection(
+    client: GitHubClient,
+) -> None:
+    # ``reviewThreads`` is non-null in GitHub's schema
+    # (PullRequestReviewThreadConnection!), so a resolver failure there does not
+    # arrive as a populated node with a null connection. It propagates up to the
+    # nearest nullable ancestor -- the pull-request node -- which arrives null
+    # and carries none of its facts. Ignoring the error would silently drop that
+    # pull request from every column while totalCount still counted it, so the
+    # connection is failed and the repository reported as unknown instead.
+    node = _graph_repo_node(
+        enabled=True,
+        config_text="version: 2",
+        pull_requests=[None, _graph_pull_request(8)],
+        pull_request_total=2,
+    )
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {"r0": node},
+                "errors": [
+                    {
+                        "path": ["r0", "pullRequests", "nodes", 0, "reviewThreads"],
+                        "message": "Something went wrong",
+                    }
+                ],
+            },
+        )
+    )
+    out = await client.repo_graph_batch("o", ["a"])
+    # The isolation still spares everything the error did not touch.
+    assert out["a"].unreadable is False
+    assert out["a"].dependabot_alerts_enabled is True
+    assert out["a"].dependabot_config == "version: 2"
+    # The pull-request data is reported as unknown rather than as a breakdown
+    # quietly missing the pull request the error erased.
+    assert out["a"].open_pull_requests is None
+    assert out["a"].pull_requests == ()
 
 
 @respx.mock

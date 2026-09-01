@@ -178,9 +178,10 @@ class IssueRef:
 class PullRequestRef:
     """One open pull request's review-load facts.
 
-    ``draft`` and the two blocked flags are independent of the author and of
-    each other, so one pull request may be a draft *and* conflicting; the table
-    counts each axis separately rather than bucketing rows.
+    ``draft`` and the three blocked flags are independent of the author and of
+    each other, so one pull request may be a draft *and* conflicting *and*
+    awaiting review; the table counts each axis separately rather than bucketing
+    rows.
     """
 
     number: int
@@ -198,6 +199,14 @@ class PullRequestRef:
     # True when the head commit's combined check rollup failed. None when no
     # checks have run at all, which is not a passing result.
     failing: bool | None = None
+    # True when at least one of the pull request's review threads was opened by
+    # GitHub's automated code reviewer and is still unresolved. None when the
+    # question could not be settled -- the review threads were unreadable, or
+    # the collected window did not cover them and none of the threads it did
+    # cover was an unresolved Copilot thread, so an unresolved one may sit in
+    # the threads this run never saw. As with ``conflicting`` and ``failing``,
+    # None is "not established" rather than "nothing outstanding".
+    copilot_unresolved: bool | None = None
 
 
 @dataclass

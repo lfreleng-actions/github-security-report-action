@@ -84,6 +84,47 @@ class TestIsAutomationAuthor:
         assert authors.is_automation_author(login) is False
 
 
+class TestIsCopilotReviewer:
+    @pytest.mark.parametrize(
+        "login",
+        [
+            # The login observed on live review threads.
+            "copilot-pull-request-reviewer",
+            "copilot-pull-request-reviewer[bot]",
+            "Copilot-Pull-Request-Reviewer[Bot]",
+            "copilot",
+            "github-copilot",
+        ],
+    )
+    def test_the_reviewer_is_recognised_in_every_login_form(self, login: str) -> None:
+        assert authors.is_copilot_reviewer(login, "Bot") is True
+
+    @pytest.mark.parametrize(
+        "login", ["dependabot[bot]", "renovate[bot]", "some-future-tool[bot]"]
+    )
+    def test_other_bots_are_not_the_reviewer(self, login: str) -> None:
+        # Deliberately no ``[bot]``-suffix fallthrough: counting an unrecognised
+        # tool's review threads would file one reviewer's backlog under another.
+        assert authors.is_copilot_reviewer(login, "Bot") is False
+
+    def test_the_pull_request_agent_is_not_the_reviewer(self) -> None:
+        # ``copilot-swe-agent`` raises pull requests rather than reviewing them,
+        # so counting its comments would report a bot's conversation with
+        # itself as outstanding review feedback.
+        assert authors.is_copilot_reviewer("copilot-swe-agent[bot]", "Bot") is False
+
+    def test_a_human_holding_the_login_is_not_the_reviewer(self) -> None:
+        # ``typename`` is required to agree where GitHub supplied it.
+        assert authors.is_copilot_reviewer("copilot", "User") is False
+
+    def test_an_absent_typename_still_matches_on_the_login(self) -> None:
+        assert authors.is_copilot_reviewer("copilot-pull-request-reviewer") is True
+
+    @pytest.mark.parametrize("login", [None, ""])
+    def test_a_missing_login_is_not_the_reviewer(self, login: str | None) -> None:
+        assert authors.is_copilot_reviewer(login, "Bot") is False
+
+
 class TestIsExternalAuthor:
     @pytest.mark.parametrize("login", [None, ""])
     def test_a_missing_login_is_indeterminate(self, login: str | None) -> None:

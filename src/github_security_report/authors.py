@@ -64,6 +64,27 @@ AUTOMATION_LOGINS = frozenset(
 )
 
 
+# Logins GitHub's automated code reviewer posts pull-request review comments
+# under, normalised (lower-cased, ``[bot]`` stripped). Observed against the live
+# GraphQL API, a Copilot review thread's first comment is authored by the ``Bot``
+# actor ``copilot-pull-request-reviewer``; the other two are the names the same
+# reviewer is surfaced under elsewhere, kept so a rename of the actor does not
+# silently empty the column.
+#
+# Deliberately narrower than :data:`AUTOMATION_LOGINS`: this identifies the
+# *reviewer*, not automation in general. ``copilot-swe-agent`` is excluded on
+# purpose -- it raises pull requests rather than reviewing them, so counting its
+# comments would report a bot's own conversation with itself as outstanding
+# review feedback.
+COPILOT_REVIEWER_LOGINS = frozenset(
+    {
+        "copilot-pull-request-reviewer",
+        "copilot",
+        "github-copilot",
+    }
+)
+
+
 def normalise_login(login: str | None) -> str:
     """A lower-cased login with any trailing ``[bot]`` marker removed.
 
@@ -94,6 +115,22 @@ def is_automation_author(login: str | None, typename: str | None = None) -> bool
     if normalise_login(login) in AUTOMATION_LOGINS:
         return True
     return login.lower().endswith(BOT_SUFFIX)
+
+
+def is_copilot_reviewer(login: str | None, typename: str | None = None) -> bool:
+    """Whether ``login`` is GitHub's automated code reviewer.
+
+    Unlike :func:`is_automation_author` there is no ``[bot]``-suffix fallthrough:
+    an unrecognised bot is some *other* tool, and counting its review threads as
+    Copilot's would attribute one reviewer's backlog to another. ``typename`` is
+    required to agree where it is supplied, so a human who registers a login in
+    this set cannot be mistaken for the reviewer.
+    """
+    if not login:
+        return False
+    if typename and typename != BOT_TYPENAME:
+        return False
+    return normalise_login(login) in COPILOT_REVIEWER_LOGINS
 
 
 # --------------------------------------------------------------------------- #

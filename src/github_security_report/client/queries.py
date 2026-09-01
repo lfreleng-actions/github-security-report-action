@@ -111,6 +111,22 @@ _PULL_REQUEST_WINDOW = 25
 # truncate, and the assignment breakdown is therefore exact for every collected
 # pull request.
 _ASSIGNEE_WINDOW = 10
+# Review threads inspected per pull request, to spot outstanding Copilot review
+# feedback. This is the most expensive window in the fragment, because it
+# multiplies the pull-request window and then again by the one comment needed to
+# identify each thread's author (a review thread exposes no author of its own).
+#
+# Measured against a 25-repository batch, the whole fragment costs 20 points
+# without this connection and 57, 89 or 151 with a window of 5, 10 or 20. At 20
+# a 118-repository organisation costs ~755 points of the 5,000-point hourly
+# budget, which leaves room for the several organisations a scheduled run
+# covers, and 20 threads covers a realistic review cycle: this project's own
+# most-reviewed pull requests carry single-figure thread counts.
+#
+# ``totalCount`` rides along free of node cost and is what keeps the bounded
+# window honest -- a pull request carrying more threads than the window returned
+# is reported as indeterminate rather than as having nothing outstanding.
+_REVIEW_THREAD_WINDOW = 20
 _REPO_GRAPH_FRAGMENT = f"""\
 fragment RepoData on Repository {{
   hasVulnerabilityAlertsEnabled
@@ -157,6 +173,13 @@ fragment RepoData on Repository {{
       authorAssociation
       author {{ __typename login }}
       assignees(first: {_ASSIGNEE_WINDOW}) {{ nodes {{ login }} }}
+      reviewThreads(first: {_REVIEW_THREAD_WINDOW}) {{
+        totalCount
+        nodes {{
+          isResolved
+          comments(first: 1) {{ nodes {{ author {{ __typename login }} }} }}
+        }}
+      }}
       commits(last: 1) {{
         nodes {{ commit {{ statusCheckRollup {{ state }} }} }}
       }}

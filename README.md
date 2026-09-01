@@ -651,9 +651,10 @@ is never presented as a clean one.
 The `pull_requests` category counts each repository's **open pull requests**,
 split by who raised them and by what is holding them up. The per-repository data
 rides the same batched GraphQL prefetch as the issues data, so it costs **no
-extra requests per repository** — measured against a five-repository batch,
-adding the connection, the head commit's check rollup and the assignee list
-moved the query cost from 1 point to 4, against an hourly budget of 5,000.
+extra requests per repository** — measured against a 25-repository batch, the
+whole prefetch costs 20 points without the review-thread scan that feeds
+`Copilot` and 151 with it, against an hourly budget of 5,000. A 118-repository
+organisation therefore spends roughly 755 points per run.
 
 Identifying contributors does add **two requests per organisation**, made once
 per run and reused by every repository and both author-aware tables:
@@ -663,17 +664,17 @@ organisation](#inside-or-outside-the-organisation):
 
 ```text
 Pull Requests
-┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━┳━━━━━━┳━━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━┓
-┃ Repository           ┃ Human ┃ Ext ┃ Auto ┃ Conflict ┃ Fail ┃ Draft ┃ Total ┃
-┡━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━╇━━━━━━╇━━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━┩
-│ lftools-uv           │     8 │   0 │    0 │        0 │    0 │     0 │     8 │
-│ dependamerge         │     3 │   0 │    0 │        0 │    0 │     0 │     3 │
-│ gha-workflow-linter  │     2 │   0 │    0 │        0 │    1 │     1 │     2 │
-│ harden-runner-block- │     1 │   0 │    0 │        1 │    0 │     1 │     1 │
-│ action               │       │     │      │          │      │       │       │
-├─────────────────────┼───────┼─────┼──────┼──────────┼──────┼───────┼───────┤
-│ Total                │    14 │   0 │    0 │        1 │    1 │     2 │    14 │
-└─────────────────────┴───────┴─────┴──────┴──────────┴──────┴───────┴───────┘
+┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━┳━━━━━━┳━━━━━━━━━━┳━━━━━━┳━━━━━━━━━┳━━━━━━━┳━━━━━━━┓
+┃ Repository           ┃ Human ┃ Ext ┃ Auto ┃ Conflict ┃ Fail ┃ Copilot ┃ Draft ┃ Total ┃
+┡━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━╇━━━━━━╇━━━━━━━━━━╇━━━━━━╇━━━━━━━━━╇━━━━━━━╇━━━━━━━┩
+│ lftools-uv           │     8 │   0 │    0 │        0 │    0 │       0 │     0 │     8 │
+│ dependamerge         │     3 │   0 │    0 │        0 │    0 │       2 │     0 │     3 │
+│ gha-workflow-linter  │     2 │   0 │    0 │        0 │    1 │       0 │     1 │     2 │
+│ harden-runner-block- │     1 │   0 │    0 │        1 │    0 │       0 │     1 │     1 │
+│ action               │       │     │      │          │      │         │       │       │
+├─────────────────────┼───────┼─────┼──────┼──────────┼──────┼─────────┼───────┼───────┤
+│ Total                │    14 │   0 │    0 │        1 │    1 │       2 │     2 │    14 │
+└─────────────────────┴───────┴─────┴──────┴──────────┴──────┴─────────┴───────┴───────┘
   … and 9 more
   ❌ 13 With open pull requests
   ✅ 104 No open pull requests
@@ -687,21 +688,45 @@ The columns form **two independent groupings**:
 | `Ext` | Human pull requests raised from outside the organisation — a **subset of Human**, which is why it sits beside it. |
 | `Conflict` | Blocked on a merge conflict. |
 | `Fail` | Latest checks did not pass. The rollup includes optional checks, so this is not by itself proof that the merge is blocked. |
+| `Copilot` | Carries at least one **unresolved review thread** opened by GitHub's automated code reviewer. |
 | `Draft` | Marked as a draft. |
 
-`Conflict`, `Fail` and `Draft` **overlap** each other and the author split, so
-they do not sum to `Total` and are not meant to: one pull request that is
-conflicting, failing *and* a draft is counted once in each of those three
+`Conflict`, `Fail`, `Copilot` and `Draft` **overlap** each other and the author
+split, so they do not sum to `Total` and are not meant to: one pull request that
+is conflicting, failing *and* a draft is counted once in each of those three
 columns, and once under `Human` or `Auto`. Only `Human` + `Auto` reconciles with
 the collected total. They are ordered worst-first — a conflict needs a human to
-rebase, a failing check may only need a re-run, and a draft is not blocked at
+rebase, a failing check may only need a re-run, unresolved review feedback needs
+a human but does not hold the merge button down, and a draft is not blocked at
 all.
+
+#### Unresolved Copilot feedback
+
+`Copilot` counts the pull requests **waiting on a human to answer a review**. A
+review thread counts when it was opened by GitHub's automated code reviewer (the
+`copilot-pull-request-reviewer` bot) and nobody has resolved it. The reviewer is
+identified from each thread's **opening** comment, since later replies are
+usually the human answering the review.
+
+An **outdated** thread still counts: GitHub marks a thread outdated when the
+code beneath it changes, but that does not resolve it, so the feedback remains
+unanswered.
+
+Any non-zero count is coloured **red**, like `Conflict` and `Fail` — it marks a
+pull request that cannot progress until somebody responds. The count also feeds
+the row ranking, so a backlog awaiting review outranks an untouched one of the
+same size.
+
+The scan reads up to **20 review threads per pull request**, which is the single
+most expensive part of the prefetch (see the cost figures above). Where a pull
+request carries more threads than that and none of the collected ones qualifies,
+the pull request is treated as **indeterminate** rather than clear — see below.
 
 #### Automation backlog thresholds
 
 On the terminal the counts are coloured so the table reads at a glance: `Human`
-and `Ext` **green**, `Conflict` and `Fail` **red**, and `Auto` coloured against
-two configured thresholds.
+and `Ext` **green**, `Conflict`, `Fail` and `Copilot` **red**, and `Auto`
+coloured against two configured thresholds.
 
 Dependabot stops raising pull requests once a repository reaches its
 `open-pull-requests-limit`, so the repository quietly stops receiving dependency
@@ -923,15 +948,24 @@ reports as an App and any unrecognised login carrying the `[bot]` marker — so 
 future bot is classified as automation rather than mistaken for an outside
 contributor.
 
-`Fail` and `Conflict` count only **established** states. GitHub computes
-mergeability lazily and answers `UNKNOWN` until it settles, and reports no check
-rollup at all when no checks have run; neither absence is evidence that a pull
-request is ready, so neither is counted either way.
+`Fail`, `Conflict` and `Copilot` count only **established** states. GitHub
+computes mergeability lazily and answers `UNKNOWN` until it settles, and reports
+no check rollup at all when no checks have run; neither absence is evidence that
+a pull request is ready, so neither is counted either way. `Copilot` follows the
+same rule: a pull request carrying more review threads than the 20-thread window
+returned, with nothing unresolved among the ones collected, is left uncounted
+rather than reported as clear — an unresolved thread may sit among those never
+seen. Review threads that could not be read at all, or whose count came back
+unusable so the window's coverage cannot be established, are treated the same
+way. Because an uncounted pull request renders as an ordinary `0`, a table
+holding any such reading says so in its description: `Copilot` then
+**undercounts and should be read as a lower bound**, exactly as `Ext` does when
+membership cannot be read.
 
 Repositories with no open pull requests are counted in the footer rather than
-listed. Rows rank by total open pull requests, then by those failing or
-conflicting (`Fail` + `Conflict`), so two repositories with equal backlogs
-surface the more
+listed. Rows rank by total open pull requests, then by those failing,
+conflicting or awaiting Copilot feedback (counted once each, since the columns
+overlap), so two repositories with equal backlogs surface the more
 stuck one first.
 
 > **Accuracy note.** As with the issues table, `Total` is exact at any size,

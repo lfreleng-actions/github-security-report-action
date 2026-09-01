@@ -15,9 +15,11 @@ literally true by GitHub's association (``dependabot[bot]`` reports
 ``CONTRIBUTOR`` or ``NONE``) and useless in practice: it would bury genuine
 outside contributions under routine dependency updates.
 
-**What is holding it up.** ``Conflict``, ``Fail`` and ``Draft`` are independent
-of the author split and of each other, so one pull request can be counted in
-several of them. They therefore do not sum to the total, and are not meant to.
+**What is holding it up.** ``Conflict``, ``Fail``, ``Copilot`` and ``Draft``
+are independent of the author split and of each other, so one pull request can
+be counted in several of them. They therefore do not sum to the total, and are
+not meant to. ``Copilot`` counts the pull requests carrying unresolved review
+feedback from GitHub's automated code reviewer.
 
 The same bounded-window caveat as the issues table applies: ``Total`` is exact
 at any size because it comes from ``totalCount``, while the breakdown columns
@@ -60,6 +62,7 @@ from github_security_report.pulls.columns import (
     AUTOMATION_COLUMN,
     BREAKDOWN_COLUMNS,
     CONFLICT_COLUMN,
+    COPILOT_COLUMN,
     DRAFT_COLUMN,
     EXTERNAL_COLUMN,
     FAILING_COLUMN,
@@ -78,6 +81,7 @@ from github_security_report.pulls.counting import (
     _is_external,
     assignment_counts,
     assignment_rows,
+    copilot_indeterminate,
     count_pull_requests,
     is_mine,
 )
@@ -114,6 +118,7 @@ __all__ = [
     "CELL_GOOD",
     "CELL_WARN",
     "CONFLICT_COLUMN",
+    "COPILOT_COLUMN",
     "Callable",
     "CategoryKey",
     "DRAFT_COLUMN",
@@ -141,6 +146,7 @@ __all__ = [
     "build_assigned_pull_requests_table",
     "build_pull_requests_table",
     "category_meta",
+    "copilot_indeterminate",
     "count_pull_requests",
     "is_automation_author",
     "is_external_author",
