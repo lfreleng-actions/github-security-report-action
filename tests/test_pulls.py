@@ -57,6 +57,7 @@ def _pull(
     draft: bool = False,
     conflicting: bool | None = None,
     failing: bool | None = None,
+    copilot_unresolved: bool | None = None,
     assignees: tuple[str, ...] = (),
 ) -> PullRequestRef:
     return PullRequestRef(
@@ -66,6 +67,7 @@ def _pull(
         assignees=assignees,
         conflicting=conflicting,
         failing=failing,
+        copilot_unresolved=copilot_unresolved,
     )
 
 
@@ -243,14 +245,36 @@ class TestCountPullRequests:
         )
         assert _count(collected)[pulls.CONFLICT_COLUMN] == 1
 
+    def test_only_established_copilot_feedback_counts(self) -> None:
+        # A review-thread window that fell short of a long review cycle leaves
+        # the question open, and "not established" must not read as "nothing
+        # outstanding" -- the same rule the other two blocked columns follow.
+        collected = (
+            _pull(1, copilot_unresolved=None),
+            _pull(2, copilot_unresolved=False),
+            _pull(3, copilot_unresolved=True),
+        )
+        assert _count(collected)[pulls.COPILOT_COLUMN] == 1
+
     def test_one_pull_request_counts_once_in_every_axis_it_matches(self) -> None:
-        counts = _count((_pull(1, draft=True, conflicting=True, failing=True),))
-        # Conflict, Fail and Draft are independent axes overlapping the author
-        # split and each other, so a single stuck draft appears in all three and
-        # once in Human. They are not meant to sum to the total.
+        counts = _count(
+            (
+                _pull(
+                    1,
+                    draft=True,
+                    conflicting=True,
+                    failing=True,
+                    copilot_unresolved=True,
+                ),
+            )
+        )
+        # Conflict, Fail, Copilot and Draft are independent axes overlapping the
+        # author split and each other, so a single stuck draft appears in all
+        # four and once in Human. They are not meant to sum to the total.
         assert counts[pulls.DRAFT_COLUMN] == 1
         assert counts[pulls.FAILING_COLUMN] == 1
         assert counts[pulls.CONFLICT_COLUMN] == 1
+        assert counts[pulls.COPILOT_COLUMN] == 1
         assert counts[pulls.HUMAN_COLUMN] == 1
         assert counts[pulls.AUTOMATION_COLUMN] == 0
 
@@ -269,6 +293,7 @@ class TestBuildPullRequestsTable:
             "Auto",
             "Conflict",
             "Fail",
+            "Copilot",
             "Draft",
             "Total",
         )
@@ -316,13 +341,19 @@ class TestBuildPullRequestsTable:
             a=RepoGraphData(
                 open_pull_requests=6,
                 pull_requests=(
-                    _pull(1),
-                    _pull(2, _author("outsider", association="NONE"), draft=True),
+                    _pull(1, copilot_unresolved=True),
+                    _pull(
+                        2,
+                        _author("outsider", association="NONE"),
+                        draft=True,
+                        copilot_unresolved=True,
+                    ),
                     _pull(
                         3,
                         _author("outsider", association="NONE"),
                         draft=True,
                         failing=True,
+                        copilot_unresolved=True,
                     ),
                     _pull(
                         4,
@@ -330,10 +361,12 @@ class TestBuildPullRequestsTable:
                         draft=True,
                         failing=True,
                         conflicting=True,
+                        copilot_unresolved=True,
                     ),
                     _pull(
                         5,
                         _author("dependabot[bot]", typename="Bot", association="NONE"),
+                        copilot_unresolved=True,
                     ),
                     _pull(
                         6,
@@ -343,8 +376,8 @@ class TestBuildPullRequestsTable:
             )
         )
         table = _build(graph, ["a"])
-        # Human, Ext, Auto, Conflict, Fail, Draft, Total
-        assert table.rows[0].cells == ("4", "3", "2", "1", "2", "3", "6")
+        # Human, Ext, Auto, Conflict, Fail, Copilot, Draft, Total
+        assert table.rows[0].cells == ("4", "3", "2", "1", "2", "5", "3", "6")
 
     def test_collected_members_change_the_external_count(self) -> None:
         graph = _graph(
@@ -375,6 +408,22 @@ class TestBuildPullRequestsTable:
         # Largest backlog first; the two 2-pull repos tie on total and are split
         # by Fail+Conflict, so the more stuck one surfaces first.
         assert [r.repo.name for r in table.rows] == ["stuck", "calm", "small"]
+
+    def test_unresolved_copilot_feedback_ranks_a_repository_as_stuck(self) -> None:
+        # The tie-breaker has to agree with the colouring: a backlog waiting on
+        # a human to answer a review is stuck, so it must not rank below an
+        # untouched backlog of the same size.
+        graph = _graph(
+            calm=RepoGraphData(
+                open_pull_requests=2, pull_requests=(_pull(1), _pull(2))
+            ),
+            awaiting=RepoGraphData(
+                open_pull_requests=2,
+                pull_requests=(_pull(1, copilot_unresolved=True), _pull(2)),
+            ),
+        )
+        table = _build(graph, ["calm", "awaiting"])
+        assert [r.repo.name for r in table.rows] == ["awaiting", "calm"]
 
     def test_blocked_tiebreaker_counts_each_pull_request_once(self) -> None:
         # Fail and Conflict overlap, so summing the two columns would count a
@@ -539,12 +588,32 @@ class TestCellLevels:
         graph = _graph(
             a=RepoGraphData(
                 open_pull_requests=1,
-                pull_requests=(_pull(1, conflicting=True, failing=True),),
+                pull_requests=(
+                    _pull(1, conflicting=True, failing=True, copilot_unresolved=True),
+                ),
             )
         )
         levels = self._levels(_build(graph, ["a"]))
         assert levels[pulls.CONFLICT_COLUMN] == CELL_BAD
         assert levels[pulls.FAILING_COLUMN] == CELL_BAD
+        assert levels[pulls.COPILOT_COLUMN] == CELL_BAD
+
+    def test_any_unresolved_copilot_feedback_reads_as_bad(self) -> None:
+        # The column exists to pull the eye to pull requests waiting on a human
+        # to answer a review, so a single one is enough to colour the count.
+        graph = _graph(
+            a=RepoGraphData(
+                open_pull_requests=3,
+                pull_requests=(
+                    _pull(1),
+                    _pull(2),
+                    _pull(3, copilot_unresolved=True),
+                ),
+            )
+        )
+        row = _build(graph, ["a"]).rows[0]
+        assert _cell(row, pulls.COPILOT_COLUMN) == "1"
+        assert self._levels(_build(graph, ["a"]))[pulls.COPILOT_COLUMN] == CELL_BAD
 
     def test_zero_counts_are_never_emphasised(self) -> None:
         # A table of red zeros teaches the reader to ignore the colour, which
@@ -553,6 +622,7 @@ class TestCellLevels:
         levels = self._levels(_build(graph, ["a"]))
         assert levels[pulls.CONFLICT_COLUMN] is None
         assert levels[pulls.FAILING_COLUMN] is None
+        assert levels[pulls.COPILOT_COLUMN] is None
         assert levels[pulls.EXTERNAL_COLUMN] is None
 
     def test_draft_and_total_carry_no_emphasis(self) -> None:
@@ -826,6 +896,37 @@ class TestTruncationAndMembershipCaveats:
         )
         table = _build(graph, ["a"], members=None)
         assert "lower bound" in table.resolved_description()
+
+    def test_unsettled_copilot_readings_are_declared_a_lower_bound(self) -> None:
+        # An indeterminate reading is dropped from the count, which renders as
+        # an ordinary zero. Unlike an unestablished conflict, that absence is
+        # this run's bounded thread window falling short rather than GitHub
+        # still computing, so the table must not present the zero as earned.
+        graph = _graph(
+            a=RepoGraphData(
+                open_pull_requests=1,
+                pull_requests=(_pull(1, copilot_unresolved=None),),
+            )
+        )
+        table = _build(graph, ["a"])
+        assert _cell(table.rows[0], pulls.COPILOT_COLUMN) == "0"
+        described = table.resolved_description()
+        assert "Copilot undercounts" in described
+        assert "lower bound" in described
+
+    def test_settled_copilot_readings_carry_no_caveat(self) -> None:
+        # A run that settled every pull request must carry no unexplained
+        # qualification about a column it answered in full.
+        graph = _graph(
+            a=RepoGraphData(
+                open_pull_requests=2,
+                pull_requests=(
+                    _pull(1, copilot_unresolved=False),
+                    _pull(2, copilot_unresolved=True),
+                ),
+            )
+        )
+        assert "Copilot undercounts" not in _build(graph, ["a"]).resolved_description()
 
     def test_the_assigned_table_calls_its_own_total_a_lower_bound(self) -> None:
         # The filtered table's Total is len(selected) from the window, not the

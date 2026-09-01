@@ -21,6 +21,7 @@ from github_security_report.pulls.counting import (
     _blocked_count,
     assignment_counts,
     assignment_rows,
+    copilot_indeterminate,
     count_pull_requests,
     is_mine,
 )
@@ -55,6 +56,7 @@ def _build_table(
     rows: list[tuple[int, int, str, TableRow]] = []
     clean_count = 0
     unknown_count = 0
+    copilot_partial = False
     footer_labels = assignment_rows(viewer) if footer else ()
     for repo in repos:
         data = graph.get(repo.name, RepoGraphData())
@@ -88,6 +90,7 @@ def _build_table(
             continue
         counts = count_pull_requests(selected, members)
         blocked = _blocked_count(selected)
+        copilot_partial = copilot_partial or copilot_indeterminate(selected)
         cells = (
             *(str(counts[column]) for column in BREAKDOWN_COLUMNS),
             _total_cell(total, truncated),
@@ -125,6 +128,7 @@ def _build_table(
         [row.cells[-1] for *_, row in rows],
         members,
         filtered=select is not None,
+        copilot_partial=copilot_partial,
     )
     return TableSection(
         category=meta,
@@ -162,8 +166,8 @@ def build_pull_requests_table(
     are counted as the healthy (pass) total in the standardised footer, matching
     every other table in the report. Ranking leads on the total -- the headline
     the table exists to report -- then on the pull requests that are failing
-    checks or conflicting, so two repositories with equal backlogs surface the
-    more stuck one first.
+    checks, conflicting or awaiting a reply to Copilot's review, so two
+    repositories with equal backlogs surface the more stuck one first.
 
     The thresholds colour the Auto column (see :func:`automation_level`); both
     default to ``0`` (off), so a caller that does not care about the automation

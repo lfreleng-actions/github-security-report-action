@@ -15,6 +15,7 @@ from github_security_report.pulls.columns import (
     AUTOMATION_COLUMN,
     BREAKDOWN_COLUMNS,
     CONFLICT_COLUMN,
+    COPILOT_COLUMN,
     EXTERNAL_COLUMN,
     FAILING_COLUMN,
     HUMAN_COLUMN,
@@ -81,7 +82,7 @@ def _cell_levels(
             )
         elif column in (HUMAN_COLUMN, EXTERNAL_COLUMN):
             levels.append(CELL_GOOD if value else None)
-        elif column in (CONFLICT_COLUMN, FAILING_COLUMN):
+        elif column in (CONFLICT_COLUMN, FAILING_COLUMN, COPILOT_COLUMN):
             levels.append(CELL_BAD if value else None)
         else:
             # Draft is neither good nor bad: a draft is not blocked, it is
@@ -91,7 +92,12 @@ def _cell_levels(
 
 
 def _describe(
-    base: str, total_cells: list[str], members: Set[str] | None, *, filtered: bool
+    base: str,
+    total_cells: list[str],
+    members: Set[str] | None,
+    *,
+    filtered: bool,
+    copilot_partial: bool = False,
 ) -> str:
     """Extend the category description with the caveats the table earned.
 
@@ -129,5 +135,15 @@ def _describe(
             "author can only be placed outside the organisation when GitHub "
             "says so unambiguously; Ext therefore undercounts and should be "
             "read as a lower bound."
+        )
+    if copilot_partial:
+        description += (
+            " Whether Copilot is still waiting on a reply could not be settled "
+            "for at least one pull request, whose review threads were "
+            "unreadable, outnumbered the window this run collected, or came "
+            "back without a usable count to show that window had covered them. "
+            "Such a pull request is left uncounted rather than assumed "
+            "answered, so Copilot undercounts and should be read as a lower "
+            "bound."
         )
     return description

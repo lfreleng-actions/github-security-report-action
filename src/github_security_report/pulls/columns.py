@@ -15,19 +15,23 @@ DRAFT_COLUMN = "Draft"
 EXTERNAL_COLUMN = "Ext"
 FAILING_COLUMN = "Fail"
 CONFLICT_COLUMN = "Conflict"
+COPILOT_COLUMN = "Copilot"
 TOTAL_COLUMN = "Total"
 
 # Counted columns in render order, framed by the repository and the total.
 # Ordered so related columns read together: the author split first, with Ext
 # beside Human because it qualifies it (Ext is a subset of Human, never of
 # Auto), then the blockers, worst first -- a conflict needs a human to rebase,
-# a failing check may only need a re-run, and a draft is not blocked at all.
+# a failing check may only need a re-run, unresolved Copilot feedback needs a
+# human but does not hold the merge button down, and a draft is not blocked at
+# all.
 BREAKDOWN_COLUMNS = (
     HUMAN_COLUMN,
     EXTERNAL_COLUMN,
     AUTOMATION_COLUMN,
     CONFLICT_COLUMN,
     FAILING_COLUMN,
+    COPILOT_COLUMN,
     DRAFT_COLUMN,
 )
 
