@@ -193,12 +193,24 @@ class ReadClient(OrgReadClient):
             f"{self._api_url}/repos/{org}/{repo}/code-scanning/alerts", state="open"
         )
 
-    async def repo_secret_scanning(self, org: str, repo: str) -> tuple[int, int]:
-        """Open secret-scanning alert (status, open count) for one repo."""
-        status, items = await self._get_list(
-            f"{self._api_url}/repos/{org}/{repo}/secret-scanning/alerts", state="open"
+    async def repo_secret_scanning(self, org: str, repo: str) -> tuple[int, int, int]:
+        """Secret-scanning read for one repo: (enabled, read, open count).
+
+        Covers every one of GitHub's pattern categories; the default alert
+        listing excludes the generic and AI-detected ones, so a repository
+        leaking a private key or a password reads as clean without the second,
+        filtered pass.
+
+        The two statuses are returned separately -- enablement first, then
+        read completeness -- because repo scope has no independent enablement
+        probe to fall back on. Collapsing them would let one forbidden half
+        report a repository whose other half found alerts as unknown. See
+        :class:`~github_security_report.client.alerts.SecretScanningSweep`.
+        """
+        sweep = await self.secret_scanning_alerts(
+            org, f"{self._api_url}/repos/{org}/{repo}/secret-scanning/alerts"
         )
-        return status, len(items)
+        return sweep.endpoint_status, sweep.read_status, len(sweep.alerts)
 
     async def repo_dependabot_alerts(
         self, org: str, repo: str

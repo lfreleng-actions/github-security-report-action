@@ -262,6 +262,7 @@ class Transport:
         url: str,
         *,
         client: httpx.AsyncClient | None = None,
+        quiet: bool = False,
         **kwargs: object,
     ) -> httpx.Response:
         """Issue a request under the shared retry/backoff policy.
@@ -269,6 +270,11 @@ class Transport:
         ``client`` selects the transport (default: the authenticated GitHub
         client). External calls pass the unauthenticated client so the GitHub
         token is never leaked to third parties.
+
+        ``quiet`` marks an *optional* read whose failure its caller already
+        swallows: its retry notices drop to DEBUG, so a best-effort probe
+        cannot fill a healthy run's output with warnings about a signal nothing
+        depends on. Log level only; the policy and every result are unchanged.
 
         Retries follow the shared retry/backoff policy: exponential backoff,
         at most ``max_retries`` retries (the constructor argument, defaulting to
@@ -285,6 +291,9 @@ class Transport:
         """
         http = client or self._client
         is_external = http is self._ext_client
+        # Resolved once: an optional read reports its retries at DEBUG so it
+        # cannot nag about a signal whose failure the caller already swallows.
+        level = logging.DEBUG if quiet else logging.WARNING
         budget = _RetryBudget(self._max_retries)
         while True:
             try:
@@ -302,7 +311,7 @@ class Transport:
                         attempt=budget.attempt,
                         is_external=is_external,
                     )
-                self._log_transport_retry(url, exc, delay, budget.attempt)
+                self._log_transport_retry(url, exc, delay, budget.attempt, level)
                 await budget.sleep(delay)
                 continue
             if resp.status_code == 401 and not is_external:
@@ -323,7 +332,7 @@ class Transport:
                 # so the caller can degrade its signal to unknown -- or, when
                 # its data is load-bearing, abort the run.
                 return resp
-            self._log_degraded_retry(resp, url, plan, budget.attempt)
+            self._log_degraded_retry(resp, url, plan, budget.attempt, level)
             # The discarded response must be closed; we are retrying and will
             # not read its body, so leaving it open would leak a pool connection.
             await resp.aclose()
@@ -363,10 +372,11 @@ class Transport:
         )
 
     def _log_transport_retry(
-        self, url: str, exc: httpx.HTTPError, delay: float, attempt: int
+        self, url: str, exc: httpx.HTTPError, delay: float, attempt: int, level: int
     ) -> None:
-        """Warn that an unreachable endpoint will be retried after ``delay``."""
-        log.warning(
+        """Report at ``level`` that an unreachable endpoint will be retried."""
+        log.log(
+            level,
             "request to %s failed: %s; retrying in %.0fs (retry %d of %d)",
             url,
             exc,
@@ -376,11 +386,12 @@ class Transport:
         )
 
     def _log_degraded_retry(
-        self, resp: httpx.Response, url: str, plan: _RetryPlan, attempt: int
+        self, resp: httpx.Response, url: str, plan: _RetryPlan, attempt: int, level: int
     ) -> None:
-        """Warn that a degraded response will be retried after ``plan.delay``."""
+        """Report at ``level`` that a degraded response will be retried."""
         if plan.server_error:
-            log.warning(
+            log.log(
+                level,
                 "server error %d on %s; retrying in %.0fs (retry %d of %d)",
                 resp.status_code,
                 url,
@@ -389,7 +400,7 @@ class Transport:
                 self._max_retries,
             )
         else:
-            log.warning("rate limited on %s; backing off %.0fs", url, plan.delay)
+            log.log(level, "rate limited on %s; backing off %.0fs", url, plan.delay)
 
     async def _get_list(self, url: str, **params: object) -> tuple[int, list[dict]]:
         """GET a paginated list, returning (status, items collected).

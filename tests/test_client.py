@@ -5,8 +5,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import socket
-from collections.abc import AsyncIterator, Coroutine, Sequence
+from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
 from typing import Any
 
 import httpx
@@ -23,6 +24,11 @@ from github_security_report.client import (
     _parse_retry_after,
 )
 from github_security_report.client import transport as transport_mod
+from github_security_report.secret_patterns import (
+    EXPLICIT_SECRET_TYPES,
+    GENERIC_SECRET_TYPES,
+    SECRET_TYPE_FILTER,
+)
 
 API = "https://api.github.com"
 SCORECARD = "https://api.securityscorecards.dev"
@@ -178,6 +184,412 @@ async def test_secret_scanning_status(client: GitHubClient) -> None:
     assert await client.secret_scanning_status("o", "r") == 404
 
 
+# --------------------------------------------------------------------------- #
+# Secret scanning: the two-pass sweep over GitHub's three pattern categories
+# --------------------------------------------------------------------------- #
+PATTERN_CONFIGS = f"{API}/orgs/o/secret-scanning/pattern-configurations"
+
+_GENERIC_ALERT = {
+    "number": 2,
+    "url": f"{API}/repos/o/r/secret-scanning/alerts/2",
+    "secret_type": "generic_private_key",
+    "repository": {"name": "r", "full_name": "o/r"},
+}
+_PASSWORD_ALERT = {
+    "number": 4,
+    "url": f"{API}/repos/o/r/secret-scanning/alerts/4",
+    "secret_type": "password",
+    "repository": {"name": "r", "full_name": "o/r"},
+}
+_DEFAULT_ALERT = {
+    "number": 1,
+    "url": f"{API}/repos/o/r/secret-scanning/alerts/1",
+    "secret_type": "github_personal_access_token",
+    "repository": {"name": "r", "full_name": "o/r"},
+}
+
+
+def _mock_pattern_configs(status: int = 404, json: object = None) -> None:
+    """Mock the best-effort pattern inventory read every sweep issues first."""
+    respx.get(url__startswith=PATTERN_CONFIGS).mock(
+        return_value=httpx.Response(status, json=json)
+    )
+
+
+def _secret_type_of(request: httpx.Request) -> str | None:
+    """The ``secret_type`` filter one sweep request carried, if any."""
+    value = httpx.QueryParams(request.url.query).get("secret_type")
+    return str(value) if value is not None else None
+
+
+def _split_sweep(
+    default: httpx.Response, explicit: httpx.Response
+) -> Callable[[httpx.Request], httpx.Response]:
+    """Answer the unfiltered and secret_type-filtered halves differently.
+
+    Keyed on the request itself rather than on call order, because the two
+    halves are issued concurrently.
+    """
+
+    def _side(request: httpx.Request) -> httpx.Response:
+        return default if _secret_type_of(request) is None else explicit
+
+    return _side
+
+
+@respx.mock
+async def test_secret_scanning_sweep_requests_omitted_patterns(
+    client: GitHubClient,
+) -> None:
+    # The regression guard for issue #146: GitHub's default alert listing
+    # excludes the generic and AI-detected patterns, and answers 200 [] rather
+    # than an error, so a sweep that drops this filter reports a leaking org as
+    # clean. Assert the filter reaches the wire, naming every omitted pattern.
+    _mock_pattern_configs()
+    route = respx.get(url__startswith=f"{API}/orgs/o/secret-scanning/alerts")
+    route.side_effect = _split_sweep(
+        httpx.Response(200, json=[]),
+        httpx.Response(200, json=[_GENERIC_ALERT, _PASSWORD_ALERT]),
+    )
+    status, alerts = await client.org_bulk_alerts("o", "secret-scanning")
+    assert status == 200
+    # The org would otherwise have been reported as clean.
+    assert [a["number"] for a in alerts] == [2, 4]
+    filters = {_secret_type_of(call.request) for call in route.calls}
+    assert filters == {None, SECRET_TYPE_FILTER}
+    sent = set(SECRET_TYPE_FILTER.split(","))
+    assert sent == set(EXPLICIT_SECRET_TYPES)
+    # Both omitted categories must be named; covering only one leaves the other
+    # reading as clean, which is the bug in a narrower form.
+    assert sent >= set(GENERIC_SECRET_TYPES) and "password" in sent
+
+
+@respx.mock
+async def test_secret_scanning_sweep_merges_both_passes(
+    client: GitHubClient,
+) -> None:
+    # Adding the generic pass must not cost the default patterns their alerts.
+    _mock_pattern_configs()
+    respx.get(url__startswith=f"{API}/orgs/o/secret-scanning/alerts").mock(
+        side_effect=_split_sweep(
+            httpx.Response(200, json=[_DEFAULT_ALERT]),
+            httpx.Response(200, json=[_GENERIC_ALERT]),
+        )
+    )
+    status, alerts = await client.org_bulk_alerts("o", "secret-scanning")
+    assert status == 200
+    assert [a["number"] for a in alerts] == [1, 2]
+
+
+@respx.mock
+async def test_secret_scanning_sweep_deduplicates_overlap(
+    client: GitHubClient,
+) -> None:
+    # Should GitHub ever return one alert from both halves, it must be counted
+    # once: a doubled count would misreport an offender's severity.
+    _mock_pattern_configs()
+    respx.get(url__startswith=f"{API}/orgs/o/secret-scanning/alerts").mock(
+        side_effect=_split_sweep(
+            httpx.Response(200, json=[_GENERIC_ALERT]),
+            httpx.Response(200, json=[_GENERIC_ALERT]),
+        )
+    )
+    _status, alerts = await client.org_bulk_alerts("o", "secret-scanning")
+    assert [a["number"] for a in alerts] == [2]
+
+
+@respx.mock
+@pytest.mark.parametrize("failing", ["default", "named"])
+async def test_secret_scanning_half_failure_degrades_the_sweep(
+    client: GitHubClient, failing: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Half a sweep is not an authoritative "clean": whichever pass fails, the
+    # status must be non-200 so the signal degrades to unknown rather than
+    # reporting the successful pass's answer as the whole truth.
+    _mock_pattern_configs()
+    ok = httpx.Response(200, json=[])
+    forbidden = httpx.Response(403)
+    respx.get(url__startswith=f"{API}/orgs/o/secret-scanning/alerts").mock(
+        side_effect=_split_sweep(
+            forbidden if failing == "default" else ok,
+            ok if failing == "default" else forbidden,
+        )
+    )
+    with caplog.at_level(logging.WARNING):
+        status, _alerts = await client.org_bulk_alerts("o", "secret-scanning")
+    assert status == 403
+    assert "completed only one of its two passes" in caplog.text
+
+
+@respx.mock
+async def test_secret_scanning_total_failure_is_not_partial_coverage(
+    client: GitHubClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Two passes failing with *different* statuses completed no pass at all.
+    # Reporting that as partial coverage would misdirect whoever reads the
+    # log; the caller already reports a wholly unreadable sweep.
+    _mock_pattern_configs()
+    respx.get(url__startswith=f"{API}/orgs/o/secret-scanning/alerts").mock(
+        side_effect=_split_sweep(httpx.Response(403), httpx.Response(500))
+    )
+    with caplog.at_level(logging.WARNING):
+        status, _alerts = await client.org_bulk_alerts("o", "secret-scanning")
+    assert status == 403
+    assert "completed only one of its two passes" not in caplog.text
+
+
+@respx.mock
+async def test_secret_scanning_half_failure_keeps_the_alerts_it_read(
+    client: GitHubClient,
+) -> None:
+    # Positive evidence of a leaked secret is actionable even when the other
+    # half of the sweep failed, so the alerts travel with the failing status.
+    _mock_pattern_configs()
+    respx.get(url__startswith=f"{API}/orgs/o/secret-scanning/alerts").mock(
+        side_effect=_split_sweep(
+            httpx.Response(500),
+            httpx.Response(200, json=[_GENERIC_ALERT]),
+        )
+    )
+    status, alerts = await client.org_bulk_alerts("o", "secret-scanning")
+    assert status == 500
+    assert [a["number"] for a in alerts] == [2]
+
+
+@respx.mock
+async def test_repo_secret_scanning_counts_omitted_patterns(
+    client: GitHubClient,
+) -> None:
+    # The per-repo path (repo-scope runs) needs the same two-pass read; without
+    # it, sigul-sign-docker's two private keys read as a clean repository.
+    _mock_pattern_configs()
+    route = respx.get(url__startswith=f"{API}/repos/o/r/secret-scanning/alerts")
+    route.side_effect = _split_sweep(
+        httpx.Response(200, json=[]),
+        httpx.Response(
+            200,
+            json=[
+                _GENERIC_ALERT,
+                {
+                    **_GENERIC_ALERT,
+                    "number": 3,
+                    "url": f"{API}/repos/o/r/secret-scanning/alerts/3",
+                },
+            ],
+        ),
+    )
+    enabled_status, read_status, open_count = await client.repo_secret_scanning(
+        "o", "r"
+    )
+    assert (enabled_status, read_status, open_count) == (200, 200, 2)
+    assert {_secret_type_of(call.request) for call in route.calls} == {
+        None,
+        SECRET_TYPE_FILTER,
+    }
+
+
+@respx.mock
+@pytest.mark.parametrize("forbidden_half", ["default", "explicit"])
+async def test_repo_secret_scanning_separates_its_two_statuses(
+    client: GitHubClient, forbidden_half: str
+) -> None:
+    # Repo scope has no independent enablement probe, so one status used to do
+    # both jobs. A 200 from either half proves the endpoint is readable and the
+    # feature on, so enablement stays 200 while the read status degrades --
+    # otherwise a forbidden half would classify a repository with two known
+    # private keys as "insufficient permission" instead of as an offender.
+    _mock_pattern_configs()
+    with_alerts = httpx.Response(200, json=[_GENERIC_ALERT])
+    forbidden = httpx.Response(403)
+    respx.get(url__startswith=f"{API}/repos/o/r/secret-scanning/alerts").mock(
+        side_effect=_split_sweep(
+            forbidden if forbidden_half == "default" else with_alerts,
+            with_alerts if forbidden_half == "default" else forbidden,
+        )
+    )
+    enabled_status, read_status, open_count = await client.repo_secret_scanning(
+        "o", "r"
+    )
+    assert enabled_status == 200
+    assert read_status == 403
+    assert open_count == 1
+
+
+@respx.mock
+async def test_repo_secret_scanning_paginated_failure_keeps_enablement(
+    client: GitHubClient,
+) -> None:
+    # Both halves can end on a failing status and still be holding alerts: a
+    # page that fails mid-pagination returns what it already collected. An
+    # alert can only have come out of a 200 body, so it proves the endpoint was
+    # enabled and readable -- without that, a 403 on page two would classify a
+    # repository whose page one listed a leaked private key as "insufficient
+    # permission" rather than as an offender.
+    _mock_pattern_configs()
+
+    def _paginated(request: httpx.Request) -> httpx.Response:
+        if "page=2" in str(request.url):
+            return httpx.Response(403)
+        return httpx.Response(
+            200,
+            json=[_GENERIC_ALERT],
+            headers={
+                "Link": (f'<{API}/repos/o/r/secret-scanning/alerts?page=2>; rel="next"')
+            },
+        )
+
+    respx.get(url__startswith=f"{API}/repos/o/r/secret-scanning/alerts").mock(
+        side_effect=_paginated
+    )
+    enabled_status, read_status, open_count = await client.repo_secret_scanning(
+        "o", "r"
+    )
+    assert enabled_status == 200  # an alert in hand proves the endpoint answered
+    assert read_status == 403  # ...but the list is still incomplete
+    assert open_count == 1
+
+
+@respx.mock
+async def test_repo_secret_scanning_disabled_reports_404_enablement(
+    client: GitHubClient,
+) -> None:
+    # Both halves 404: the feature really is off, and must still nag rather
+    # than be softened into an unknown by the new two-status split.
+    _mock_pattern_configs()
+    respx.get(url__startswith=f"{API}/repos/o/r/secret-scanning/alerts").mock(
+        return_value=httpx.Response(404)
+    )
+    assert await client.repo_secret_scanning("o", "r") == (404, 404, 0)
+
+
+@respx.mock
+async def test_unknown_generic_pattern_slug_warns(
+    client: GitHubClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A slug GitHub no longer recognises is answered with 200 [], which is
+    # indistinguishable from clean, so the rot has to be reported out of band.
+    kept = [s for s in GENERIC_SECRET_TYPES if s != "rsa_private_key"]
+    _mock_pattern_configs(
+        200, {"provider_pattern_overrides": [{"slug": slug} for slug in kept]}
+    )
+    respx.get(url__startswith=f"{API}/orgs/o/secret-scanning/alerts").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    with caplog.at_level(logging.WARNING):
+        await client.org_bulk_alerts("o", "secret-scanning")
+    assert "rsa_private_key" in caplog.text
+
+
+@respx.mock
+async def test_unreadable_pattern_inventory_stays_quiet(
+    client: GitHubClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The inventory endpoint needs an org permission the tool does not ask for,
+    # and the owner may be a user account, so 404 is the ordinary answer for a
+    # correctly-configured run and must not nag. The sweep still happens.
+    _mock_pattern_configs(404)
+    route = respx.get(url__startswith=f"{API}/orgs/o/secret-scanning/alerts")
+    route.mock(return_value=httpx.Response(200, json=[]))
+    with caplog.at_level(logging.WARNING):
+        status, _alerts = await client.org_bulk_alerts("o", "secret-scanning")
+    assert status == 200
+    assert len(route.calls) == 2
+    assert caplog.text == ""
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "failure",
+    [
+        pytest.param(httpx.ConnectError("boom"), id="transport-failure"),
+        pytest.param(httpx.Response(503), id="retryable-server-error"),
+        pytest.param(httpx.Response(429), id="rate-limited"),
+    ],
+)
+async def test_unreadable_pattern_inventory_never_warns_or_aborts(
+    client: GitHubClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failure: httpx.Response | Exception,
+) -> None:
+    # Being best-effort has to include the transport *and* its retry chatter.
+    # ``_request`` raises NetworkError once the retry budget is spent, so
+    # without a guard a timeout here would abort the run before a single alert
+    # was read; and it logs each retry at WARNING, so an optional probe would
+    # otherwise fill a healthy run's output with warnings about a signal
+    # nothing depends on. Both retryable statuses are covered because they take
+    # different paths through the retry planner (server error vs rate limit).
+    async def _no_sleep(delay: float) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "github_security_report.client.transport.asyncio.sleep", _no_sleep
+    )
+    route = respx.get(url__startswith=PATTERN_CONFIGS)
+    if isinstance(failure, httpx.Response):
+        route.mock(return_value=failure)
+    else:
+        route.mock(side_effect=failure)
+    respx.get(url__startswith=f"{API}/orgs/o/secret-scanning/alerts").mock(
+        side_effect=_split_sweep(
+            httpx.Response(200, json=[]),
+            httpx.Response(200, json=[_GENERIC_ALERT]),
+        )
+    )
+    with caplog.at_level(logging.WARNING):
+        status, alerts = await client.org_bulk_alerts("o", "secret-scanning")
+    assert status == 200
+    assert [a["number"] for a in alerts] == [2]
+    assert caplog.text == ""  # not a single retry warning from the optional read
+
+
+@respx.mock
+async def test_malformed_pattern_inventory_does_not_abort_the_sweep(
+    client: GitHubClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A 200 carrying something other than JSON -- a proxy error page, a
+    # truncated body -- tells us nothing about the pattern list. Letting
+    # resp.json() raise would fail a security report over an optional check,
+    # and would leak the pooled connection on the way out.
+    respx.get(url__startswith=PATTERN_CONFIGS).mock(
+        return_value=httpx.Response(
+            200, content=b"<html>502 Bad Gateway</html>", headers={}
+        )
+    )
+    respx.get(url__startswith=f"{API}/orgs/o/secret-scanning/alerts").mock(
+        side_effect=_split_sweep(
+            httpx.Response(200, json=[]),
+            httpx.Response(200, json=[_GENERIC_ALERT]),
+        )
+    )
+    with caplog.at_level(logging.WARNING):
+        status, alerts = await client.org_bulk_alerts("o", "secret-scanning")
+    assert status == 200
+    assert [a["number"] for a in alerts] == [2]
+    assert caplog.text == ""  # unverifiable, not a reportable fault
+
+
+@respx.mock
+async def test_rejected_credentials_on_pattern_inventory_still_abort(
+    client: GitHubClient,
+) -> None:
+    # The one failure the optional check must NOT swallow. AuthError subclasses
+    # NetworkError, so a bare "except NetworkError" here would turn rejected
+    # credentials into a shrug and let the run render every repository as clean
+    # out of nothing but 401s.
+    respx.get(url__startswith=PATTERN_CONFIGS).mock(
+        return_value=httpx.Response(401, json={"message": "Bad credentials"})
+    )
+    # Deliberately unrealistic -- a rejected token would fail this read too --
+    # so that the inventory read is the only thing that can raise, and swallowing
+    # its 401 fails as a plain "DID NOT RAISE" rather than as a knock-on error.
+    respx.get(url__startswith=f"{API}/orgs/o/secret-scanning/alerts").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    with pytest.raises(AuthError):
+        await client.org_bulk_alerts("o", "secret-scanning")
+
+
 @respx.mock
 async def test_dependabot_enabled_true_false_and_indeterminate(
     client: GitHubClient,
@@ -211,7 +623,9 @@ async def test_scorecard_score(client: GitHubClient) -> None:
 
 @respx.mock
 async def test_backoff_retries_then_succeeds(
-    client: GitHubClient, monkeypatch: pytest.MonkeyPatch
+    client: GitHubClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     slept: list[float] = []
 
@@ -226,9 +640,14 @@ async def test_backoff_retries_then_succeeds(
         httpx.Response(429, headers={"retry-after": "1"}),
         httpx.Response(200, json=[]),
     ]
-    status = await client.secret_scanning_status("o", "r")
+    with caplog.at_level(logging.WARNING):
+        status = await client.secret_scanning_status("o", "r")
     assert status == 200
     assert slept == [1.0]
+    # An ordinary read still warns on retry: _request's ``quiet`` mode exists
+    # for optional probes only, and must not become the default. Losing this
+    # would hide rate limiting and server errors from whoever runs the report.
+    assert "rate limited on" in caplog.text
 
 
 @respx.mock
