@@ -11,8 +11,9 @@ See ``docs/BRIEF.md`` sections 9, 13 and ``docs/phase0-findings.md``.
 The implementation is split across ``endpoints`` (environment-resolved API URLs
 and the shared retry/backoff policy), ``queries`` (GraphQL documents),
 ``parsers`` (pure header/node parsing), ``transport`` (connection lifecycle and
-the retrying request primitives), ``org_reads`` (the reads issued once per
-organisation), ``reads`` (the per-repository reads) and ``writes`` (the
+the retrying request primitives), ``alerts`` (the org-bulk sweeps and the
+two-pass secret-scanning read), ``org_reads`` (the remaining reads issued once
+per organisation), ``reads`` (the per-repository reads) and ``writes`` (the
 remediation writes plus the public :class:`GitHubClient`). This module
 re-exports the public surface, so importing from
 ``github_security_report.client`` is unchanged.
@@ -20,6 +21,7 @@ re-exports the public surface, so importing from
 
 from __future__ import annotations
 
+from github_security_report.client.alerts import AlertReads
 from github_security_report.client.endpoints import (
     _SCORECARD_DEFAULT,
     API_BACKOFF_FACTOR,
@@ -67,6 +69,7 @@ __all__ = [
     "GITHUB_API",
     "GRAPHQL_API",
     "SCORECARD_API",
+    "AlertReads",
     "AuthError",
     "GitHubClient",
     "NetworkError",

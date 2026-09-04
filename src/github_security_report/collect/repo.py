@@ -46,7 +46,13 @@ async def collect_repo(
         cs_alerts_status, cs_alerts = await client.repo_code_scanning_alerts(
             owner, repo_name
         )
-    secret_status, secret_open = await client.repo_secret_scanning(owner, repo_name)
+    # Enablement and read completeness are tracked apart: a partial read that
+    # still found alerts must classify as an offender, not as unknown.
+    (
+        secret_status,
+        secret_read_status,
+        secret_open,
+    ) = await client.repo_secret_scanning(owner, repo_name)
     dependabot_on = await client.dependabot_enabled(owner, repo_name)
     # Only fetch Dependabot alerts when the feature is enabled.
     dependabot_alerts: list[dict] = []
@@ -77,7 +83,7 @@ async def collect_repo(
         code_scanning_alerts_status=cs_alerts_status,
         secret_scanning_status=secret_status,
         secret_scanning_open=secret_open,
-        secret_scanning_open_status=secret_status,
+        secret_scanning_open_status=secret_read_status,
         dependabot_enabled=dependabot_on,
         dependabot_alerts=dependabot_alerts,
         dependabot_alerts_status=dependabot_alerts_status,

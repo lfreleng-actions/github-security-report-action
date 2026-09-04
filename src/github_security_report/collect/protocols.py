@@ -100,8 +100,8 @@ class RepoClientProtocol(Protocol):
         """Fetch a repository's code-scanning alerts with the read status."""
         raise NotImplementedError
 
-    async def repo_secret_scanning(self, org: str, repo: str) -> tuple[int, int]:
-        """Return a repository's secret-scanning status and open count."""
+    async def repo_secret_scanning(self, org: str, repo: str) -> tuple[int, int, int]:
+        """Return a repo's secret-scanning enablement, read status and count."""
         raise NotImplementedError
 
     async def dependabot_enabled(self, org: str, repo: str) -> bool | None:

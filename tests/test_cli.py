@@ -35,6 +35,21 @@ from github_security_report.report import OrgReport, build_org_report
 
 API = "https://api.github.com"
 SCORECARD = "https://api.securityscorecards.dev"
+
+
+def _mock_pattern_inventory() -> None:
+    """Register the best-effort secret-scanning pattern inventory read.
+
+    Every secret-scanning read validates its generic-pattern list against this
+    endpoint before sweeping. It needs an org permission the tool does not
+    otherwise ask for, so 404 is the ordinary answer for the tokens the README
+    recommends, and the one these end-to-end tests exercise.
+    """
+    respx.get(
+        url__startswith=f"{API}/orgs/o/secret-scanning/pattern-configurations"
+    ).mock(return_value=httpx.Response(404))
+
+
 cli = CliRunner()
 
 
@@ -112,6 +127,7 @@ def test_org_mode_writes_pages(tmp_path: Path) -> None:
         respx.get(url__startswith=f"{API}/orgs/o/{kind}/alerts").mock(
             return_value=httpx.Response(200, json=[])
         )
+    _mock_pattern_inventory()
     respx.get(url__startswith=f"{API}/orgs/o/rulesets").mock(
         return_value=httpx.Response(200, json=[])
     )
@@ -193,6 +209,7 @@ def _mock_org_o_r() -> None:
         respx.get(url__startswith=f"{API}/orgs/o/{kind}/alerts").mock(
             return_value=httpx.Response(200, json=[])
         )
+    _mock_pattern_inventory()
     respx.get(url__startswith=f"{API}/orgs/o/rulesets").mock(
         return_value=httpx.Response(200, json=[])
     )
@@ -428,6 +445,7 @@ def test_repo_mode_fail_threshold(tmp_path: Path) -> None:
     respx.get(url__startswith=f"{API}/repos/o/r/secret-scanning/alerts").mock(
         return_value=httpx.Response(404)
     )
+    _mock_pattern_inventory()
     respx.post(f"{API}/graphql").mock(
         return_value=httpx.Response(
             200, json={"data": {"repository": {"hasVulnerabilityAlertsEnabled": False}}}
@@ -813,6 +831,7 @@ def test_org_mode_top_n_from_config(tmp_path: Path) -> None:
         respx.get(url__startswith=f"{API}/orgs/o/{kind}/alerts").mock(
             return_value=httpx.Response(200, json=[])
         )
+    _mock_pattern_inventory()
     respx.get(url__startswith=f"{API}/orgs/o/rulesets").mock(
         return_value=httpx.Response(200, json=[])
     )
@@ -883,6 +902,7 @@ def _mock_offender_org() -> None:
         respx.get(url__startswith=f"{API}/orgs/o/{kind}/alerts").mock(
             return_value=httpx.Response(200, json=[])
         )
+    _mock_pattern_inventory()
     respx.get(url__startswith=f"{API}/orgs/o/rulesets").mock(
         return_value=httpx.Response(200, json=[])
     )

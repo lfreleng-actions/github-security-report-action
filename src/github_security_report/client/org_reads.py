@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
-"""Org-scope GitHub reads: repository listing, bulk sweeps and prefetch.
+"""Org-scope GitHub reads: repository listing, membership and prefetch.
 
 :class:`OrgReadClient` holds the reads issued once per organisation -- the
-repository listing, the org-bulk alert sweeps, the org ruleset fetch and the
-batched GraphQL prefetch -- leaving the per-repository probes to
-:class:`~github_security_report.client.reads.ReadClient`, which extends it.
-Methods return raw parsed JSON (and HTTP status where the status itself is the
-signal, e.g. 404 = feature disabled).
+repository listing, the org ruleset fetch, membership and the batched GraphQL
+prefetch -- leaving the per-repository probes to
+:class:`~github_security_report.client.reads.ReadClient`, which extends it, and
+the alert sweeps to :class:`~github_security_report.client.alerts.AlertReads`,
+which it extends. Methods return raw parsed JSON (and HTTP status where the
+status itself is the signal, e.g. 404 = feature disabled).
 """
 
 from __future__ import annotations
@@ -15,14 +16,14 @@ from __future__ import annotations
 import logging
 
 from github_security_report.authors import is_automation_author, normalise_members
-from github_security_report.client.endpoints import BULK_KINDS
+from github_security_report.client.alerts import AlertReads
 from github_security_report.client.parsers import _parse_iso, _parse_repo_node
 from github_security_report.client.queries import (
     _ORG_MEMBERS_QUERY,
     _REPO_GRAPH_FRAGMENT,
     _VIEWER_QUERY,
 )
-from github_security_report.client.transport import NetworkError, Transport
+from github_security_report.client.transport import NetworkError
 from github_security_report.models import Repo, RepoGraphData
 
 log = logging.getLogger(__name__)
@@ -120,8 +121,8 @@ def _alias_errors(errors: object, alias_count: int) -> tuple[set[str], set[str]]
     return unreadable, isolated - unreadable
 
 
-class OrgReadClient(Transport):
-    """The org-scope reads: listing, bulk sweeps, rulesets and prefetch."""
+class OrgReadClient(AlertReads):
+    """The org-scope reads: listing, membership, rulesets and prefetch."""
 
     # ------------------------------------------------------------------ #
     # Repositories
@@ -155,19 +156,6 @@ class OrgReadClient(Transport):
                 )
             )
         return status, repos
-
-    # ------------------------------------------------------------------ #
-    # Org-bulk alert sweeps
-    # ------------------------------------------------------------------ #
-    async def org_bulk_alerts(self, org: str, kind: str) -> tuple[int, list[dict]]:
-        """Sweep all open alerts of one kind across the org.
-
-        Returns the first-page HTTP status alongside the alerts so callers can
-        tell an authoritative empty result (200 ``[]``) apart from an unreadable
-        sweep (403/404/5xx), which must never be reported as "clean".
-        """
-        path = BULK_KINDS[kind]
-        return await self._get_list(f"{self._api_url}/orgs/{org}/{path}", state="open")
 
     # ------------------------------------------------------------------ #
     # Organisation rulesets (workflow-driven tool enablement)

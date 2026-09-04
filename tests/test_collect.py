@@ -391,8 +391,8 @@ class FakeRepoClient:
     ) -> tuple[int, list[dict]]:
         return 200, [_cs_alert(repo, "CodeQL", "high")]
 
-    async def repo_secret_scanning(self, org: str, repo: str) -> tuple[int, int]:
-        return 404, 0  # disabled on the fork
+    async def repo_secret_scanning(self, org: str, repo: str) -> tuple[int, int, int]:
+        return 404, 404, 0  # disabled on the fork
 
     async def dependabot_enabled(self, org: str, repo: str) -> bool | None:
         return False  # disabled on the fork
@@ -444,13 +444,35 @@ async def test_collect_repo_secret_read_failure_is_unknown() -> None:
     # A non-200 secret-scanning read that returns an empty count must not be
     # reported as an authoritative zero (clean); it degrades to unknown.
     class SecretFailClient(FakeRepoClient):
-        async def repo_secret_scanning(self, org: str, repo: str) -> tuple[int, int]:
-            return 500, 0  # transient failure, empty count
+        async def repo_secret_scanning(
+            self, org: str, repo: str
+        ) -> tuple[int, int, int]:
+            return 200, 500, 0  # enabled, transient read failure, empty count
 
     repo, signals = await collect.collect_repo(SecretFailClient(), "o", "dependamerge")
     assert repo is not None
     by_signal = {s.signal: s for s in signals}
     assert by_signal[SignalType.SECRET_SCANNING].state is RepoState.UNKNOWN
+
+
+async def test_collect_repo_partial_secret_read_with_alerts_is_offender() -> None:
+    # Repo scope has no separate enablement probe, so the secret-scanning read
+    # reports its two statuses apart. Conflating them would let the forbidden
+    # half of a two-pass sweep classify a repository whose other half found
+    # alerts as "insufficient permission" -- hiding a known leak behind a
+    # permissions error, which is the worst possible way to be wrong here.
+    class PartialSecretClient(FakeRepoClient):
+        async def repo_secret_scanning(
+            self, org: str, repo: str
+        ) -> tuple[int, int, int]:
+            return 200, 403, 2  # readable endpoint, forbidden half, 2 alerts
+
+    repo, signals = await collect.collect_repo(
+        PartialSecretClient(), "o", "dependamerge"
+    )
+    assert repo is not None
+    by_signal = {s.signal: s for s in signals}
+    assert by_signal[SignalType.SECRET_SCANNING].state is RepoState.OFFENDER
 
 
 async def test_collect_repo_honours_custom_ruleset_workflows() -> None:

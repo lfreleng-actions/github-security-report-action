@@ -10,11 +10,11 @@ per-category headings, labels and explanatory text, so a wording change here
 flows to the terminal, Slack, Markdown and HTML surfaces at once.
 
 The registry deliberately holds no behaviour and imports nothing from the rest
-of the package except the leaf ``severity`` module (which itself imports nothing
-from the package), so both the domain models and the renderers can depend on it
-without a cycle. ``key`` values are the stable identifiers used by the
-per-category configuration toggles, so treat them as part of the config
-contract: rename with care.
+of the package except the leaf ``severity`` and ``secret_patterns`` modules
+(which themselves import nothing from the package), so both the domain models
+and the renderers can depend on it without a cycle. ``key`` values are the
+stable identifiers used by the per-category configuration toggles, so treat
+them as part of the config contract: rename with care.
 """
 
 from __future__ import annotations
@@ -22,6 +22,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from github_security_report.secret_patterns import (
+    AI_DETECTED_SECRET_TYPES,
+    GENERIC_SECRET_TYPES,
+)
 from github_security_report.severity import Severity
 
 
@@ -170,7 +174,13 @@ _CATEGORIES: dict[CategoryKey, CategoryMeta] = {
         ),
         description=(
             "Open secret-scanning alerts. Each row shows a repository's count "
-            "of detected, unresolved secrets."
+            "of detected, unresolved secrets. All three of GitHub's pattern "
+            "categories are covered: its default provider patterns, the "
+            f"{len(GENERIC_SECRET_TYPES)} generic patterns (private keys, "
+            "database connection strings, HTTP authentication headers) and "
+            f"the {len(AI_DETECTED_SECRET_TYPES)} AI-detected pattern "
+            "(passwords). The alerts API omits the latter two unless they are "
+            "requested by name."
         ),
     ),
     CategoryKey.DEPENDABOT_ALERTS_ENABLED: CategoryMeta(

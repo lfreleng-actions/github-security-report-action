@@ -135,7 +135,7 @@ organisation and **Repository access** set to *All repositories*, then grant:
 | Contents | `.github/dependabot.yml`, latest release, and tag dates |
 | Dependabot alerts | Open Dependabot vulnerability alerts |
 | Code scanning alerts | CodeQL / Scorecard / zizmor / aislop findings |
-| Secret scanning alerts | Open secret-scanning alerts |
+| Secret scanning alerts | Open secret-scanning alerts, across every GitHub pattern category |
 | Issues | Open issues and their labels (GitHub Issues table) |
 | Administration | Dependabot enablement + security-updates status, and effective branch rules |
 
@@ -143,7 +143,7 @@ organisation and **Repository access** set to *All repositories*, then grant:
 
 | Permission | Access | Used for |
 | ---------- | ------ | -------- |
-| Administration | Read and write | *Optional* — organisation rulesets (detect tools enforced through an org ruleset). GitHub gates this endpoint behind Administration **write**; omit it to keep the token read-only and skip ruleset-based tool coverage. |
+| Administration | Read (write for rulesets) | *Optional*, and the only permission here with a write variant. **Read** keeps the token read-only and unlocks GitHub's secret-scanning pattern inventory (see below). **Write** additionally unlocks organisation rulesets (detecting tools enforced through an org ruleset), which GitHub gates behind Administration write. Omit the permission entirely to skip both; everything else is unaffected. |
 
 > Read-only is enough for everything except the optional ruleset coverage
 > above. A fine-grained token cannot span organisations. For a report covering
@@ -159,13 +159,40 @@ organisations. Grant these scopes:
 | ----- | -------- |
 | `repo` | Repository data, including private repositories |
 | `security_events` | Code scanning, secret scanning, and Dependabot alerts (org-bulk and per-repo) |
-| `read:org` | Listing organisation repositories |
+| `read:org` | Listing organisation repositories, and GitHub's secret-scanning pattern inventory (see below) |
 | `admin:org` | *Optional* — reading organisation rulesets for ruleset-based tool coverage. GitHub gates `GET /orgs/{org}/rulesets` behind the full `admin:org` scope; `read:org` and `write:org` return 404. Omit it to skip that one signal; everything else is unaffected. |
 
 > For organisations that enforce SSO, the PAT must be **SSO-authorised** for
 > each target organisation, or the org-level endpoints return `403` (reported as
 > unknown). Store the token as a secret (e.g. `LFRELENG_ACTIONS_REPORT_PAT`) and
 > reference it by env-var name via `token_env`; never embed it in the config.
+
+### Secret scanning covers three pattern categories
+
+GitHub's alerts API returns only its *default* provider patterns unless
+`secret_type` names something else, so two whole categories — the **generic**
+patterns (private keys, database connection strings, HTTP authentication
+headers) and the **AI-detected** ones (passwords) — are omitted from an
+ordinary sweep, and the endpoint answers `200 []` rather than an error. The
+report therefore sweeps twice, once unfiltered and once naming the patterns
+GitHub leaves out, and merges the results.
+
+If either half fails, the repository is reported as **unknown** rather than as
+the surviving half's answer — a partial sweep can never stand in for a clean
+bill of health. Alerts the successful half did find are still reported, and a
+repository with any of them is an **offender** rather than unknown: an
+incomplete read can conceal a secret, never invent one, so positive evidence is
+acted on whatever else failed.
+
+Where the token can read
+`GET /orgs/{org}/secret-scanning/pattern-configurations`, the generic pattern
+names are checked against GitHub's own inventory, so a pattern GitHub renames
+surfaces as a warning instead of as a silently clean report. A classic PAT gets
+this from the `read:org` scope it already needs; a fine-grained token needs the
+optional organisation `Administration` permission (read). Where the token
+cannot read it, the check is skipped without comment and the sweep proceeds
+unchanged. The AI-detected patterns are absent from that inventory and so go
+unverified.
 
 ## Usage
 
