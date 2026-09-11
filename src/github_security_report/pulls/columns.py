@@ -15,6 +15,7 @@ DRAFT_COLUMN = "Draft"
 EXTERNAL_COLUMN = "Ext"
 FAILING_COLUMN = "Fail"
 CONFLICT_COLUMN = "Conflict"
+REVIEW_COLUMN = "Review"
 COPILOT_COLUMN = "Copilot"
 TOTAL_COLUMN = "Total"
 
@@ -22,15 +23,21 @@ TOTAL_COLUMN = "Total"
 # Ordered so related columns read together: the author split first, with Ext
 # beside Human because it qualifies it (Ext is a subset of Human, never of
 # Auto), then the blockers, worst first -- a conflict needs a human to rebase,
-# a failing check may only need a re-run, unresolved Copilot feedback needs a
-# human but does not hold the merge button down, and a draft is not blocked at
-# all.
+# a failing check may only need a re-run, a reviewer who requested changes needs
+# the author to act, unresolved Copilot feedback needs somebody but does not
+# hold the merge button down, and a draft is not blocked at all.
+#
+# Review sits beside Copilot because the two answer the same question about
+# different reviewers, and both sit inside the blocker group rather than beside
+# Human -- which names who *raised* a pull request, not who reviewed it. The
+# grouping is what keeps those two readings of "human" apart.
 BREAKDOWN_COLUMNS = (
     HUMAN_COLUMN,
     EXTERNAL_COLUMN,
     AUTOMATION_COLUMN,
     CONFLICT_COLUMN,
     FAILING_COLUMN,
+    REVIEW_COLUMN,
     COPILOT_COLUMN,
     DRAFT_COLUMN,
 )

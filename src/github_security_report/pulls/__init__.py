@@ -71,6 +71,7 @@ from github_security_report.pulls.columns import (
     OTHERS_ROW,
     PERSONAL_ASSIGNMENT_ROWS,
     REPOSITORY_COLUMN,
+    REVIEW_COLUMN,
     TOTAL_COLUMN,
     TRUNCATED_MARKER,
     UNASSIGNED_ROW,
@@ -84,6 +85,7 @@ from github_security_report.pulls.counting import (
     copilot_indeterminate,
     count_pull_requests,
     is_mine,
+    review_indeterminate,
 )
 from github_security_report.pulls.presentation import (
     _cell_levels,
@@ -131,6 +133,7 @@ __all__ = [
     "PERSONAL_ASSIGNMENT_ROWS",
     "PullRequestRef",
     "REPOSITORY_COLUMN",
+    "REVIEW_COLUMN",
     "Repo",
     "RepoGraphData",
     "Set",
@@ -151,4 +154,5 @@ __all__ = [
     "is_automation_author",
     "is_external_author",
     "is_mine",
+    "review_indeterminate",
 ]

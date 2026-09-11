@@ -17,6 +17,7 @@ from typing import cast
 import httpx
 
 from github_security_report.client.copilot import _copilot_unresolved
+from github_security_report.client.reviews import _changes_requested
 from github_security_report.models import (
     AuthorRef,
     IssueRef,
@@ -341,6 +342,7 @@ def _pull_request_ref(node: object) -> PullRequestRef | None:
         conflicting=conflicting,
         failing=_check_rollup_failed(node),
         copilot_unresolved=_copilot_unresolved(node),
+        changes_requested=_changes_requested(node),
     )
 
 

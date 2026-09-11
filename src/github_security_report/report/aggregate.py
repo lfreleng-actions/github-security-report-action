@@ -22,8 +22,8 @@ from github_security_report.models import (
     RepoSignal,
     RepoState,
     SignalType,
-    rank_offenders,
 )
+from github_security_report.ranking import rank_offenders
 from github_security_report.report.signals import SignalSection
 from github_security_report.report.tables import TableSection
 

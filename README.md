@@ -692,17 +692,17 @@ organisation](#inside-or-outside-the-organisation):
 
 ```text
 Pull Requests
-┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━┳━━━━━━┳━━━━━━━━━━┳━━━━━━┳━━━━━━━━━┳━━━━━━━┳━━━━━━━┓
-┃ Repository           ┃ Human ┃ Ext ┃ Auto ┃ Conflict ┃ Fail ┃ Copilot ┃ Draft ┃ Total ┃
-┡━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━╇━━━━━━╇━━━━━━━━━━╇━━━━━━╇━━━━━━━━━╇━━━━━━━╇━━━━━━━┩
-│ lftools-uv           │     8 │   0 │    0 │        0 │    0 │       0 │     0 │     8 │
-│ dependamerge         │     3 │   0 │    0 │        0 │    0 │       2 │     0 │     3 │
-│ gha-workflow-linter  │     2 │   0 │    0 │        0 │    1 │       0 │     1 │     2 │
-│ harden-runner-block- │     1 │   0 │    0 │        1 │    0 │       0 │     1 │     1 │
-│ action               │       │     │      │          │      │         │       │       │
-├─────────────────────┼───────┼─────┼──────┼──────────┼──────┼─────────┼───────┼───────┤
-│ Total                │    14 │   0 │    0 │        1 │    1 │       2 │     2 │    14 │
-└─────────────────────┴───────┴─────┴──────┴──────────┴──────┴─────────┴───────┴───────┘
+┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━┳━━━━━━┳━━━━━━━━━━┳━━━━━━┳━━━━━━━━┳━━━━━━━━━┳━━━━━━━┳━━━━━━━┓
+┃ Repository           ┃ Human ┃ Ext ┃ Auto ┃ Conflict ┃ Fail ┃ Review ┃ Copilot ┃ Draft ┃ Total ┃
+┡━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━╇━━━━━━╇━━━━━━━━━━╇━━━━━━╇━━━━━━━━╇━━━━━━━━━╇━━━━━━━╇━━━━━━━┩
+│ lftools-uv           │     8 │   0 │    0 │        0 │    0 │      0 │       0 │     0 │     8 │
+│ dependamerge         │     3 │   0 │    0 │        0 │    0 │      1 │       2 │     0 │     3 │
+│ gha-workflow-linter  │     2 │   0 │    0 │        0 │    1 │      0 │       0 │     1 │     2 │
+│ harden-runner-block- │     1 │   0 │    0 │        1 │    0 │      0 │       0 │     1 │     1 │
+│ action               │       │     │      │          │      │        │         │       │       │
+├──────────────────────┼───────┼─────┼──────┼──────────┼──────┼────────┼─────────┼───────┼───────┤
+│ Total                │    14 │   0 │    0 │        1 │    1 │      1 │       2 │     2 │    14 │
+└──────────────────────┴───────┴─────┴──────┴──────────┴──────┴────────┴─────────┴───────┴───────┘
   … and 9 more
   ❌ 13 With open pull requests
   ✅ 104 No open pull requests
@@ -716,34 +716,73 @@ The columns form **two independent groupings**:
 | `Ext` | Human pull requests raised from outside the organisation — a **subset of Human**, which is why it sits beside it. |
 | `Conflict` | Blocked on a merge conflict. |
 | `Fail` | Latest checks did not pass. The rollup includes optional checks, so this is not by itself proof that the merge is blocked. |
+| `Review` | A reviewer has **requested changes** — a person waiting on the author. |
 | `Copilot` | Carries at least one **unresolved review thread** opened by GitHub's automated code reviewer. |
 | `Draft` | Marked as a draft. |
 
-`Conflict`, `Fail`, `Copilot` and `Draft` **overlap** each other and the author
-split, so they do not sum to `Total` and are not meant to: one pull request that
-is conflicting, failing *and* a draft is counted once in each of those three
-columns, and once under `Human` or `Auto`. Only `Human` + `Auto` reconciles with
-the collected total. They are ordered worst-first — a conflict needs a human to
-rebase, a failing check may only need a re-run, unresolved review feedback needs
-a human but does not hold the merge button down, and a draft is not blocked at
-all.
+`Conflict`, `Fail`, `Review`, `Copilot` and `Draft` **overlap** each other and
+the author split, so they do not sum to `Total` and are not meant to: one pull
+request that is conflicting, failing *and* a draft is counted once in each of
+those three columns, and once under `Human` or `Auto`. Only `Human` + `Auto`
+reconciles with the collected total. They are ordered worst-first — a conflict
+needs a human to rebase, a failing check may only need a re-run, requested
+changes need the author to act, unresolved automated feedback needs somebody but
+does not hold the merge button down, and a draft is not blocked at all.
+
+`Review` and `Copilot` sit together inside the blocker group, and deliberately
+not beside `Human`: that column names who **raised** a pull request, whereas
+these two name who is **waiting on** it. The grouping is what keeps those two
+readings of "human" apart.
+
+#### Requested changes
+
+`Review` counts pull requests where **a person** has asked for changes and not
+withdrawn it.
+
+Two fields answer that, each covering the other's blind spot. `reviewDecision` is
+GitHub's own verdict, computed over every review and accounting for dismissals,
+so it is **exact at any review count** — but it names nobody, and a GitHub App
+holding pull-request write permission can request changes exactly as a person
+can. `latestOpinionatedReviews` names the reviewers, but is a bounded window of
+five (one review per reviewer, so five reviewers rather than five reviews).
+
+So the decision **gates** and the window **attributes**. Anything other than
+`CHANGES_REQUESTED` is a definite zero whatever the window holds, and only once
+GitHub says changes are outstanding does the reviewer's identity matter — which
+keeps the cheap exact answer for almost every pull request and pays the window's
+uncertainty on the few where it changes the reading. Automated reviewers are
+recognised by the same rule as the `Auto` column.
+
+Only `CHANGES_REQUESTED` gates. **`REVIEW_REQUIRED` is deliberately excluded**:
+it reports that a branch rule demands a review, not that anybody objected, so on
+an organisation that requires review by default it would mark nearly every human
+pull request and distinguish none of them. The rule is written as an allow-list
+of the one blocking state rather than as "anything that is not `APPROVED`", so a
+state GitHub adds later arrives uncounted rather than pre-counted as a blocker.
+
+Where a request for changes cannot be attributed — the reviews were unreadable,
+the author is gone, or the window held only automated requests without covering
+every reviewer — the pull request is left **uncounted rather than credited to a
+person**, and the table says so in its description.
 
 #### Unresolved Copilot feedback
 
-`Copilot` counts the pull requests **waiting on a human to answer a review**. A
-review thread counts when it was opened by GitHub's automated code reviewer (the
-`copilot-pull-request-reviewer` bot) and nobody has resolved it. The reviewer is
-identified from each thread's **opening** comment, since later replies are
-usually the human answering the review.
+`Copilot` counts the pull requests **waiting on somebody to answer an automated
+review**. A review thread counts when it was opened by GitHub's automated code
+reviewer (the `copilot-pull-request-reviewer` bot) and nobody has resolved it.
+The reviewer is identified from each thread's **opening** comment, since later
+replies are usually the human answering the review.
 
 An **outdated** thread still counts: GitHub marks a thread outdated when the
 code beneath it changes, but that does not resolve it, so the feedback remains
 unanswered.
 
-Any non-zero count is coloured **red**, like `Conflict` and `Fail` — it marks a
-pull request that cannot progress until somebody responds. The count also feeds
-the row ranking, so a backlog awaiting review outranks an untouched one of the
-same size.
+Any non-zero count is coloured **amber**, one step below the red of `Conflict`,
+`Fail` and `Review`. Automated feedback is worth answering, but nobody is
+waiting on it, and there is far more of it — colouring the two alike would let
+the bot's threads mask the rarer case that actually holds a person up. The count
+still feeds the row ranking, so a backlog awaiting review outranks an untouched
+one of the same size.
 
 The scan reads the **newest 20 review threads per pull request**, which is the
 single most expensive part of the prefetch (see the cost figures above). The
@@ -758,8 +797,8 @@ clear — see below.
 #### Automation backlog thresholds
 
 On the terminal the counts are coloured so the table reads at a glance: `Human`
-and `Ext` **green**, `Conflict`, `Fail` and `Copilot` **red**, and `Auto`
-coloured against two configured thresholds.
+and `Ext` **green**, `Conflict`, `Fail` and `Review` **red**, `Copilot`
+**amber**, and `Auto` coloured against two configured thresholds.
 
 Dependabot stops raising pull requests once a repository reaches its
 `open-pull-requests-limit`, so the repository quietly stops receiving dependency
@@ -981,7 +1020,7 @@ reports as an App and any unrecognised login carrying the `[bot]` marker — so 
 future bot is classified as automation rather than mistaken for an outside
 contributor.
 
-`Fail`, `Conflict` and `Copilot` count only **established** states. GitHub
+`Fail`, `Conflict`, `Review` and `Copilot` count only **established** states. GitHub
 computes mergeability lazily and answers `UNKNOWN` until it settles, and reports
 no check rollup at all when no checks have run; neither absence is evidence that
 a pull request is ready, so neither is counted either way. `Copilot` follows the
@@ -995,10 +1034,15 @@ holding any such reading says so in its description: `Copilot` then
 **undercounts and should be read as a lower bound**, exactly as `Ext` does when
 membership cannot be read.
 
+`Review` carries a weaker version of the same hedge, and earns it far less
+often: `reviewDecision` is exact, so only a pull request GitHub *does* report
+changes requested on can leave the question open, and then only when the
+opinionated-review window fails to attribute it to anybody.
+
 Repositories with no open pull requests are counted in the footer rather than
 listed. Rows rank by total open pull requests, then by those failing,
-conflicting or awaiting Copilot feedback (counted once each, since the columns
-overlap), so two repositories with equal backlogs surface the more
+conflicting or awaiting review — automated or human (counted once each, since
+the columns overlap) — so two repositories with equal backlogs surface the more
 stuck one first.
 
 > **Accuracy note.** As with the issues table, `Total` is exact at any size,

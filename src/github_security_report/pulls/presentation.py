@@ -19,6 +19,7 @@ from github_security_report.pulls.columns import (
     EXTERNAL_COLUMN,
     FAILING_COLUMN,
     HUMAN_COLUMN,
+    REVIEW_COLUMN,
     TRUNCATED_MARKER,
 )
 from github_security_report.report import CELL_BAD, CELL_GOOD, CELL_WARN
@@ -68,6 +69,13 @@ def _cell_levels(
 
     The trailing Total is never emphasised: it is the sum of columns that
     disagree about what good looks like, so no one colour is true of it.
+
+    The blocked columns are not all one severity. Conflict, Fail and Review are
+    red: each needs a person to do something before the pull request can move.
+    Copilot is amber, a deliberate step down -- automated review feedback is
+    worth answering, but it is not a human waiting on a reply, and colouring the
+    two identically would let the louder, more numerous bot threads mask the
+    rarer case that actually holds somebody up.
     """
     levels: list[str | None] = []
     for column in BREAKDOWN_COLUMNS:
@@ -82,8 +90,10 @@ def _cell_levels(
             )
         elif column in (HUMAN_COLUMN, EXTERNAL_COLUMN):
             levels.append(CELL_GOOD if value else None)
-        elif column in (CONFLICT_COLUMN, FAILING_COLUMN, COPILOT_COLUMN):
+        elif column in (CONFLICT_COLUMN, FAILING_COLUMN, REVIEW_COLUMN):
             levels.append(CELL_BAD if value else None)
+        elif column == COPILOT_COLUMN:
+            levels.append(CELL_WARN if value else None)
         else:
             # Draft is neither good nor bad: a draft is not blocked, it is
             # simply not finished, so it carries no emphasis.
@@ -98,6 +108,7 @@ def _describe(
     *,
     filtered: bool,
     copilot_partial: bool = False,
+    review_partial: bool = False,
 ) -> str:
     """Extend the category description with the caveats the table earned.
 
@@ -145,5 +156,14 @@ def _describe(
             "Such a pull request is left uncounted rather than assumed "
             "answered, so Copilot undercounts and should be read as a lower "
             "bound."
+        )
+    if review_partial:
+        description += (
+            " Who asked for changes could not be settled for at least one pull "
+            "request, whose opinionated reviews were unreadable, carried no "
+            "author to attribute a request to, or held only automated requests "
+            "without covering every reviewer. Such a pull request is left "
+            "uncounted rather than credited to a person, so Review undercounts "
+            "and should be read as a lower bound."
         )
     return description

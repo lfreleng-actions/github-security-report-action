@@ -37,7 +37,7 @@ from github_security_report.models import RepoSignal as RepoSignal
 from github_security_report.models import RepoState as RepoState
 from github_security_report.models import SeverityCounts as SeverityCounts
 from github_security_report.models import SignalType as SignalType
-from github_security_report.models import rank_offenders as rank_offenders
+from github_security_report.ranking import rank_offenders as rank_offenders
 from github_security_report.report.aggregate import (
     SIGNAL_ORDER,
     OrgReport,

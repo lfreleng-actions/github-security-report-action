@@ -111,6 +111,17 @@ _PULL_REQUEST_WINDOW = 25
 # truncate, and the assignment breakdown is therefore exact for every collected
 # pull request.
 _ASSIGNEE_WINDOW = 10
+# Opinionated reviews inspected per pull request, to tell whose request for
+# changes is outstanding. ``reviewDecision`` says *that* changes are requested
+# but names nobody, and a GitHub App with pull-request write permission can
+# request them exactly as a person can -- so identity needs its own field.
+#
+# The connection returns at most one review per reviewer, so five covers a pull
+# request with five opinionated reviewers rather than five reviews. Measured
+# against a 25-repository batch this adds 6 points, which is the cheapest of the
+# three windows here by an order of magnitude, and ``totalCount`` rides along
+# free to keep it honest.
+_OPINIONATED_REVIEW_WINDOW = 5
 # Review threads inspected per pull request, to spot outstanding Copilot review
 # feedback. This is the most expensive window in the fragment, because it
 # multiplies the pull-request window and then again by the one comment needed to
@@ -179,9 +190,14 @@ fragment RepoData on Repository {{
       number
       isDraft
       mergeable
+      reviewDecision
       authorAssociation
       author {{ __typename login }}
       assignees(first: {_ASSIGNEE_WINDOW}) {{ nodes {{ login }} }}
+      latestOpinionatedReviews(first: {_OPINIONATED_REVIEW_WINDOW}) {{
+        totalCount
+        nodes {{ state author {{ __typename login }} }}
+      }}
       reviewThreads(last: {_REVIEW_THREAD_WINDOW}) {{
         totalCount
         nodes {{

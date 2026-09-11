@@ -30,7 +30,7 @@ whose rendered columns vary by surface and by data (Slack abbreviates the
 headers and drops Total, and the Informational column appears only when
 populated), so resolving against a renderer's column list would make the
 ordering depend on which surface asked. Omitting ``sort`` keeps
-:func:`models.rank_offenders`, whose default encodes domain logic a column sort
+:func:`ranking.rank_offenders`, whose default encodes domain logic a column sort
 cannot express -- notably Scorecard's cascade through the worst populated
 severity rung, which stops a lone Critical being buried by a weaker repository
 with a lower score.
@@ -417,7 +417,7 @@ def apply_configured_signal_order(
 ) -> None:
     """Reorder each signal's offenders in place using its configured ordering.
 
-    A signal with no ``sort`` keeps :func:`models.rank_offenders`, whose default
+    A signal with no ``sort`` keeps :func:`ranking.rank_offenders`, whose default
     is not expressible as a column list: Scorecard cascades through the worst
     severity rung any offender actually carries, which is a property of the
     table as a whole rather than of any one row.

@@ -24,6 +24,7 @@ from github_security_report.pulls.counting import (
     copilot_indeterminate,
     count_pull_requests,
     is_mine,
+    review_indeterminate,
 )
 from github_security_report.pulls.presentation import (
     _cell_levels,
@@ -57,6 +58,7 @@ def _build_table(
     clean_count = 0
     unknown_count = 0
     copilot_partial = False
+    review_partial = False
     footer_labels = assignment_rows(viewer) if footer else ()
     for repo in repos:
         data = graph.get(repo.name, RepoGraphData())
@@ -91,6 +93,7 @@ def _build_table(
         counts = count_pull_requests(selected, members)
         blocked = _blocked_count(selected)
         copilot_partial = copilot_partial or copilot_indeterminate(selected)
+        review_partial = review_partial or review_indeterminate(selected)
         cells = (
             *(str(counts[column]) for column in BREAKDOWN_COLUMNS),
             _total_cell(total, truncated),
@@ -129,6 +132,7 @@ def _build_table(
         members,
         filtered=select is not None,
         copilot_partial=copilot_partial,
+        review_partial=review_partial,
     )
     return TableSection(
         category=meta,
