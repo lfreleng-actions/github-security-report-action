@@ -18,11 +18,14 @@ from github_security_report import layout
 from github_security_report.categories import CategoryKey
 from github_security_report.models import Repo, RepoSignal, SignalType
 from github_security_report.report import (
+    DEFAULT_FOOTER,
     ORG_SETUP_DOC_URL,
     SKIP_MESSAGE,
     SUMMARY_EMOJI,
+    FooterOptions,
     LimitFor,
     OrgReport,
+    RepoList,
     Report,
     SignalSection,
     SummaryLine,
@@ -35,9 +38,6 @@ from github_security_report.report import (
     table_footer_rows,
     truncate,
 )
-
-# Summary kinds whose repository names are listed beneath the count line.
-_NAME_LIST_LABEL = {"disabled": "Disabled", "excluded": "Excluded"}
 
 
 def _link(repo: Repo) -> str:
@@ -157,17 +157,16 @@ def _summary_lines(
     """Markdown for the standardised footer: count lines, then any name lists.
 
     Each count line is its own paragraph so it stands alone regardless of the
-    consuming Markdown flavour. The disabled and excluded kinds additionally
-    list their repositories (as links when a :class:`Repo` is known), honouring
-    the same offender limit the tables use.
+    consuming Markdown flavour. Every line that names its repositories then
+    lists them (as links when a :class:`Repo` is known), honouring the same
+    offender limit the tables use.
     """
     out: list[str] = []
     for line in lines:
         out.append(f"{SUMMARY_EMOJI[line.kind]} {line.text}")
         out.append("")
     for line in lines:
-        label = _NAME_LIST_LABEL.get(line.kind)
-        if not (label and line.names):
+        if not line.listed:
             continue
         shown, hidden = truncate(line.names, top_n)
         linked = ", ".join(
@@ -176,7 +175,7 @@ def _summary_lines(
         )
         if hidden:
             linked += f" … (+{hidden} more)"
-        out.append(f"**{label}:** {linked}")
+        out.append(f"**{line.names_label}:** {linked}")
         out.append("")
     return out
 
@@ -228,18 +227,24 @@ def render_table_section(
     level: int = 3,
     excluded: Sequence[Repo] = (),
     top_n: int | None = None,
+    repo_list: RepoList = RepoList.AUTO,
 ) -> str:
-    """Render a generic posture/freshness table at the given heading level."""
+    """Render a generic posture/freshness table at the given heading level.
+
+    A boolean feature table draws no table: its repositories are named beneath
+    the matching count line instead, as on every other surface, because a
+    one-column table headed "Repository" could not say which side it lists.
+    """
     heading = "#" * level
     meta = section.category
     lines = [f"{heading} {meta.title}", ""]
-    summary = build_summary(section.summary_counts(excluded))
+    summary = build_summary(section.summary_counts(excluded, repo_list=repo_list))
     if not (section.rows or summary):
         lines.append("_No data available._")
         lines.append("")
         return "\n".join(lines).rstrip() + "\n"
     rows, hidden = truncate(section.rows, top_n)
-    if rows:
+    if rows and not section.lists_repos:
         aligns = ["---"] * len(section.columns)
         lines.append("| " + " | ".join(section.columns) + " |")
         lines.append("| " + " | ".join(aligns) + " |")
@@ -266,7 +271,7 @@ def render_table_section(
             lines.append(f"_… and {hidden} more_")
             lines.append("")
     lines.extend(_description_lines(section.resolved_description(), meta.url))
-    name_to_repo = {r.name: r for r in excluded}
+    name_to_repo = {**section.repos_by_name(), **{r.name: r for r in excluded}}
     lines.extend(
         _summary_lines(
             summary,
@@ -283,6 +288,7 @@ def render_org(
     top_n: int | None = None,
     show: Callable[[CategoryKey], bool] | None = None,
     limit: LimitFor | None = None,
+    footer: FooterOptions = DEFAULT_FOOTER,
 ) -> str:
     visible = show or (lambda _key: True)
     limit_for = limit_resolver(top_n, limit)
@@ -311,6 +317,7 @@ def render_org(
                 level=level,
                 excluded=excluded,
                 top_n=limit_for(section.category.key),
+                repo_list=footer.repo_list(section.category.key),
             )
         )
 

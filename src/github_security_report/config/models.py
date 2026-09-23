@@ -17,6 +17,7 @@ from types import MappingProxyType
 from github_security_report.categories import CategoryKey
 from github_security_report.config.order import OrderConfig
 from github_security_report.severity import Severity
+from github_security_report.summary import RepoList
 
 
 @dataclass(frozen=True)
@@ -91,7 +92,9 @@ class CategoryToggle:
     high-volume category can be uncapped (``0``) while the rest stay limited;
     ``None`` falls back to the per-output limit. ``sort`` overrides the row
     ordering of a generic table with a list of column names; ``None`` keeps the
-    ordering the table's builder chose.
+    ordering the table's builder chose. ``repo_list`` overrides which side of a
+    boolean feature category is named (see :class:`RepoList`); ``None`` falls
+    back to the report-wide ``repo_list``.
     """
 
     enabled: bool = True
@@ -99,6 +102,7 @@ class CategoryToggle:
     fail_severity: Severity | None = None
     top_n: int | None = None
     sort: tuple[str, ...] | None = None
+    repo_list: RepoList | None = None
 
     def shows_on(self, output: str) -> bool:
         """Whether this category renders on ``output`` (cli/slack/markdown/html)."""
@@ -188,6 +192,11 @@ class ReportConfig:
     # rather than a hard limit -- but a larger value buys nothing except a
     # longer first failure.
     graph_batch: int = 10
+    # Which side of each boolean feature category (Dependabot alerts/updates
+    # enabled, private vulnerability reporting, auto-merge) is named beneath its
+    # counts, on every surface. ``auto`` names the shorter list; a category's
+    # own ``repo_list`` overrides this.
+    repo_list: RepoList = RepoList.AUTO
     # Read-only mapping (frozen dataclasses do not deep-freeze a plain dict, so a
     # MappingProxyType prevents in-place mutation of a shared config).
     ruleset_workflows: Mapping[str, str] = field(
@@ -271,6 +280,13 @@ class ReportConfig:
         """
         toggle = self.categories.get(key.value)
         return toggle.sort if toggle is not None else None
+
+    def repo_list_for(self, key: CategoryKey) -> RepoList:
+        """Which side of category ``key`` to name: its own setting, else ours."""
+        toggle = self.categories.get(key.value)
+        if toggle is not None and toggle.repo_list is not None:
+            return toggle.repo_list
+        return self.repo_list
 
 
 @dataclass(frozen=True)

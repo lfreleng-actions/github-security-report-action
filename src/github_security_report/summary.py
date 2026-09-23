@@ -16,6 +16,21 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from enum import Enum
+
+
+class RepoList(str, Enum):
+    """Which repositories a boolean feature category names beneath its counts.
+
+    Both sides are always *counted*; this chooses which side is also *named*.
+    ``auto`` names whichever is the shorter list, so an organisation where a
+    feature is nearly universal lists its few holdouts, and one where it is
+    rare lists its few adopters.
+    """
+
+    AUTO = "auto"
+    ENABLED = "enabled"
+    DISABLED = "disabled"
 
 
 @dataclass(frozen=True)
@@ -23,8 +38,11 @@ class SummaryCount:
     """One labelled count feeding the standardised summary footer.
 
     ``kind`` selects the glyph, colour and ordering; ``names`` carries the
-    repository names listed beneath the count line (used for the disabled and
-    excluded kinds, where naming the repositories is actionable). ``render``
+    repository names listed beneath the count line, headed by ``label``.
+    A bucket names its repositories only when doing so is useful -- the
+    disabled and excluded kinds always, and one side of a boolean feature
+    category (see :class:`RepoList`) -- and every surface lists exactly the
+    buckets that carry names, so the choice is made once, here. ``render``
     false keeps the bucket out of the visible footer while still letting it
     count towards the "nothing needs attention" test that collapses the pass
     line to ``All <pass>``: a severity signal's offenders live in the table
@@ -53,6 +71,13 @@ class SummaryLine:
     kind: str
     text: str
     names: tuple[str, ...] = ()
+    # Heading for the ``names`` list: the count's own label, uncounted.
+    names_label: str = ""
+
+    @property
+    def listed(self) -> bool:
+        """Whether a surface should print this line's repository names."""
+        return bool(self.names)
 
 
 # Footer ordering: actionable items first (failures, then not-enabled, then
@@ -91,5 +116,12 @@ def build_summary(counts: Sequence[SummaryCount]) -> list[SummaryLine]:
             text = f"All {count.all_label or count.label}"
         else:
             text = f"{count.count} {count.label}"
-        lines.append(SummaryLine(kind=count.kind, text=text, names=count.names))
+        lines.append(
+            SummaryLine(
+                kind=count.kind,
+                text=text,
+                names=count.names,
+                names_label=count.label,
+            )
+        )
     return lines

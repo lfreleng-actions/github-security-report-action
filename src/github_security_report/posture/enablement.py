@@ -73,16 +73,21 @@ def _build_feature_table(
         for p in sorted(postures, key=lambda p: p.repo.name)
         if enabled_of(p) is False
     ]
+    passing = tuple(
+        p.repo
+        for p in sorted(postures, key=lambda p: p.repo.name)
+        if enabled_of(p) is True
+    )
     not_enabled = sum(1 for p in postures if enabled_of(p) is False)
-    enabled = sum(1 for p in postures if enabled_of(p) is True)
     indeterminate = sum(1 for p in postures if enabled_of(p) is None)
     return TableSection(
         category=category_meta(category_key),
         columns=columns,
         rows=rows,
-        pass_count=enabled,
+        pass_count=len(passing),
         fail_count=not_enabled,
         unknown_count=indeterminate,
+        pass_repos=passing,
     )
 
 

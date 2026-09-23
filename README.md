@@ -84,6 +84,10 @@ tables (org mode):
   stays unpatched. Read from the batched GraphQL prefetch, so it costs no extra
   request; hide it with the `auto_merge` render toggle.
 
+The four enablement categories count both sides, and by default name whichever
+list is shorter — see
+[Enabled or disabled repository lists](#enabled-or-disabled-repository-lists).
+
 ## Operating modes
 
 | Mode | Token | Scope | Output |
@@ -419,6 +423,48 @@ Slack-style ceiling, but they still apply their own row limits — only the
 `report.json` artifact is unconditionally complete. The digest links to the
 GitHub Pages report whenever `pages_url` is set and short enough to render as a
 link.
+
+### Enabled or disabled repository lists
+
+The four boolean feature categories — `dependabot_alerts_enabled`,
+`dependabot_updates_enabled`, `private_vulnerability_reporting` and `auto_merge`
+— count every repository as enabled or not, and name one side beneath the
+counts. `report.repo_list` chooses which side, on every surface:
+
+| Value | Names |
+| ----- | ----- |
+| `auto` (default) | Whichever list is shorter |
+| `enabled` | The repositories with the feature on |
+| `disabled` | The repositories with the feature off |
+
+`auto` keeps a footer short whichever way an organisation leans: a feature
+nearly every repository has lists its few holdouts, and one almost none have
+lists its few adopters. Two cases resolve towards the actionable side: a tie
+names the repositories without the feature, and so does a category where
+*nothing* is enabled, since naming an empty list would print nothing where a
+reader wants the repositories to fix. Both sides are always counted, whichever is
+named.
+
+A category can override the global value:
+
+```json
+{
+  "report": {
+    "repo_list": "auto",
+    "categories": {
+      "dependabot_alerts_enabled": { "repo_list": "disabled" }
+    }
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
+
+Here Dependabot alerts always name the repositories to fix, and the other three
+feature categories name whichever side is shorter. `repo_list` applies only to
+those four categories; setting it on any other is a configuration error, since a
+table with qualitative columns has no enabled list to name. These categories
+render as a name list rather than a one-column table on every surface. The
+`report.json` artifact is unaffected.
 
 ### Per-category row ordering
 

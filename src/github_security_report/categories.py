@@ -390,6 +390,21 @@ NESTED_CATEGORIES: frozenset[CategoryKey] = frozenset(
     }
 )
 
+# The boolean feature categories: every repository is either enabled or not, and
+# nothing else is known about it, so both sides are plain repository lists and
+# either can be the one worth naming. These render their names inline rather
+# than as a one-column table, and are the only categories the ``repo_list``
+# setting applies to -- the schema refuses it anywhere else, since a table with
+# qualitative columns has no "enabled" list to swap in.
+REPO_LIST_CATEGORIES: frozenset[CategoryKey] = frozenset(
+    {
+        CategoryKey.DEPENDABOT_ALERTS_ENABLED,
+        CategoryKey.DEPENDABOT_UPDATES_ENABLED,
+        CategoryKey.PRIVATE_VULNERABILITY_REPORTING,
+        CategoryKey.AUTO_MERGE,
+    }
+)
+
 
 def orderable_categories() -> tuple[CategoryMeta, ...]:
     """Categories an ordering list may name, in registry order.

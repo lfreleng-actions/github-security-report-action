@@ -349,7 +349,10 @@ class TestExtraTables:
         )
         out = markdown.render_org(org)
         assert "## Private Vulnerability Reporting\n" in out
-        assert "| [z](https://github.com/o/z) |" in out
+        # A boolean feature table names its repositories beneath the count
+        # line, linked, rather than drawing a one-column table.
+        assert "**Not enabled:** [z](https://github.com/o/z)" in out
+        assert "| [z](https://github.com/o/z) |" not in out
         assert "❌ 1 Not enabled" in out
         assert "✅ 1 Enabled" in out
 
@@ -443,3 +446,38 @@ class TestTableTotalsRow:
             fail_count=1,
         )
         assert "**Total**" not in markdown.render_table_section(section, level=2)
+
+
+def _auto_merge_org() -> report.OrgReport:
+    """Two repositories with auto-merge on, five with it off."""
+    org = _org([], count=7)
+    org.auto_merge = report.TableSection(
+        category=category_meta(CategoryKey.AUTO_MERGE),
+        columns=("Repository",),
+        rows=[report.TableRow(repo=_repo(n), cells=()) for n in "vwxyz"],
+        pass_count=2,
+        fail_count=5,
+        pass_repos=(_repo("a"), _repo("b")),
+    )
+    return org
+
+
+class TestRepoList:
+    def test_auto_links_the_shorter_side(self) -> None:
+        out = markdown.render_org(_auto_merge_org())
+        assert (
+            "**Enabled:** [a](https://github.com/o/a), [b](https://github.com/o/b)"
+            in out
+        )
+        assert "**Not enabled:**" not in out
+        assert "| Repository |" not in out  # no one-column table
+
+    def test_footer_options_force_the_disabled_side(self) -> None:
+        out = markdown.render_org(
+            _auto_merge_org(),
+            footer=report.FooterOptions(
+                repo_list=lambda _key: report.RepoList.DISABLED
+            ),
+        )
+        assert "**Not enabled:** [v](https://github.com/o/v)" in out
+        assert "**Enabled:**" not in out

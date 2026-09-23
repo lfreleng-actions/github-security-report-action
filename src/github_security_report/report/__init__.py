@@ -50,7 +50,10 @@ from github_security_report.report.aggregate import (
 from github_security_report.report.aggregate import dt as dt
 from github_security_report.report.display import (
     _T,
+    DEFAULT_FOOTER,
+    FooterOptions,
     LimitFor,
+    RepoListFor,
     _as_int,
     limit_resolver,
     offender_column_totals,
@@ -74,6 +77,7 @@ from github_security_report.report.tables import (
 )
 from github_security_report.summary import (
     SUMMARY_EMOJI,
+    RepoList,
     SummaryCount,
     SummaryLine,
     build_summary,
@@ -82,11 +86,15 @@ from github_security_report.summary import (
 # Re-exported so every renderer keeps importing the footer vocabulary from
 # ``report`` alongside the structures it decorates.
 __all__ = [
+    "DEFAULT_FOOTER",
     "ORG_SETUP_DOC_URL",
     "SKIP_MESSAGE",
     "SUMMARY_EMOJI",
+    "FooterOptions",
     "LimitFor",
     "OrgReport",
+    "RepoList",
+    "RepoListFor",
     "Report",
     "SignalSection",
     "SummaryCount",

@@ -348,3 +348,22 @@ class TestIndexHtml:
     def test_slugify_empty_falls_back(self) -> None:
         assert html.slugify("///") == "org"
         assert html.slugify("   ") == "org"
+
+
+def test_repo_list_names_the_shorter_side_without_a_table() -> None:
+    org = _org("o", [], count=7)
+    org.auto_merge = report.TableSection(
+        category=category_meta(CategoryKey.AUTO_MERGE),
+        columns=("Repository",),
+        rows=[report.TableRow(repo=_repo(n), cells=()) for n in "vwxyz"],
+        pass_count=2,
+        fail_count=5,
+        pass_repos=(_repo("a"), _repo("b")),
+    )
+    out = html.render_org_html(org)
+    assert "<strong>Enabled:</strong>" in out
+    assert '<a href="https://github.com/o/a">a</a>' in out
+    assert "<strong>Not enabled:</strong>" not in out
+    # The disabled repositories are counted, not tabulated.
+    assert "5 Not enabled" in out
+    assert 'href="https://github.com/o/v"' not in out

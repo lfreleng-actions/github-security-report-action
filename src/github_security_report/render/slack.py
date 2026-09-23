@@ -32,11 +32,14 @@ from github_security_report.render.slack_limits import (
     text_length,
 )
 from github_security_report.report import (
+    DEFAULT_FOOTER,
     ORG_SETUP_DOC_URL,
     SKIP_MESSAGE,
     SUMMARY_EMOJI,
+    FooterOptions,
     LimitFor,
     OrgReport,
+    RepoList,
     SignalSection,
     SummaryLine,
     TableSection,
@@ -48,9 +51,6 @@ from github_security_report.report import (
     table_footer_rows,
     truncate,
 )
-
-# Summary kinds whose repository names are listed beneath the count line.
-_NAME_LIST_LABEL = {"disabled": "Disabled", "excluded": "Excluded"}
 
 
 def _plain_columns(signal: SignalType, *, informational: bool = False) -> list[str]:
@@ -152,8 +152,8 @@ def _summary_text(lines: Sequence[SummaryLine], *, names: int) -> str:
     """The standardised footer as Slack mrkdwn: count lines then name lists.
 
     One line per count (failures first), each prefixed with its shared glyph,
-    followed by the disabled/excluded repository name lists. Brevity-first, so
-    no per-category description is emitted.
+    followed by the name list of every line that names its repositories.
+    Brevity-first, so no per-category description is emitted.
 
     ``names`` caps each name list at an absolute number of entries. It is
     resolved by :func:`_name_cap` before it gets here, so ``0`` means "list no
@@ -167,14 +167,13 @@ def _summary_text(lines: Sequence[SummaryLine], *, names: int) -> str:
     if names <= 0:
         return "\n".join(out)
     for line in lines:
-        label = _NAME_LIST_LABEL.get(line.kind)
-        if not (label and line.names):
+        if not line.listed:
             continue
         shown, hidden = truncate(line.names, names)
         names_text = ", ".join(shown)
         if hidden:
             names_text += f" … (+{hidden} more)"
-        out.append(f"{label}: {names_text}")
+        out.append(f"{line.names_label}: {names_text}")
     return "\n".join(out)
 
 
@@ -186,15 +185,7 @@ def _name_breaks(lines: Sequence[SummaryLine]) -> tuple[int, ...]:
     shorten the block even as the allowance rises. Handing these to
     :func:`fit_section_text` puts each transition on a search boundary.
     """
-    return tuple(
-        sorted(
-            {
-                len(line.names)
-                for line in lines
-                if line.kind in _NAME_LIST_LABEL and line.names
-            }
-        )
-    )
+    return tuple(sorted({len(line.names) for line in lines if line.listed}))
 
 
 def _name_cap(lines: Sequence[SummaryLine], top_n: int) -> int:
@@ -211,7 +202,7 @@ def _name_cap(lines: Sequence[SummaryLine], top_n: int) -> int:
     raw value through would only make the budget's search probe a wide range of
     indistinguishable outcomes before it could move on to shedding rows.
     """
-    longest = max((len(line.names) for line in lines), default=0)
+    longest = max((len(line.names) for line in lines if line.listed), default=0)
     if top_n > 0:
         return min(top_n, longest)
     return longest
@@ -232,7 +223,11 @@ def _fixed_table_generic(columns: tuple[str, ...], rows: list[list[str]]) -> str
 
 
 def _table_block(
-    section: TableSection, top_n: int, *, excluded: Sequence[Repo]
+    section: TableSection,
+    top_n: int,
+    *,
+    excluded: Sequence[Repo],
+    repo_list: RepoList = RepoList.AUTO,
 ) -> dict | None:
     """A Slack section block for a posture/freshness table (None when empty).
 
@@ -240,10 +235,12 @@ def _table_block(
     non-empty standardised summary footer -- so a clean category still surfaces
     its "All <pass>" line. A table with neither rows nor any countable state
     (genuinely no data) is skipped, keeping the brevity-first digest tight. The
-    explanatory description is omitted: Slack is a brevity-first surface.
+    explanatory description is omitted: Slack is a brevity-first surface. A
+    boolean feature table draws no fixed-width table: its repositories are
+    named in the footer, as on every other surface.
     """
-    lines = build_summary(section.summary_counts(excluded))
-    row_cap = len(truncate(section.rows, top_n)[0])
+    lines = build_summary(section.summary_counts(excluded, repo_list=repo_list))
+    row_cap = 0 if section.lists_repos else len(truncate(section.rows, top_n)[0])
     name_cap = _name_cap(lines, top_n)
     if not row_cap and not _summary_text(lines, names=name_cap):
         return None
@@ -321,6 +318,7 @@ def render_org_blocks(
     pages_url: str | None,
     show: Callable[[CategoryKey], bool] | None = None,
     limit: LimitFor | None = None,
+    footer: FooterOptions = DEFAULT_FOOTER,
 ) -> list[dict]:
     """Slack blocks for one organisation."""
     visible = show or (lambda _key: True)
@@ -345,8 +343,9 @@ def render_org_blocks(
         """Append one extra table's block, honouring its visibility and limit."""
         if section is None or not visible(section.category.key):
             return
+        key = section.category.key
         block = _table_block(
-            section, limit_for(section.category.key), excluded=excluded
+            section, limit_for(key), excluded=excluded, repo_list=footer.repo_list(key)
         )
         if block is not None:
             blocks.append(block)
@@ -394,14 +393,17 @@ def render_payload(
     pages_url: str | None = None,
     show: Callable[[OrgReport, CategoryKey], bool] | None = None,
     limit: LimitFor | None = None,
+    footer: Callable[[OrgReport], FooterOptions] | None = None,
 ) -> dict:
     """Build a ``chat.postMessage`` payload across one or more organisations.
 
     ``show`` is resolved per organisation rather than once for the channel:
     visibility is a property of each organisation's own data, so one
-    organisation opting a category into Slack must not publish another's. The
-    ``limit`` stays channel-wide, since a row cap is a property of the shared
-    digest rather than of the data in it.
+    organisation opting a category into Slack must not publish another's.
+    ``footer`` is resolved per organisation for the same reason: each
+    organisation's footers follow its own configuration. The ``limit`` stays
+    channel-wide, since a row cap is a property of the shared digest rather
+    than of the data in it.
     """
     blocks: list[dict] = []
     for org in orgs:
@@ -410,7 +412,12 @@ def render_payload(
         )
         blocks.extend(
             render_org_blocks(
-                org, top_n=top_n, pages_url=pages_url, show=org_show, limit=limit
+                org,
+                top_n=top_n,
+                pages_url=pages_url,
+                show=org_show,
+                limit=limit,
+                footer=DEFAULT_FOOTER if footer is None else footer(org),
             )
         )
     blocks = enforce_block_limit(blocks, pages_url)

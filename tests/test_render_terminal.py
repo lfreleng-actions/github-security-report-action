@@ -464,3 +464,37 @@ def test_render_remediation_escapes_bracketed_failure_notes() -> None:
     out = console.export_text()
     assert "[Errno 8]" in out
     assert "bad failed: 422 [Errno 8] nodename nor servname" in out
+
+
+def _auto_merge_org() -> report.OrgReport:
+    """Two repositories with auto-merge on, five with it off."""
+    org = _org([], count=7)
+    org.auto_merge = report.TableSection(
+        category=category_meta(CategoryKey.AUTO_MERGE),
+        columns=("Repository",),
+        rows=[report.TableRow(repo=_repo(n), cells=()) for n in "vwxyz"],
+        pass_count=2,
+        fail_count=5,
+        pass_repos=(_repo("a"), _repo("b")),
+    )
+    return org
+
+
+def test_auto_repo_list_names_the_shorter_side() -> None:
+    out = _render(_auto_merge_org())
+    assert "5 Not enabled" in out  # both sides are still counted
+    assert "2 Enabled" in out
+    assert "Enabled: a, b" in out
+    assert "Not enabled: v" not in out
+
+
+def test_repo_list_can_force_the_disabled_side() -> None:
+    console = Console(record=True, width=120, no_color=True)
+    terminal.render_org(
+        _auto_merge_org(),
+        console,
+        footer=report.FooterOptions(repo_list=lambda _key: report.RepoList.DISABLED),
+    )
+    out = console.export_text()
+    assert "Not enabled: v, w, x, y, z" in out
+    assert "Enabled: a" not in out

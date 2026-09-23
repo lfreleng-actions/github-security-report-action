@@ -346,3 +346,49 @@ def test_full_report_link_handles_missing_trailing_slash() -> None:
     )
     link = blocks[-1]["elements"][0]["text"]
     assert "<https://x.github.io/r/lfreleng-actions/report.html|" in link
+
+
+def _auto_merge_org(name: str = "lfreleng-actions") -> report.OrgReport:
+    """Two repositories with auto-merge on, five with it off."""
+    org = report.build_org_report(name, [], repo_count=7, generated_at=WHEN)
+    org.auto_merge = report.TableSection(
+        category=category_meta(CategoryKey.AUTO_MERGE),
+        columns=("Repository",),
+        rows=[report.TableRow(repo=_repo(n), cells=()) for n in "vwxyz"],
+        pass_count=2,
+        fail_count=5,
+        pass_repos=(_repo("a"), _repo("b")),
+    )
+    return org
+
+
+def _auto_merge_texts(payload: dict) -> list[str]:
+    """The text of every Auto-merge block, in payload order."""
+    return [
+        str(b["text"]["text"])
+        for b in payload["blocks"]
+        if b.get("text", {}).get("text", "").startswith("*Auto-merge*")
+    ]
+
+
+def test_repo_list_names_the_shorter_side_without_a_table() -> None:
+    [text] = _auto_merge_texts(slack.render_payload([_auto_merge_org()], channel="C"))
+    assert "Enabled: a, b" in text
+    assert "```" not in text  # no fixed-width one-column table
+    assert "Not enabled: v" not in text
+
+
+def test_repo_list_is_resolved_per_organisation() -> None:
+    # Two organisations share a channel, each with its own setting.
+    forced = _auto_merge_org("forced")
+    default = _auto_merge_org("default")
+
+    def footer(org: report.OrgReport) -> report.FooterOptions:
+        if org is forced:
+            return report.FooterOptions(repo_list=lambda _k: report.RepoList.DISABLED)
+        return report.FooterOptions()
+
+    payload = slack.render_payload([forced, default], channel="C", footer=footer)
+    texts = _auto_merge_texts(payload)
+    assert "Not enabled: v, w, x, y, z" in texts[0]
+    assert "Enabled: a, b" in texts[1]

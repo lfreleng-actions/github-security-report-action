@@ -15,6 +15,7 @@ from github_security_report import config
 from github_security_report.categories import CategoryKey
 from github_security_report.config import ConfigError
 from github_security_report.severity import Severity
+from github_security_report.summary import RepoList
 
 TUESDAY = dt.date(2026, 6, 16)
 WEDNESDAY = dt.date(2026, 6, 17)
@@ -756,3 +757,61 @@ class TestPerCategoryTopN:
                     "organizations": [{"name": "o"}],
                 }
             )
+
+
+class TestRepoList:
+    """Which side of a boolean feature category the footers name."""
+
+    def _cfg(self, report: dict, org_report: dict | None = None) -> config.Config:
+        org: dict = {"name": "o"}
+        if org_report is not None:
+            org["report"] = org_report
+        return config.build_config({"report": report, "organizations": [org]})
+
+    def test_defaults_to_auto_everywhere(self) -> None:
+        rc = config.build_config(MINIMAL).report
+        assert rc.repo_list is RepoList.AUTO
+        assert rc.repo_list_for(CategoryKey.AUTO_MERGE) is RepoList.AUTO
+
+    def test_global_setting_applies_to_every_category(self) -> None:
+        rc = self._cfg({"repo_list": "disabled"}).report
+        assert rc.repo_list_for(CategoryKey.AUTO_MERGE) is RepoList.DISABLED
+        assert (
+            rc.repo_list_for(CategoryKey.PRIVATE_VULNERABILITY_REPORTING)
+            is RepoList.DISABLED
+        )
+
+    def test_category_setting_overrides_the_global_one(self) -> None:
+        rc = self._cfg(
+            {
+                "repo_list": "disabled",
+                "categories": {"auto_merge": {"repo_list": "enabled"}},
+            }
+        ).report
+        assert rc.repo_list_for(CategoryKey.AUTO_MERGE) is RepoList.ENABLED
+        assert (
+            rc.repo_list_for(CategoryKey.DEPENDABOT_ALERTS_ENABLED) is RepoList.DISABLED
+        )
+
+    def test_org_override_inherits_the_category_setting(self) -> None:
+        # An org that only changes the global value keeps the category's own
+        # inherited override, as every other category key does.
+        cfg = self._cfg(
+            {"categories": {"auto_merge": {"repo_list": "enabled"}}},
+            org_report={"repo_list": "disabled"},
+        )
+        rc = cfg.organizations[0].report
+        assert rc.repo_list_for(CategoryKey.AUTO_MERGE) is RepoList.ENABLED
+        assert rc.repo_list_for(CategoryKey.DEPENDABOT_ALERTS_ENABLED) is (
+            RepoList.DISABLED
+        )
+
+    def test_rejected_on_a_category_it_cannot_apply_to(self) -> None:
+        # CodeQL has no enabled list to name; accepting the key would validate
+        # and then do nothing.
+        with pytest.raises(ConfigError, match="repo_list"):
+            self._cfg({"categories": {"codeql": {"repo_list": "enabled"}}})
+
+    def test_rejects_an_unknown_value(self) -> None:
+        with pytest.raises(ConfigError):
+            self._cfg({"repo_list": "both"})
