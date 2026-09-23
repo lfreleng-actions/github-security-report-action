@@ -74,6 +74,15 @@ tables (org mode):
   exposes no org-wide or GraphQL equivalent) and, like every other category,
   always collected; hide it with the `private_vulnerability_reporting` render
   toggle.
+- **Auto-merge** — repositories where the **Allow auto-merge** setting is off,
+  so a pull request cannot be queued to merge itself once its requirements are
+  met. The setting only offers the option: an auto-merging pull request still
+  waits for the required checks, reviews and branch protections the repository
+  already enforces, so enabling it relaxes nothing. What it removes is the
+  interval between a change becoming mergeable and somebody noticing — the
+  window a reviewed dependency update sits in while the vulnerability it fixes
+  stays unpatched. Read from the batched GraphQL prefetch, so it costs no extra
+  request; hide it with the `auto_merge` render toggle.
 
 ## Operating modes
 
@@ -343,7 +352,8 @@ out of the terminal and Slack while still publishing it to the Markdown and HTML
 Pages output. The valid category keys are: `codeql`, `scorecard`, `zizmor`,
 `aislop`, `dependabot_alerts`, `secret_scanning`, `dependabot_alerts_enabled`,
 `dependabot_updates_enabled`, `dependabot_cooldown`, `releases`,
-`mutable_releases`, `private_vulnerability_reporting`, `github_issues`. Like the
+`mutable_releases`, `private_vulnerability_reporting`, `auto_merge`,
+`github_issues`. Like the
 other `report`
 settings, `categories` can be set
 globally and overridden per organisation (overrides merge key-by-key, so
@@ -1369,6 +1379,7 @@ enablement endpoint:
 | `dependabot_alerts_enabled` | Dependabot vulnerability alerts |
 | `dependabot_updates_enabled` | Dependabot security updates (plus alerts) |
 | `private_vulnerability_reporting` | Private vulnerability reporting |
+| `auto_merge` | The repository's "Allow auto-merge" setting |
 
 Qualitative findings (Scorecard, zizmor, open Dependabot alerts, cooldown,
 release freshness/mutability) are reported but not auto-remediated. Remediation

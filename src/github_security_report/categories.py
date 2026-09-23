@@ -44,6 +44,7 @@ class CategoryKey(str, Enum):
     RELEASES = "releases"
     MUTABLE_RELEASES = "mutable_releases"
     PRIVATE_VULNERABILITY_REPORTING = "private_vulnerability_reporting"
+    AUTO_MERGE = "auto_merge"
     GITHUB_ISSUES = "github_issues"
     PULL_REQUESTS = "pull_requests"
     PULL_REQUESTS_ASSIGNED = "pull_requests_assigned"
@@ -271,6 +272,28 @@ _CATEGORIES: dict[CategoryKey, CategoryMeta] = {
             "Repositories with private vulnerability reporting disabled. Enable "
             "it so security researchers can privately report vulnerabilities "
             "instead of disclosing them publicly."
+        ),
+    ),
+    CategoryKey.AUTO_MERGE: CategoryMeta(
+        key=CategoryKey.AUTO_MERGE,
+        title="Auto-merge",
+        pass_label="Enabled",
+        fail_label="Not enabled",
+        url=(
+            "https://docs.github.com/en/pull-requests/collaborating-with-"
+            "pull-requests/incorporating-changes-from-a-pull-request/"
+            "automatically-merging-a-pull-request"
+        ),
+        description=(
+            "Repositories with the 'Allow auto-merge' setting switched off, so "
+            "a pull request cannot be queued to merge itself once its "
+            "requirements are met. The setting only offers the option: an "
+            "auto-merging pull request still waits for the required checks, "
+            "reviews and branch protections the repository already enforces, "
+            "so enabling it relaxes nothing. What it removes is the interval "
+            "between a change becoming mergeable and somebody noticing -- the "
+            "window a reviewed dependency update sits in while the "
+            "vulnerability it fixes stays unpatched."
         ),
     ),
     CategoryKey.GITHUB_ISSUES: CategoryMeta(

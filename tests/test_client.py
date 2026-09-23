@@ -1136,12 +1136,36 @@ async def test_enable_secret_scanning_failure_carries_note(
     assert note.startswith("403")
 
 
+@respx.mock
+async def test_enable_auto_merge_ok(client: GitHubClient) -> None:
+    route = respx.patch(f"{API}/repos/o/r").mock(
+        return_value=httpx.Response(200, json={"name": "r"})
+    )
+    ok, note = await client.enable_auto_merge("o", "r")
+    assert route.called
+    assert json.loads(route.calls.last.request.content) == {"allow_auto_merge": True}
+    assert ok is True
+    assert note == ""
+
+
+@respx.mock
+async def test_enable_auto_merge_failure_carries_note(client: GitHubClient) -> None:
+    # An archived repository rejects the patch; reported, not retried.
+    respx.patch(f"{API}/repos/o/r").mock(
+        return_value=httpx.Response(403, json={"message": "Repository was archived"})
+    )
+    ok, note = await client.enable_auto_merge("o", "r")
+    assert ok is False
+    assert note.startswith("403")
+
+
 # --------------------------------------------------------------------------- #
 # Batched per-repo GraphQL prefetch
 # --------------------------------------------------------------------------- #
 def _graph_repo_node(
     *,
     enabled: bool | None = True,
+    auto_merge: bool | None = True,
     config_text: str | None = None,
     tag_target: dict | None = None,
     # A GraphQL list entry can be null (a sub-object that errored), so the
@@ -1155,6 +1179,7 @@ def _graph_repo_node(
     """Build one repository alias node as the batched query returns it."""
     return {
         "hasVulnerabilityAlertsEnabled": enabled,
+        "autoMergeAllowed": auto_merge,
         "dependabotConfig": (
             {"text": config_text} if config_text is not None else None
         ),
@@ -1282,6 +1307,29 @@ async def test_repo_graph_batch_latest_outside_window(client: GitHubClient) -> N
     # The newest published entry overall is still surfaced as last-published.
     assert a.last_published_release is not None
     assert a.last_published_release.tag == "v2.0.0-rc25"
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("allowed", "expected"),
+    [(True, True), (False, False), (None, None)],
+)
+async def test_repo_graph_batch_reads_auto_merge(
+    client: GitHubClient, allowed: bool | None, expected: bool | None
+) -> None:
+    # The auto-merge setting rides the batched prefetch rather than a probe of
+    # its own, so the query must actually ask for the field: a fragment that
+    # dropped it would leave the parser reading an absent key and reporting
+    # every repository as indeterminate, which renders as an empty table rather
+    # than an error.
+    node = _graph_repo_node(auto_merge=allowed)
+    route = respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": {"r0": node}})
+    )
+    out = await client.repo_graph_batch("o", ["a"])
+    sent = json.loads(route.calls.last.request.content)
+    assert "autoMergeAllowed" in sent["query"]
+    assert out["a"].auto_merge_allowed is expected
 
 
 @respx.mock

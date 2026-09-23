@@ -203,6 +203,34 @@ def test_pvr_table_all_enabled_summary() -> None:
     assert [(line.kind, line.text) for line in lines] == [("pass", "All Enabled")]
 
 
+def test_auto_merge_table_lists_disabled_sorted() -> None:
+    postures = [
+        posture.RepoPosture(repo=_repo("zeta"), auto_merge=False),
+        posture.RepoPosture(repo=_repo("alpha"), auto_merge=False),
+        posture.RepoPosture(repo=_repo("on"), auto_merge=True),
+        posture.RepoPosture(repo=_repo("dunno"), auto_merge=None),
+    ]
+    table = posture.build_auto_merge_table(postures)
+    assert table.title == "Auto-merge"
+    assert table.columns == ("Repository",)
+    assert [r.repo.name for r in table.rows] == ["alpha", "zeta"]
+    # The indeterminate (None) repo counts towards neither pass nor fail.
+    assert (table.fail_count, table.pass_count, table.unknown_count) == (2, 1, 1)
+
+
+def test_auto_merge_table_all_enabled_summary() -> None:
+    table = posture.build_auto_merge_table(
+        [
+            posture.RepoPosture(repo=_repo("a"), auto_merge=True),
+            posture.RepoPosture(repo=_repo("b"), auto_merge=True),
+        ]
+    )
+    assert table.rows == []
+    assert (table.fail_count, table.pass_count, table.unknown_count) == (0, 2, 0)
+    lines = report.build_summary(table.summary_counts())
+    assert [(line.kind, line.text) for line in lines] == [("pass", "All Enabled")]
+
+
 def test_cooldown_table_lists_repos_missing_cooldown() -> None:
     postures = [
         posture.RepoPosture(repo=_repo("a"), cooldown_missing=("pip", "npm")),
