@@ -84,8 +84,9 @@ tables (org mode):
   stays unpatched. Read from the batched GraphQL prefetch, so it costs no extra
   request; hide it with the `auto_merge` render toggle.
 
-The four enablement categories count both sides, and by default name whichever
-list is shorter — see
+The four enablement categories count the repositories with and without the
+feature (plus any whose state could not be read), and by default name whichever
+known list is shorter — see
 [Enabled or disabled repository lists](#enabled-or-disabled-repository-lists).
 
 ## Operating modes
@@ -445,8 +446,12 @@ link.
 
 The four boolean feature categories — `dependabot_alerts_enabled`,
 `dependabot_updates_enabled`, `private_vulnerability_reporting` and `auto_merge`
-— count every repository as enabled or not, and name one side beneath the
-counts. `report.repo_list` chooses which side, on every surface:
+— sort each repository into one of three buckets: enabled, not enabled, or
+**unknown** when the feature's state could not be read. The unknown bucket is
+counted but never named, and never treated as either side, so the enabled and
+not-enabled counts need not sum to the repositories analysed. Beneath the counts,
+one of the two known sides is named; `report.repo_list` chooses which, on every
+surface:
 
 | Value | Names |
 | ----- | ----- |
