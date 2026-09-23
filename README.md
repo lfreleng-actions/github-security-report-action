@@ -324,6 +324,23 @@ The per-org `exclude` list removes repositories from analysis entirely; they are
 reported as **excluded** (distinct from "not enabled"), so an intentional
 exclusion is visible rather than silently dropped.
 
+Every category reports those exclusions beneath its counts, so an
+organisation-wide list repeats under each one. `report.excluded_display`
+governs that line on every surface:
+
+| Value | Excluded line |
+| ----- | ------------- |
+| `always-show` (default) | Shown under every category |
+| `always-hide` | Never shown |
+| `conditional-hide` | Shown only for a category whose exclusions differ from the organisation's `exclude` list, and then in full |
+
+Hiding the line changes nothing else: every count is unaffected, and the report
+header's repository count already leaves excluded repositories out. So a clean
+category reads `All Clean` once no Excluded line qualifies it. Today every
+category reports the organisation's own list, so `conditional-hide` currently
+hides the same lines `always-hide` does. It differs once a category excludes
+repositories of its own. The `report.json` artifact always lists the exclusions.
+
 Archived and test repositories are excluded from analysis by default. Opt them
 back in with `report.include_archived` / `report.include_test` in the config, or
 for a single run with `--include-archived` / `--include-test`.

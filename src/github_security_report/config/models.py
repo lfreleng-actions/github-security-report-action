@@ -17,7 +17,7 @@ from types import MappingProxyType
 from github_security_report.categories import CategoryKey
 from github_security_report.config.order import OrderConfig
 from github_security_report.severity import Severity
-from github_security_report.summary import RepoList
+from github_security_report.summary import ExcludedDisplay, RepoList
 
 
 @dataclass(frozen=True)
@@ -197,6 +197,10 @@ class ReportConfig:
     # counts, on every surface. ``auto`` names the shorter list; a category's
     # own ``repo_list`` overrides this.
     repo_list: RepoList = RepoList.AUTO
+    # When each category's footer shows the organisation's excluded
+    # repositories: always (the default), never, or only for a category whose
+    # exclusions differ from the organisation's own list.
+    excluded_display: ExcludedDisplay = ExcludedDisplay.ALWAYS_SHOW
     # Read-only mapping (frozen dataclasses do not deep-freeze a plain dict, so a
     # MappingProxyType prevents in-place mutation of a shared config).
     ruleset_workflows: Mapping[str, str] = field(

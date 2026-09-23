@@ -481,3 +481,20 @@ class TestRepoList:
         )
         assert "**Not enabled:** [v](https://github.com/o/v)" in out
         assert "**Enabled:**" not in out
+
+
+def test_excluded_display_governs_the_markdown_footer() -> None:
+    org = report.build_org_report(
+        "o", [], repo_count=7, generated_at=WHEN, excluded_repos=[_repo("fixture")]
+    )
+    org.auto_merge = _auto_merge_org().auto_merge
+    org.category_excluded[CategoryKey.AUTO_MERGE] = [_repo("fixture"), _repo("extra")]
+
+    def render(mode: report.ExcludedDisplay) -> str:
+        return markdown.render_org(org, footer=report.FooterOptions(excluded=mode))
+
+    assert render(report.ExcludedDisplay.ALWAYS_SHOW).count("**Excluded:**") > 1
+    assert "Excluded" not in render(report.ExcludedDisplay.ALWAYS_HIDE)
+    conditional = render(report.ExcludedDisplay.CONDITIONAL_HIDE)
+    assert conditional.count("**Excluded:**") == 1
+    assert "[extra](https://github.com/o/extra)" in conditional

@@ -305,19 +305,19 @@ def render_org(
             "read, so some repositories may be missing from this report."
         )
         parts.append("")
-    excluded = org.excluded_repos
 
     def table(section: TableSection | None, *, level: int = 2) -> None:
         """Append one extra table, honouring its own visibility and limit."""
         if section is None or not visible(section.category.key):
             return
+        key = section.category.key
         parts.append(
             render_table_section(
                 section,
                 level=level,
-                excluded=excluded,
-                top_n=limit_for(section.category.key),
-                repo_list=footer.repo_list(section.category.key),
+                excluded=footer.excluded_shown(org, key),
+                top_n=limit_for(key),
+                repo_list=footer.repo_list(key),
             )
         )
 
@@ -329,7 +329,11 @@ def render_org(
         parent_visible = visible(key)
         if parent_visible:
             parts.append(
-                render_section(item.section, excluded=excluded, top_n=limit_for(key))
+                render_section(
+                    item.section,
+                    excluded=footer.excluded_shown(org, key),
+                    top_n=limit_for(key),
+                )
             )
         # The Dependabot configuration-posture sub-tables normally nest beneath
         # the Dependabot signal heading as level-3 sub-sections. When the parent

@@ -40,7 +40,7 @@ from github_security_report.config.schema import (
 from github_security_report.issues import RESERVED_COLUMNS
 from github_security_report.models import SignalType
 from github_security_report.severity import Severity, from_name
-from github_security_report.summary import RepoList
+from github_security_report.summary import ExcludedDisplay, RepoList
 
 log = logging.getLogger(__name__)
 
@@ -190,6 +190,10 @@ def _report_from(data: dict, base: ReportConfig) -> ReportConfig:
     if "repo_list" in data:
         # The schema constrains the value to a RepoList member.
         result = replace(result, repo_list=RepoList(data["repo_list"]))
+    if "excluded_display" in data:
+        result = replace(
+            result, excluded_display=ExcludedDisplay(data["excluded_display"])
+        )
     if (
         result.dependabot_error_threshold
         and result.dependabot_error_threshold <= result.dependabot_warn_threshold

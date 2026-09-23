@@ -498,3 +498,46 @@ def test_repo_list_can_force_the_disabled_side() -> None:
     out = console.export_text()
     assert "Not enabled: v, w, x, y, z" in out
     assert "Enabled: a" not in out
+
+
+def _excluded_org() -> report.OrgReport:
+    """Two org-wide exclusions, and an Auto-merge table that excludes a third."""
+    org = report.build_org_report(
+        "lfreleng-actions",
+        [],
+        repo_count=7,
+        generated_at=WHEN,
+        excluded_repos=[_repo("fixture"), _repo("sandbox")],
+    )
+    org.auto_merge = _auto_merge_org().auto_merge
+    org.category_excluded[CategoryKey.AUTO_MERGE] = [
+        _repo("fixture"),
+        _repo("sandbox"),
+        _repo("internal-only"),
+    ]
+    return org
+
+
+def _render_excluded(mode: report.ExcludedDisplay) -> str:
+    console = Console(record=True, width=120, no_color=True)
+    terminal.render_org(
+        _excluded_org(), console, footer=report.FooterOptions(excluded=mode)
+    )
+    return console.export_text()
+
+
+def test_always_show_repeats_the_excluded_line_under_every_category() -> None:
+    out = _render_excluded(report.ExcludedDisplay.ALWAYS_SHOW)
+    assert out.count("Excluded: fixture, sandbox") > 1
+
+
+def test_always_hide_drops_every_excluded_line() -> None:
+    out = _render_excluded(report.ExcludedDisplay.ALWAYS_HIDE)
+    assert "Excluded" not in out
+
+
+def test_conditional_hide_keeps_only_the_deviating_category() -> None:
+    out = _render_excluded(report.ExcludedDisplay.CONDITIONAL_HIDE)
+    assert out.count("Excluded:") == 1
+    assert "Excluded: fixture, sandbox, internal-only" in out
+    assert "3 Excluded" in out

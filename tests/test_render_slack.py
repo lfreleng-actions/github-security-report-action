@@ -392,3 +392,25 @@ def test_repo_list_is_resolved_per_organisation() -> None:
     texts = _auto_merge_texts(payload)
     assert "Not enabled: v, w, x, y, z" in texts[0]
     assert "Enabled: a, b" in texts[1]
+
+
+def test_excluded_display_is_resolved_per_organisation() -> None:
+    # Each organisation in a shared channel follows its own setting.
+    hiding = report.build_org_report(
+        "hiding", [], repo_count=1, generated_at=WHEN, excluded_repos=[_repo("x")]
+    )
+    showing = report.build_org_report(
+        "showing", [], repo_count=1, generated_at=WHEN, excluded_repos=[_repo("y")]
+    )
+
+    def footer(org: report.OrgReport) -> report.FooterOptions:
+        if org is hiding:
+            return report.FooterOptions(excluded=report.ExcludedDisplay.ALWAYS_HIDE)
+        return report.FooterOptions()
+
+    payload = slack.render_payload([hiding, showing], channel="C", footer=footer)
+    text = "\n".join(
+        b["text"]["text"] for b in payload["blocks"] if b.get("type") == "section"
+    )
+    assert "Excluded: x" not in text
+    assert "Excluded: y" in text

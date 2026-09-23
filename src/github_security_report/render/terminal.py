@@ -283,7 +283,7 @@ def render_org(
         render_table_section(
             section,
             console,
-            excluded=org.excluded_repos,
+            excluded=footer.excluded_shown(org, section.category.key),
             top_n=limit_for(section.category.key),
             repo_list=footer.repo_list(section.category.key),
         )
@@ -304,7 +304,7 @@ def render_org(
             render_section(
                 item.section,
                 console,
-                excluded=org.excluded_repos,
+                excluded=footer.excluded_shown(org, key),
                 top_n=limit_for(key),
             )
         for dependabot_table in item.children:

@@ -367,3 +367,16 @@ def test_repo_list_names_the_shorter_side_without_a_table() -> None:
     # The disabled repositories are counted, not tabulated.
     assert "5 Not enabled" in out
     assert 'href="https://github.com/o/v"' not in out
+
+
+def test_excluded_display_governs_the_html_footer() -> None:
+    org = report.build_org_report(
+        "o", [], repo_count=1, generated_at=WHEN, excluded_repos=[_repo("fixture")]
+    )
+    shown = html.render_org_html(org)
+    hidden = html.render_org_html(
+        org,
+        footer=report.FooterOptions(excluded=report.ExcludedDisplay.ALWAYS_HIDE),
+    )
+    assert "<strong>Excluded:</strong>" in shown
+    assert "Excluded" not in hidden

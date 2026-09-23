@@ -123,7 +123,10 @@ def footer(report_cfg: ReportConfig) -> FooterOptions:
     Not per output: what a footer names is a statement about the data, so the
     terminal, Slack and Pages surfaces all name the same repositories.
     """
-    return FooterOptions(repo_list=report_cfg.repo_list_for)
+    return FooterOptions(
+        repo_list=report_cfg.repo_list_for,
+        excluded=report_cfg.excluded_display,
+    )
 
 
 def _config_for(

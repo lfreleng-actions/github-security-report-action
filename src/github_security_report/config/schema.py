@@ -14,7 +14,7 @@ from github_security_report.categories import (
     all_categories,
     orderable_categories,
 )
-from github_security_report.summary import RepoList
+from github_security_report.summary import ExcludedDisplay, RepoList
 
 # The render surfaces a category can be toggled on or off for, independently of
 # whether the data is collected (collection is always exhaustive). ``cli`` is
@@ -42,6 +42,9 @@ ORDER_STYLES = ("auto", "automatic", "dual", "single", "fixed")
 
 # Which side of a boolean feature category is named beneath its counts.
 REPO_LIST_VALUES = [value.value for value in RepoList]
+
+# When a category's footer shows the organisation's excluded repositories.
+EXCLUDED_DISPLAY_VALUES = [value.value for value in ExcludedDisplay]
 
 # Categories an ordering list may name. The nested Dependabot posture tables are
 # excluded: they render beneath their parent signal and have no position of
@@ -158,6 +161,10 @@ CONFIG_SCHEMA: dict = {
                 # its counts: the shorter list (auto), or always the enabled or
                 # the disabled repositories. Overridable per category.
                 "repo_list": {"enum": REPO_LIST_VALUES},
+                # When each category's footer lists the excluded repositories:
+                # always, never, or only where a category's exclusions differ
+                # from the organisation's own list.
+                "excluded_display": {"enum": EXCLUDED_DISPLAY_VALUES},
                 "ruleset_workflows": {
                     "type": "object",
                     "additionalProperties": {"type": "string"},

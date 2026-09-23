@@ -337,7 +337,6 @@ def render_org_blocks(
                 "be fully read; some repositories may be missing."
             )
         )
-    excluded = org.excluded_repos
 
     def add_table(section: TableSection | None) -> None:
         """Append one extra table's block, honouring its visibility and limit."""
@@ -345,7 +344,10 @@ def render_org_blocks(
             return
         key = section.category.key
         block = _table_block(
-            section, limit_for(key), excluded=excluded, repo_list=footer.repo_list(key)
+            section,
+            limit_for(key),
+            excluded=footer.excluded_shown(org, key),
+            repo_list=footer.repo_list(key),
         )
         if block is not None:
             blocks.append(block)
@@ -369,7 +371,13 @@ def render_org_blocks(
                     {"type": "section", "text": {"type": "mrkdwn", "text": text}}
                 )
             else:
-                blocks.append(_signal_block(section, limit_for(key), excluded=excluded))
+                blocks.append(
+                    _signal_block(
+                        section,
+                        limit_for(key),
+                        excluded=footer.excluded_shown(org, key),
+                    )
+                )
         # Dependabot posture sub-tables follow the Dependabot signal block.
         for table_section in item.children:
             add_table(table_section)

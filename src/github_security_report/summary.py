@@ -33,6 +33,21 @@ class RepoList(str, Enum):
     DISABLED = "disabled"
 
 
+class ExcludedDisplay(str, Enum):
+    """When a category's footer shows its excluded repositories.
+
+    Every category reports the repositories removed from analysis, so an
+    organisation-wide ``exclude`` list repeats beneath each one. The modes
+    trade that repetition against visibility: ``conditional-hide`` drops the
+    line wherever it only restates the organisation's own list, keeping it for
+    a category whose exclusions differ from it.
+    """
+
+    ALWAYS_SHOW = "always-show"
+    ALWAYS_HIDE = "always-hide"
+    CONDITIONAL_HIDE = "conditional-hide"
+
+
 @dataclass(frozen=True)
 class SummaryCount:
     """One labelled count feeding the standardised summary footer.

@@ -48,8 +48,16 @@ class OrgReport:
     partial: bool = False
     # Repositories removed from analysis by the per-org ``exclude`` list. These
     # are reported as "excluded" (counted, never analysed) so an explicit
-    # exclusion is visible and distinct from a "not enabled" nag.
+    # exclusion is visible and distinct from a "not enabled" nag. This is the
+    # organisation's baseline: every category reports it unless
+    # ``category_excluded`` gives that category a list of its own.
     excluded_repos: list[Repo] = field(default_factory=list)
+    # Exclusions for a category that differ from the organisation baseline.
+    # Absent keys inherit ``excluded_repos``, which today is every category: no
+    # builder yet excludes repositories per category. It is the seam a
+    # category-specific exclusion attaches to, and what the conditional-hide
+    # footer setting compares against the baseline.
+    category_excluded: dict[CategoryKey, list[Repo]] = field(default_factory=dict)
     # Extra Dependabot posture tables rendered as sub-sections beneath the
     # Dependabot signal heading (alerts not enabled, security updates not
     # enabled, cooldown settings). Empty in repo mode / when not collected.
@@ -107,6 +115,10 @@ class OrgReport:
             self.pull_requests,
             self.assigned_pull_requests,
         )
+
+    def excluded_for(self, key: CategoryKey) -> list[Repo]:
+        """The repositories category ``key`` reports as excluded."""
+        return self.category_excluded.get(key, self.excluded_repos)
 
 
 @dataclass

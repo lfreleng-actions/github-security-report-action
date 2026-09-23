@@ -77,6 +77,7 @@ from github_security_report.report.tables import (
 )
 from github_security_report.summary import (
     SUMMARY_EMOJI,
+    ExcludedDisplay,
     RepoList,
     SummaryCount,
     SummaryLine,
@@ -90,6 +91,7 @@ __all__ = [
     "ORG_SETUP_DOC_URL",
     "SKIP_MESSAGE",
     "SUMMARY_EMOJI",
+    "ExcludedDisplay",
     "FooterOptions",
     "LimitFor",
     "OrgReport",

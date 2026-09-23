@@ -264,7 +264,6 @@ def render_org_html(
     visible = show or (lambda _key: True)
     limit_for = limit_resolver(top_n, limit)
     template = _env.get_template("report.html.j2")
-    excluded = org.excluded_repos
 
     def table(section: TableSection | None) -> dict | None:
         """Context for one extra table, honouring its visibility and limit."""
@@ -273,7 +272,7 @@ def render_org_html(
         key = section.category.key
         return _table_context(
             section,
-            excluded=excluded,
+            excluded=footer.excluded_shown(org, key),
             top_n=limit_for(key),
             repo_list=footer.repo_list(key),
         )
@@ -289,7 +288,9 @@ def render_org_html(
         children = [ctx for t in item.children if (ctx := table(t)) is not None]
         if visible(key):
             ctx = _section_context(
-                item.section, excluded=excluded, top_n=limit_for(key)
+                item.section,
+                excluded=footer.excluded_shown(org, key),
+                top_n=limit_for(key),
             )
             # When the parent signal is shown, its posture sub-tables render
             # beneath it inside the same card.
