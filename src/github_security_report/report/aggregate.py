@@ -48,8 +48,16 @@ class OrgReport:
     partial: bool = False
     # Repositories removed from analysis by the per-org ``exclude`` list. These
     # are reported as "excluded" (counted, never analysed) so an explicit
-    # exclusion is visible and distinct from a "not enabled" nag.
+    # exclusion is visible and distinct from a "not enabled" nag. This is the
+    # organisation's baseline: every category reports it unless
+    # ``category_excluded`` gives that category a list of its own.
     excluded_repos: list[Repo] = field(default_factory=list)
+    # Exclusions for a category that differ from the organisation baseline.
+    # Absent keys inherit ``excluded_repos``, which today is every category: no
+    # builder yet excludes repositories per category. It is the seam a
+    # category-specific exclusion attaches to, and what the conditional-hide
+    # footer setting compares against the baseline.
+    category_excluded: dict[CategoryKey, list[Repo]] = field(default_factory=dict)
     # Extra Dependabot posture tables rendered as sub-sections beneath the
     # Dependabot signal heading (alerts not enabled, security updates not
     # enabled, cooldown settings). Empty in repo mode / when not collected.
@@ -64,6 +72,9 @@ class OrgReport:
     # The Private Vulnerability Reporting table: repositories where the feature
     # is not enabled. None in repo mode / when not collected.
     private_vulnerability_reporting: TableSection | None = None
+    # The Auto-merge table: repositories where "Allow auto-merge" is switched
+    # off. None in repo mode / when not collected.
+    auto_merge: TableSection | None = None
     # The GitHub Issues table (open issues per repository, split by label).
     # None in repo mode / when not collected.
     issues: TableSection | None = None
@@ -78,6 +89,36 @@ class OrgReport:
     # rather than the ordering configuration, so the report model stays free of
     # a dependency on the config tree. Empty means assembly order.
     section_order: tuple[CategoryKey, ...] = ()
+
+    @property
+    def standalone_tables(self) -> tuple[TableSection | None, ...]:
+        """The tables that are sections in their own right, in assembly order.
+
+        Everything that walks the report's generic tables -- row ordering,
+        layout and remediation -- reads this one sequence, so attaching a table
+        cannot leave one of them enumerating a stale set. ``None`` entries are
+        kept rather than filtered: a table that was never collected (repo mode
+        builds none of them) is absent from the report, which is a different
+        claim from a collected table with no rows, and each caller decides
+        which of the two it cares about.
+
+        The Dependabot posture tables are excluded. They render beneath their
+        parent signal rather than as sections of their own, so callers that
+        want them reach for :attr:`dependabot_tables` alongside this.
+        """
+        return (
+            self.releases,
+            self.mutable_releases,
+            self.private_vulnerability_reporting,
+            self.auto_merge,
+            self.issues,
+            self.pull_requests,
+            self.assigned_pull_requests,
+        )
+
+    def excluded_for(self, key: CategoryKey) -> list[Repo]:
+        """The repositories category ``key`` reports as excluded."""
+        return self.category_excluded.get(key, self.excluded_repos)
 
 
 @dataclass

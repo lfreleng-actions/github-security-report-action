@@ -255,6 +255,8 @@ class RepoGraphData:
     # without this flag a failed read silently renders as false negatives.
     unreadable: bool = False
     dependabot_alerts_enabled: bool | None = None
+    # Repository "Allow auto-merge" setting (None = indeterminate).
+    auto_merge_allowed: bool | None = None
     latest_tag_at: dt.datetime | None = None
     # Publish time of the "Latest" release, for release/tag staleness.
     latest_release_at: dt.datetime | None = None

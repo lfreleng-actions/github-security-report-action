@@ -11,7 +11,6 @@ sections 10-11.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import replace
 
 from rich.console import Console
 from rich.markup import escape
@@ -27,11 +26,14 @@ from github_security_report.report import (
     CELL_BAD,
     CELL_GOOD,
     CELL_WARN,
+    DEFAULT_FOOTER,
     ORG_SETUP_DOC_URL,
     SKIP_MESSAGE,
     SUMMARY_EMOJI,
+    FooterOptions,
     LimitFor,
     OrgReport,
+    RepoList,
     SignalSection,
     SummaryLine,
     TableRow,
@@ -73,9 +75,6 @@ _CELL_LEVEL_STYLE = {
     CELL_WARN: "yellow",
     CELL_BAD: "red",
 }
-
-# Label prefixing the repository-name list printed beneath a summary line.
-_NAME_LIST_LABEL = {"disabled": "Disabled", "excluded": "Excluded"}
 
 
 def _add_columns(
@@ -122,28 +121,23 @@ def _render_summary(
     lines: Sequence[SummaryLine],
     *,
     top_n: int | None,
-    name_labels: dict[str, str] | None = None,
 ) -> None:
     """Print the standardised footer: count lines, then any name lists.
 
     Counts come first (failures and not-enabled at the top, the healthy pass
-    line lower down), then the repository-name breakdowns for the kinds in
-    ``name_labels`` -- numbers and names are never mixed on one line, and the
-    name lists honour the same offender limit as the tables. ``name_labels``
-    defaults to the disabled/excluded kinds; a boolean feature table passes an
-    extended map so its offenders list inline under the fail line too.
+    line lower down), then the repository-name breakdown for every line that
+    names its repositories -- numbers and names are never mixed on one line,
+    and the name lists honour the same offender limit as the tables.
     """
-    if name_labels is None:
-        name_labels = _NAME_LIST_LABEL
     for line in lines:
         style = _SUMMARY_STYLE[line.kind]
         console.print(f"  [{style}]{SUMMARY_EMOJI[line.kind]} {line.text}[/{style}]")
     for line in lines:
-        label = name_labels.get(line.kind)
-        if label and line.names:
+        if line.listed:
             style = _SUMMARY_STYLE[line.kind]
             console.print(
-                f"  [{style}]{label}:[/{style}] {_truncated_names(line.names, top_n)}"
+                f"  [{style}]{line.names_label}:[/{style}] "
+                f"{_truncated_names(line.names, top_n)}"
             )
 
 
@@ -214,20 +208,21 @@ def render_table_section(
     *,
     excluded: Sequence[Repo] = (),
     top_n: int | None = None,
+    repo_list: RepoList = RepoList.AUTO,
 ) -> None:
     """Render a generic posture/freshness table to the terminal.
 
-    A section with a single column carries only repository names -- a boolean
-    feature check (enabled/not enabled) with no qualitative data -- so it is
-    rendered like a signal section: no table, just the standardised footer with
-    the offenders listed inline under the fail line (e.g. ``Not enabled:``).
+    A boolean feature table (see :attr:`TableSection.lists_repos`) carries
+    only repository names, so it is rendered like a signal section: no table,
+    just the standardised footer with one side's repositories named inline
+    beneath its count line (e.g. ``Not enabled:``), chosen by ``repo_list``.
     Tables are reserved for sections whose extra columns carry qualitative data
     that cannot be expressed as a count (release/tag ages, ecosystems, release
     tags). The explanatory description is deliberately omitted either way: the
     terminal is a brevity-first surface, so the guidance text is reserved for
     the Markdown and HTML (GitHub Pages) outputs.
     """
-    inline = len(section.columns) == 1
+    inline = section.lists_repos
     rows, hidden = truncate(section.rows, top_n)
     console.print(f"[bold]{section.title}[/bold]")
     if not inline and rows:
@@ -261,23 +256,9 @@ def render_table_section(
         console.print(table)
         if hidden:
             console.print(f"  [dim]\u2026 and {hidden} more[/dim]")
-    counts = section.summary_counts(excluded)
-    name_labels = _NAME_LIST_LABEL
-    if inline:
-        # Surface the offenders inline under the fail line, labelled with the
-        # category's fail wording (e.g. "Not enabled"), instead of a one-column
-        # table. The name list honours top_n like every other breakdown.
-        fail_label = section.category.fail_label or "Failing"
-        counts = [
-            replace(c, names=tuple(r.repo.name for r in section.rows))
-            if c.kind == "fail"
-            else c
-            for c in counts
-        ]
-        name_labels = {**_NAME_LIST_LABEL, "fail": fail_label}
-    lines = build_summary(counts)
+    lines = build_summary(section.summary_counts(excluded, repo_list=repo_list))
     if lines:
-        _render_summary(console, lines, top_n=top_n, name_labels=name_labels)
+        _render_summary(console, lines, top_n=top_n)
     elif not rows:
         console.print("  [dim]No data[/dim]")
     console.print()
@@ -290,6 +271,7 @@ def render_org(
     top_n: int | None = None,
     show: Callable[[CategoryKey], bool] | None = None,
     limit: LimitFor | None = None,
+    footer: FooterOptions = DEFAULT_FOOTER,
 ) -> None:
     visible = show or (lambda _key: True)
     limit_for = limit_resolver(top_n, limit)
@@ -301,8 +283,9 @@ def render_org(
         render_table_section(
             section,
             console,
-            excluded=org.excluded_repos,
+            excluded=footer.excluded_shown(org, section.category.key),
             top_n=limit_for(section.category.key),
+            repo_list=footer.repo_list(section.category.key),
         )
 
     console.rule(f"[bold]Security report: {org.org}[/bold]")
@@ -321,7 +304,7 @@ def render_org(
             render_section(
                 item.section,
                 console,
-                excluded=org.excluded_repos,
+                excluded=footer.excluded_shown(org, key),
                 top_n=limit_for(key),
             )
         for dependabot_table in item.children:

@@ -21,11 +21,14 @@ from github_security_report.categories import CategoryKey
 from github_security_report.models import Repo, RepoSignal
 from github_security_report.render import markdown
 from github_security_report.report import (
+    DEFAULT_FOOTER,
     ORG_SETUP_DOC_URL,
     SKIP_MESSAGE,
     SUMMARY_EMOJI,
+    FooterOptions,
     LimitFor,
     OrgReport,
+    RepoList,
     SignalSection,
     SummaryLine,
     TableSection,
@@ -80,9 +83,6 @@ _env = Environment(
     autoescape=select_autoescape(["html", "j2"]),
 )
 
-# Summary kinds whose repository names are listed beneath the count line.
-_NAME_LIST_LABEL = {"disabled": "Disabled", "excluded": "Excluded"}
-
 
 # Anything outside this set is replaced; this also strips path separators and
 # dots, so a hostile org name (e.g. "../etc") cannot escape the output dir.
@@ -114,8 +114,8 @@ def _summary_context(
 ) -> list[dict]:
     """Template context for the standardised footer.
 
-    Each entry carries the glyph and text for its count line, plus -- for the
-    disabled and excluded kinds -- the repository name list (linked when a
+    Each entry carries the glyph and text for its count line, plus -- for
+    every line that names its repositories -- the name list (linked when a
     :class:`Repo` is known). The template renders the count lines first, then
     the name lists, mirroring the terminal and Markdown surfaces.
     """
@@ -123,7 +123,7 @@ def _summary_context(
     for line in lines:
         names: list[dict] = []
         hidden = 0
-        if line.kind in _NAME_LIST_LABEL and line.names:
+        if line.listed:
             shown, hidden = truncate(line.names, top_n)
             names = [
                 {
@@ -137,7 +137,7 @@ def _summary_context(
                 "kind": line.kind,
                 "emoji": SUMMARY_EMOJI[line.kind],
                 "text": line.text,
-                "label": _NAME_LIST_LABEL.get(line.kind),
+                "label": line.names_label,
                 "names": names,
                 "names_hidden": hidden,
             }
@@ -150,10 +150,17 @@ def _table_context(
     *,
     excluded: Sequence[Repo] = (),
     top_n: int | None = None,
+    repo_list: RepoList = RepoList.AUTO,
 ) -> dict:
-    """Context for a generic posture/freshness table (Dependabot, releases)."""
+    """Context for a generic posture/freshness table (Dependabot, releases).
+
+    A boolean feature table contributes no rows: its repositories are named in
+    the footer instead, as on every other surface.
+    """
     rows, hidden = truncate(section.rows, top_n)
-    name_to_repo = {r.name: r for r in excluded}
+    if section.lists_repos:
+        rows, hidden = [], 0
+    name_to_repo = {**section.repos_by_name(), **{r.name: r for r in excluded}}
     totals = table_column_totals(section, rows)
     return {
         "title": section.title,
@@ -177,7 +184,7 @@ def _table_context(
         "footer_rows": [list(row) for row in table_footer_rows(section, rows)],
         "hidden": hidden,
         "summary": _summary_context(
-            build_summary(section.summary_counts(excluded)),
+            build_summary(section.summary_counts(excluded, repo_list=repo_list)),
             name_to_repo,
             top_n=top_n,
         ),
@@ -252,18 +259,22 @@ def render_org_html(
     top_n: int | None = None,
     show: Callable[[CategoryKey], bool] | None = None,
     limit: LimitFor | None = None,
+    footer: FooterOptions = DEFAULT_FOOTER,
 ) -> str:
     visible = show or (lambda _key: True)
     limit_for = limit_resolver(top_n, limit)
     template = _env.get_template("report.html.j2")
-    excluded = org.excluded_repos
 
     def table(section: TableSection | None) -> dict | None:
         """Context for one extra table, honouring its visibility and limit."""
         if section is None or not visible(section.category.key):
             return None
+        key = section.category.key
         return _table_context(
-            section, excluded=excluded, top_n=limit_for(section.category.key)
+            section,
+            excluded=footer.excluded_shown(org, key),
+            top_n=limit_for(key),
+            repo_list=footer.repo_list(key),
         )
 
     sections: list[dict] = []
@@ -277,7 +288,9 @@ def render_org_html(
         children = [ctx for t in item.children if (ctx := table(t)) is not None]
         if visible(key):
             ctx = _section_context(
-                item.section, excluded=excluded, top_n=limit_for(key)
+                item.section,
+                excluded=footer.excluded_shown(org, key),
+                top_n=limit_for(key),
             )
             # When the parent signal is shown, its posture sub-tables render
             # beneath it inside the same card.

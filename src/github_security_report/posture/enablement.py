@@ -4,8 +4,9 @@
 
 Every table here is built from the boolean (or indeterminate) configuration
 facts on :class:`RepoPosture`: the two Dependabot features GitHub exposes a
-public per-repository API for, the private-vulnerability-reporting flag, and
-the per-ecosystem cooldown declared in a repository's ``dependabot.yml``.
+public per-repository API for, the private-vulnerability-reporting flag, the
+auto-merge setting, and the per-ecosystem cooldown declared in a repository's
+``dependabot.yml``.
 """
 
 from __future__ import annotations
@@ -72,16 +73,21 @@ def _build_feature_table(
         for p in sorted(postures, key=lambda p: p.repo.name)
         if enabled_of(p) is False
     ]
+    passing = tuple(
+        p.repo
+        for p in sorted(postures, key=lambda p: p.repo.name)
+        if enabled_of(p) is True
+    )
     not_enabled = sum(1 for p in postures if enabled_of(p) is False)
-    enabled = sum(1 for p in postures if enabled_of(p) is True)
     indeterminate = sum(1 for p in postures if enabled_of(p) is None)
     return TableSection(
         category=category_meta(category_key),
         columns=columns,
         rows=rows,
-        pass_count=enabled,
+        pass_count=len(passing),
         fail_count=not_enabled,
         unknown_count=indeterminate,
+        pass_repos=passing,
     )
 
 
@@ -158,4 +164,23 @@ def build_pvr_table(postures: list[RepoPosture]) -> TableSection:
         category_key=CategoryKey.PRIVATE_VULNERABILITY_REPORTING,
         columns=("Repository",),
         enabled_of=lambda p: p.private_vulnerability_reporting,
+    )
+
+
+def build_auto_merge_table(postures: list[RepoPosture]) -> TableSection:
+    """Repositories where the "Allow auto-merge" setting is switched off.
+
+    Another single-boolean feature check, so it reuses
+    :func:`_build_feature_table` on the same terms as the Dependabot and
+    private-vulnerability-reporting tables: offenders are repositories where the
+    setting is confirmed off, and an indeterminate (``None``) reading counts
+    towards neither side of the standardised summary footer. The flag rides the
+    batched GraphQL prefetch, so it is read for every repository at no extra
+    request; the per-category render toggle governs only whether it is shown.
+    """
+    return _build_feature_table(
+        postures,
+        category_key=CategoryKey.AUTO_MERGE,
+        columns=("Repository",),
+        enabled_of=lambda p: p.auto_merge,
     )
