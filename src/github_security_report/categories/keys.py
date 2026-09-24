@@ -20,6 +20,8 @@ class CategoryKey(str, Enum):
     """Stable identifier for one reporting category (also the config key)."""
 
     CODEQL = "codeql"
+    CODEQL_STALE_CONFIGURATIONS = "codeql_stale_configurations"
+    CODEQL_LANGUAGE_COVERAGE = "codeql_language_coverage"
     SCORECARD = "scorecard"
     ZIZMOR = "zizmor"
     AISLOP = "aislop"

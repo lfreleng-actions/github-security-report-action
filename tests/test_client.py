@@ -1333,6 +1333,155 @@ async def test_repo_graph_batch_reads_auto_merge(
 
 
 @respx.mock
+async def test_repo_graph_batch_reads_head_commit_date(client: GitHubClient) -> None:
+    # The CodeQL stale check measures every configuration against this date,
+    # so it must ride the prefetch; an empty repository has no head at all.
+    node = _graph_repo_node()
+    node["defaultBranchRef"] = {"target": {"committedDate": "2026-09-24T07:26:37Z"}}
+    route = respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(
+            200, json={"data": {"r0": node, "r1": _graph_repo_node()}}
+        )
+    )
+    out = await client.repo_graph_batch("o", ["a", "empty"])
+    sent = json.loads(route.calls.last.request.content)
+    assert "defaultBranchRef" in sent["query"]
+    head = out["a"].head_committed_at
+    assert head is not None and (head.month, head.day) == (9, 24)
+    assert out["empty"].head_committed_at is None
+
+
+# --------------------------------------------------------------------------- #
+# CodeQL scan health
+# --------------------------------------------------------------------------- #
+def _analysis(category: str, key: str, created: str) -> dict:
+    return {"category": category, "analysis_key": key, "created_at": created}
+
+
+_DEFAULT_KEY = "dynamic/github-code-scanning/codeql:analyze"
+_ADVANCED_KEY = ".github/workflows/codeql.yml:analyze"
+_ADVANCED_CATEGORY = f"{_ADVANCED_KEY}/build-mode:none/language:python"
+
+
+@respx.mock
+async def test_codeql_configurations_walks_the_whole_history(
+    client: GitHubClient,
+) -> None:
+    # The stale configuration's last upload sits on the second page, beneath
+    # the live one's newer analyses: stopping at page one would miss exactly
+    # the configuration the check exists to find.
+    base = f"{API}/repos/o/r/code-scanning/analyses"
+    route = respx.get(base).mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json=[
+                    _analysis(
+                        _ADVANCED_CATEGORY, _ADVANCED_KEY, "2026-09-24T07:27:48Z"
+                    ),
+                    _analysis(
+                        _ADVANCED_CATEGORY, _ADVANCED_KEY, "2026-09-23T13:16:30Z"
+                    ),
+                ],
+                headers={"link": f'<{base}?page=2>; rel="next"'},
+            ),
+            httpx.Response(
+                200,
+                json=[
+                    _analysis(
+                        "/language:actions", _DEFAULT_KEY, "2026-06-24T14:08:00Z"
+                    ),
+                    _analysis(
+                        "/language:actions", _DEFAULT_KEY, "2026-06-20T10:00:00Z"
+                    ),
+                ],
+            ),
+        ]
+    )
+    status, configs = await client.codeql_configurations("o", "r", "main")
+
+    first = route.calls[0].request.url.params
+    assert (first["tool_name"], first["ref"]) == ("CodeQL", "refs/heads/main")
+    assert status == 200
+    by_language = {c.language: c for c in configs}
+    assert set(by_language) == {"python", "actions"}
+    assert by_language["actions"].last_scan_at.date().isoformat() == "2026-06-24"
+    assert by_language["python"].last_scan_at.day == 24
+
+
+@respx.mock
+async def test_codeql_configurations_partial_walk_reports_failure(
+    client: GitHubClient,
+) -> None:
+    # A later page failing leaves configurations unseen, so the status must
+    # say so rather than let a partial history pass for a complete one.
+    base = f"{API}/repos/o/r/code-scanning/analyses"
+    respx.get(base).mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json=[
+                    _analysis("/language:python", _DEFAULT_KEY, "2026-09-01T00:00:00Z")
+                ],
+                headers={"link": f'<{base}?page=2>; rel="next"'},
+            ),
+            httpx.Response(403, headers={"x-ratelimit-remaining": "4999"}),
+        ]
+    )
+    status, _configs = await client.codeql_configurations("o", "r", "main")
+    assert status == 403
+
+
+@respx.mock
+async def test_codeql_default_setup_parses_state_and_languages(
+    client: GitHubClient,
+) -> None:
+    respx.get(f"{API}/repos/o/r/code-scanning/default-setup").mock(
+        return_value=httpx.Response(
+            200,
+            json={"state": "not-configured", "languages": ["actions", "typescript"]},
+        )
+    )
+    setup = await client.codeql_default_setup("o", "r")
+    assert setup is not None
+    assert setup.configured is False
+    # The API names TypeScript alone; CodeQL scans it as javascript-typescript.
+    assert setup.languages == frozenset({"actions", "javascript-typescript"})
+
+
+@respx.mock
+async def test_codeql_default_setup_unreadable_is_none(client: GitHubClient) -> None:
+    respx.get(f"{API}/repos/o/r/code-scanning/default-setup").mock(
+        return_value=httpx.Response(403, headers={"x-ratelimit-remaining": "4999"})
+    )
+    assert await client.codeql_default_setup("o", "r") is None
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("status", "body", "expected"),
+    [
+        (200, {"state": "disabled_manually"}, "disabled_manually"),
+        (404, {"message": "Not Found"}, "missing"),
+        (403, {"message": "Forbidden"}, None),
+    ],
+)
+async def test_workflow_state(
+    client: GitHubClient, status: int, body: dict, expected: str | None
+) -> None:
+    # The workflow is looked up by file name, which the API accepts in place
+    # of its numeric id; a 404 is how a removed or renamed file shows up.
+    route = respx.get(f"{API}/repos/o/r/actions/workflows/codeql.yaml").mock(
+        return_value=httpx.Response(
+            status, json=body, headers={"x-ratelimit-remaining": "4999"}
+        )
+    )
+    state = await client.workflow_state("o", "r", ".github/workflows/codeql.yaml")
+    assert route.called
+    assert state == expected
+
+
+@respx.mock
 async def test_repo_graph_batch_annotated_tag(client: GitHubClient) -> None:
     node = _graph_repo_node(
         tag_target={

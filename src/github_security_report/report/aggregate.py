@@ -62,6 +62,10 @@ class OrgReport:
     # Dependabot signal heading (alerts not enabled, security updates not
     # enabled, cooldown settings). Empty in repo mode / when not collected.
     dependabot_tables: list[TableSection] = field(default_factory=list)
+    # The CodeQL scan-health tables (stale configurations, language coverage),
+    # rendered beneath the CodeQL signal heading. Empty in repo mode / when not
+    # collected.
+    codeql_tables: list[TableSection] = field(default_factory=list)
     # The Releases / Tagging table (release and tag staleness). None only when
     # not collected (repo mode); org mode always assigns a section, which may
     # have zero rows and render its empty_note instead.
@@ -102,9 +106,9 @@ class OrgReport:
         claim from a collected table with no rows, and each caller decides
         which of the two it cares about.
 
-        The Dependabot posture tables are excluded. They render beneath their
-        parent signal rather than as sections of their own, so callers that
-        want them reach for :attr:`dependabot_tables` alongside this.
+        The nested tables are excluded. They render beneath their parent
+        signal rather than as sections of their own, so callers that want them
+        reach for :attr:`nested_tables` alongside this.
         """
         return (
             self.releases,
@@ -115,6 +119,19 @@ class OrgReport:
             self.pull_requests,
             self.assigned_pull_requests,
         )
+
+    @property
+    def nested_tables(self) -> tuple[TableSection, ...]:
+        """Every table rendered beneath a parent signal, in assembly order."""
+        return (*self.codeql_tables, *self.dependabot_tables)
+
+    def tables_nested_under(self, signal: SignalType) -> tuple[TableSection, ...]:
+        """The tables that render beneath ``signal``'s section (often none)."""
+        if signal is SignalType.CODEQL:
+            return tuple(self.codeql_tables)
+        if signal is SignalType.DEPENDABOT:
+            return tuple(self.dependabot_tables)
+        return ()
 
     def excluded_for(self, key: CategoryKey) -> list[Repo]:
         """The repositories category ``key`` reports as excluded."""

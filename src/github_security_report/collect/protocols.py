@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from github_security_report.codeql.facts import CodeQLConfiguration, DefaultSetup
 from github_security_report.models import Repo, RepoGraphData
 
 
@@ -72,6 +73,20 @@ class ClientProtocol(Protocol):
 
     async def private_vulnerability_reporting(self, org: str, repo: str) -> bool | None:
         """Whether private vulnerability reporting is enabled for a repository."""
+        raise NotImplementedError
+
+    async def codeql_configurations(
+        self, org: str, repo: str, branch: str
+    ) -> tuple[int, tuple[CodeQLConfiguration, ...]]:
+        """Every CodeQL configuration on ``branch``, with the read status."""
+        raise NotImplementedError
+
+    async def codeql_default_setup(self, org: str, repo: str) -> DefaultSetup | None:
+        """The repository's CodeQL default-setup state, or None if unreadable."""
+        raise NotImplementedError
+
+    async def workflow_state(self, org: str, repo: str, path: str) -> str | None:
+        """The Actions state of the workflow at ``path``, or None if unreadable."""
         raise NotImplementedError
 
     async def repo_graph_batch(

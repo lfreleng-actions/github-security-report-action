@@ -60,12 +60,13 @@ Styles
     No reordering at all -- the order this tool produced before any of this
     existed, kept so an operator who preferred it can say so.
 
-The Dependabot posture tables (alerts enabled, security updates enabled,
-cooldown) are **not** independently placeable. They render as sub-sections
-beneath the Dependabot Alerts signal on every surface, and detaching them from
-their parent would leave three near-identical headings floating in the report
-with nothing to say which signal they qualified. They travel with it instead,
-as :attr:`LayoutItem.children`.
+The nested tables are **not** independently placeable: the Dependabot posture
+tables (alerts enabled, security updates enabled, cooldown) and the CodeQL
+scan-health tables (stale configurations, language coverage). They render as
+sub-sections beneath their parent signal on every surface, and detaching them
+would leave near-identical headings floating in the report with nothing to say
+which signal they qualified. They travel with it instead, as
+:attr:`LayoutItem.children`.
 """
 
 from __future__ import annotations
@@ -75,7 +76,6 @@ from dataclasses import dataclass
 
 from github_security_report.categories import CategoryKey
 from github_security_report.config import OrderConfig, OrderStyle
-from github_security_report.models import SignalType
 from github_security_report.report import OrgReport, SignalSection, TableSection
 
 
@@ -83,11 +83,11 @@ from github_security_report.report import OrgReport, SignalSection, TableSection
 class LayoutItem:
     """One top-level entry in the report, with any sub-tables it carries.
 
-    ``children`` is non-empty only for the Dependabot Alerts signal, whose
-    posture tables render beneath it. Each surface decides how to nest them --
-    Markdown and HTML demote them to sub-headings, the terminal and Slack simply
-    follow the parent block -- but every surface renders them here, beside the
-    signal they qualify.
+    ``children`` is non-empty only for a signal that carries sub-tables (the
+    Dependabot Alerts and CodeQL signals). Each surface decides how to nest them
+    -- Markdown and HTML demote them to sub-headings, the terminal and Slack
+    simply follow the parent block -- but every surface renders them here,
+    beside the signal they qualify.
     """
 
     section: SignalSection | TableSection
@@ -135,12 +135,7 @@ def default_items(org: OrgReport) -> list[LayoutItem]:
     (repo mode does not build them) is absent rather than present and empty.
     """
     items = [
-        LayoutItem(
-            section,
-            tuple(org.dependabot_tables)
-            if section.signal is SignalType.DEPENDABOT
-            else (),
-        )
+        LayoutItem(section, org.tables_nested_under(section.signal))
         for section in org.sections
     ]
     items.extend(

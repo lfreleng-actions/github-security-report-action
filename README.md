@@ -57,6 +57,28 @@ if you want to probe everything regardless.
 Further sections report **configuration posture** and **freshness** as plain
 tables (org mode):
 
+- **CodeQL scan health** — two tables beneath the CodeQL signal, whose "Clean"
+  says nothing about whether CodeQL is still running:
+  - **Stale Configurations** lists every CodeQL configuration whose last scan
+    trails the default branch's newest commit by more than
+    `codeql_stale_days` (default 30) — the condition GitHub's tool status page
+    flags as *"Code Scanning results may be out of date"*. Each row names the
+    setup type (**Default**, GitHub-managed; or **Advanced**, a workflow in the
+    repository), the language, the last scan, and the cause: default setup
+    switched off, a workflow removed or disabled, or an advanced workflow
+    **superseded** by default setup (GitHub rejects advanced CodeQL uploads
+    while default setup is on). An *orphaned* configuration will never scan
+    again; delete it from the tool status page once the live setup covers its
+    language.
+  - **Language Coverage** lists repositories where GitHub detects a
+    CodeQL-supported language that no current configuration scans — typically
+    an advanced workflow whose language matrix omits one the repository
+    contains, such as `actions` for its own workflows.
+
+  Both consider only repositories where CodeQL has run at least once; the rest
+  already appear in the CodeQL signal's not-enabled list. Finding a stale
+  configuration means reading each repository's whole CodeQL analysis history,
+  since GitHub cannot filter it by configuration.
 - **Dependabot** — three tables: repositories with vulnerability **alerts not
   enabled**, repositories with **security updates not enabled**, and ecosystems
   with no update `cooldown` configured (mandatory; any value passes).
@@ -152,6 +174,7 @@ organisation and **Repository access** set to *All repositories*, then grant:
 | Secret scanning alerts | Open secret-scanning alerts, across every GitHub pattern category |
 | Issues | Open issues and their labels (GitHub Issues table) |
 | Administration | Dependabot enablement + security-updates status, and effective branch rules |
+| Actions | Workflow state behind a stale CodeQL configuration |
 
 **Organization permissions:**
 
@@ -272,6 +295,7 @@ environment-variable name, never embedded.
     "include_test": false,
     "repo_min_age_days": 28,
     "release_max_age_days": 60,
+    "codeql_stale_days": 30,
     "graph_batch": 10,
     "order": { "style": "auto" }
   },
@@ -295,6 +319,17 @@ default for all three outputs; set any of `top_n_report` (GitHub Pages),
 individual output. Set a value to `0` to remove the limit entirely and show
 every offender. Each can also be set at the CLI with `--top-n`,
 `--top-n-report`, `--top-n-cli`, and `--top-n-slack`.
+
+`report.codeql_stale_days` (default `30`, minimum `1`) is the CodeQL
+stale-configuration threshold: a configuration is stale once its last scan
+trails the default branch's newest commit by more than that many days. It is
+measured against the branch head rather than the clock, so a repository nobody
+has pushed to is not flagged just for being quiet. GitHub does not publish the
+threshold behind its own "may be out of date" warning; across the
+`lfreleng-actions` estate healthy configurations trailed their head by at most
+five days and abandoned ones by more than eighty, so the default sits well
+clear of both. The same threshold decides which configurations count as current
+for Language Coverage.
 
 The Releases / Tagging section has two independent freshness levers:
 
@@ -371,11 +406,12 @@ both true.
 
 The example above hides Zizmor on every surface, and keeps Releases / Tagging
 out of the terminal and Slack while still publishing it to the Markdown and HTML
-Pages output. The valid category keys are: `codeql`, `scorecard`, `zizmor`,
-`aislop`, `dependabot_alerts`, `secret_scanning`, `dependabot_alerts_enabled`,
-`dependabot_updates_enabled`, `dependabot_cooldown`, `releases`,
-`mutable_releases`, `private_vulnerability_reporting`, `auto_merge`,
-`github_issues`. Like the
+Pages output. The valid category keys are: `codeql`,
+`codeql_stale_configurations`, `codeql_language_coverage`, `scorecard`,
+`zizmor`, `aislop`, `dependabot_alerts`, `secret_scanning`,
+`dependabot_alerts_enabled`, `dependabot_updates_enabled`,
+`dependabot_cooldown`, `releases`, `mutable_releases`,
+`private_vulnerability_reporting`, `auto_merge`, `github_issues`. Like the
 other `report`
 settings, `categories` can be set
 globally and overridden per organisation (overrides merge key-by-key, so
