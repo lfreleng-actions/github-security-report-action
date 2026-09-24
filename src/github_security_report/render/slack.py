@@ -378,7 +378,7 @@ def render_org_blocks(
                         excluded=footer.excluded_shown(org, key),
                     )
                 )
-        # Dependabot posture sub-tables follow the Dependabot signal block.
+        # A signal's sub-tables follow its block.
         for table_section in item.children:
             add_table(table_section)
     if pages_url:

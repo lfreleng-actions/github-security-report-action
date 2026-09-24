@@ -164,6 +164,7 @@ def _report_from(data: dict, base: ReportConfig) -> ReportConfig:
                 "include_test",
                 "repo_min_age_days",
                 "release_max_age_days",
+                "codeql_stale_days",
                 "dependabot_warn_threshold",
                 "dependabot_error_threshold",
                 "gating",

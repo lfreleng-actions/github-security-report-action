@@ -9,8 +9,10 @@ import logging
 
 import pytest
 
-from github_security_report import collect, pulls
+from github_security_report import collect, layout, pulls
+from github_security_report.categories import CategoryKey
 from github_security_report.client import GraphBatchError
+from github_security_report.codeql import CodeQLConfiguration, DefaultSetup
 from github_security_report.config import OrgConfig, ReportConfig
 from github_security_report.models import Repo, RepoGraphData, RepoState, SignalType
 from github_security_report.report import OrgReport, SignalSection
@@ -64,6 +66,15 @@ class FakeClient:
         # Unlike the other posture flags this one rides the GraphQL prefetch,
         # so it is set here rather than behind a per-repo helper method.
         self.auto_merge: dict[str, bool] = {}
+        # CodeQL scan health: per-repo configurations, default-setup state and
+        # the Actions state of each workflow path. Every repository defaults to
+        # no CodeQL configurations, so the scan-health tables stay empty unless
+        # a test opts in. ``workflow_reads`` records each workflow lookup.
+        self.codeql: dict[str, tuple[CodeQLConfiguration, ...]] = {}
+        self.default_setup: dict[str, DefaultSetup] = {}
+        self.workflows: dict[tuple[str, str], str] = {}
+        self.workflow_reads: list[tuple[str, str]] = []
+        self.head: dict[str, dt.datetime] = {}
 
     async def list_org_repos(self, org: str) -> tuple[int, list[Repo]]:
         return 200, self.repos
@@ -129,6 +140,18 @@ class FakeClient:
     async def private_vulnerability_reporting(self, org: str, repo: str) -> bool | None:
         return True
 
+    async def codeql_configurations(
+        self, org: str, repo: str, branch: str
+    ) -> tuple[int, tuple[CodeQLConfiguration, ...]]:
+        return 200, self.codeql.get(repo, ())
+
+    async def codeql_default_setup(self, org: str, repo: str) -> DefaultSetup | None:
+        return self.default_setup.get(repo, DefaultSetup(configured=False))
+
+    async def workflow_state(self, org: str, repo: str, path: str) -> str | None:
+        self.workflow_reads.append((repo, path))
+        return self.workflows.get((repo, path))
+
     async def dependabot_config(self, org: str, repo: str) -> tuple[int, str]:
         return 404, ""  # no Dependabot configuration by default
 
@@ -149,6 +172,7 @@ class FakeClient:
             out[name] = RepoGraphData(
                 dependabot_alerts_enabled=await self.dependabot_enabled(org, name),
                 auto_merge_allowed=self.auto_merge.get(name, True),
+                head_committed_at=self.head.get(name, WHEN),
                 latest_tag_at=await self.latest_tag_at(org, name),
                 latest_release_at=await self.latest_release_at(org, name),
                 dependabot_config=cfg_text if cfg_status == 200 else None,
@@ -819,3 +843,98 @@ async def test_graph_batch_treats_a_zero_size_as_one() -> None:
     graph = await _collect_graph(client, batch_size=0)
     assert client.batches == [1, 1]
     assert len(graph) == 2
+
+
+# --------------------------------------------------------------------------- #
+# CodeQL scan health
+# --------------------------------------------------------------------------- #
+_DEFAULT_KEY = "dynamic/github-code-scanning/codeql:analyze"
+_ADVANCED_KEY = ".github/workflows/codeql.yml:analyze"
+
+
+def _codeql_config(language: str, key: str, days_behind: int) -> CodeQLConfiguration:
+    prefix = "" if key == _DEFAULT_KEY else f"{key}/build-mode:none"
+    return CodeQLConfiguration(
+        category=f"{prefix}/language:{language}",
+        analysis_key=key,
+        last_scan_at=WHEN - dt.timedelta(days=days_behind),
+        language=language,
+    )
+
+
+class CodeQLHealthClient(FakeClient):
+    """dependamerge swapped default setup for a Python-only workflow.
+
+    git-configure-action went the other way: default setup is live and the old
+    advanced workflow, now disabled, left its configuration behind.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.codeql = {
+            "dependamerge": (
+                _codeql_config("python", _ADVANCED_KEY, 0),
+                _codeql_config("python", _DEFAULT_KEY, 91),
+                _codeql_config("actions", _DEFAULT_KEY, 91),
+            ),
+            "git-configure-action": (
+                _codeql_config("python", _ADVANCED_KEY, 101),
+                _codeql_config("python", _DEFAULT_KEY, 1),
+            ),
+        }
+        self.default_setup = {
+            "dependamerge": DefaultSetup(
+                configured=False, languages=frozenset({"actions", "python"})
+            ),
+            "git-configure-action": DefaultSetup(
+                configured=True, languages=frozenset({"python"})
+            ),
+        }
+        self.workflows = {
+            ("git-configure-action", ".github/workflows/codeql.yml"): (
+                "disabled_manually"
+            ),
+        }
+
+
+async def test_collect_org_attaches_codeql_tables_beneath_the_codeql_signal() -> None:
+    client = CodeQLHealthClient()
+    report = await collect.collect_org(
+        client, OrgConfig(name="o"), ReportConfig(), generated_at=WHEN
+    )
+    stale, coverage = report.codeql_tables
+    assert stale.category.key is CategoryKey.CODEQL_STALE_CONFIGURATIONS
+    assert [(r.repo.name, r.cells[-1]) for r in stale.rows] == [
+        ("git-configure-action", "Superseded by default setup; workflow disabled"),
+        ("dependamerge", "Default setup disabled; orphaned"),
+        ("dependamerge", "Default setup disabled; orphaned"),
+    ]
+    assert [(r.repo.name, r.cells[1]) for r in coverage.rows] == [
+        ("dependamerge", "actions")
+    ]
+    # Workflow state is read only for a stale advanced configuration: never
+    # for dependamerge's live workflow, never for a default configuration.
+    assert client.workflow_reads == [
+        ("git-configure-action", ".github/workflows/codeql.yml")
+    ]
+    # Both tables travel with the CodeQL signal rather than floating free.
+    by_key = {item.key: item for item in layout.plan(report)}
+    assert [t.category.key for t in by_key[CategoryKey.CODEQL].children] == [
+        CategoryKey.CODEQL_STALE_CONFIGURATIONS,
+        CategoryKey.CODEQL_LANGUAGE_COVERAGE,
+    ]
+    assert CategoryKey.CODEQL_STALE_CONFIGURATIONS not in by_key
+
+
+async def test_collect_org_codeql_threshold_comes_from_the_report_config() -> None:
+    # At 120 days nothing in the fake is stale, so no workflow is looked up.
+    client = CodeQLHealthClient()
+    report = await collect.collect_org(
+        client,
+        OrgConfig(name="o"),
+        ReportConfig(codeql_stale_days=120),
+        generated_at=WHEN,
+    )
+    stale, _coverage = report.codeql_tables
+    assert stale.rows == []
+    assert client.workflow_reads == []

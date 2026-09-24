@@ -11,6 +11,48 @@ from __future__ import annotations
 from github_security_report.categories.keys import CategoryKey, CategoryMeta
 
 TABLE_CATEGORIES: dict[CategoryKey, CategoryMeta] = {
+    CategoryKey.CODEQL_STALE_CONFIGURATIONS: CategoryMeta(
+        key=CategoryKey.CODEQL_STALE_CONFIGURATIONS,
+        title="CodeQL: Stale Configurations",
+        pass_label="Current",
+        fail_label="With stale configurations",
+        url=(
+            "https://docs.github.com/en/code-security/code-scanning/"
+            "managing-your-code-scanning-configuration/about-the-tool-status-page"
+        ),
+        description=(
+            "CodeQL configurations on the default branch whose last scan trails "
+            "the branch's newest commit by more than the configured threshold -- "
+            "the condition GitHub's tool status page reports as 'Code Scanning "
+            "results may be out of date'. Its alerts describe code that has "
+            "since changed, so a stale configuration can hold a CodeQL table row "
+            "'Clean' while nothing is being scanned. Setup is Default (GitHub-"
+            "managed) or Advanced (a workflow in the repository), and Cause says "
+            "why the configuration stopped. Orphaned means the setup that "
+            "produced it no longer exists, so it will never scan again: once the "
+            "live setup covers its language (see Language Coverage), delete it "
+            "from the repository's code-scanning tool status page. Superseded "
+            "means default setup is on, which blocks advanced CodeQL uploads."
+        ),
+    ),
+    CategoryKey.CODEQL_LANGUAGE_COVERAGE: CategoryMeta(
+        key=CategoryKey.CODEQL_LANGUAGE_COVERAGE,
+        title="CodeQL: Language Coverage",
+        pass_label="Covered",
+        fail_label="With unscanned languages",
+        url=(
+            "https://docs.github.com/en/code-security/code-scanning/"
+            "creating-an-advanced-setup-for-code-scanning/"
+            "customizing-your-advanced-setup-for-code-scanning"
+        ),
+        description=(
+            "Repositories where GitHub detects a CodeQL-supported language that "
+            "no current configuration scans -- typically an advanced workflow "
+            "whose language matrix omits one the repository contains, such as "
+            "'actions' for its own workflow files. Repositories with no CodeQL "
+            "at all appear in the CodeQL table's not-enabled list instead."
+        ),
+    ),
     CategoryKey.DEPENDABOT_ALERTS_ENABLED: CategoryMeta(
         key=CategoryKey.DEPENDABOT_ALERTS_ENABLED,
         title="Dependabot: Alerts Enabled",

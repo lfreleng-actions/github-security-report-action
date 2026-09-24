@@ -307,8 +307,8 @@ def render_org(
                 excluded=footer.excluded_shown(org, key),
                 top_n=limit_for(key),
             )
-        for dependabot_table in item.children:
-            table(dependabot_table)
+        for child in item.children:
+            table(child)
 
 
 def render_orgs(

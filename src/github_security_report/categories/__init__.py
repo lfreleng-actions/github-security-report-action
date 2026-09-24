@@ -45,11 +45,15 @@ def category_meta(key: CategoryKey) -> CategoryMeta:
 # sections of their own. The three Dependabot posture tables qualify their
 # parent signal -- "Alerts Enabled" means nothing adrift from "Dependabot:
 # Security Alerts" -- so they travel with it and cannot be positioned
-# independently. Named here rather than in the layout module so the config
-# schema can refuse to accept one in an ordering list, which would otherwise be
-# a setting that validates and then does nothing.
+# independently, and the two CodeQL scan-health tables likewise qualify the
+# CodeQL signal, whose "Clean" means nothing if the scans behind it stopped.
+# Named here rather than in the layout module so the config schema can refuse to
+# accept one in an ordering list, which would otherwise be a setting that
+# validates and then does nothing.
 NESTED_CATEGORIES: frozenset[CategoryKey] = frozenset(
     {
+        CategoryKey.CODEQL_STALE_CONFIGURATIONS,
+        CategoryKey.CODEQL_LANGUAGE_COVERAGE,
         CategoryKey.DEPENDABOT_ALERTS_ENABLED,
         CategoryKey.DEPENDABOT_UPDATES_ENABLED,
         CategoryKey.DEPENDABOT_COOLDOWN,

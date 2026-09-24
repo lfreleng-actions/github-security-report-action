@@ -135,6 +135,11 @@ CONFIG_SCHEMA: dict = {
                 # Releases/Tagging only when its newest release or tag is older
                 # than this many days (0 = flag every eligible repository).
                 "release_max_age_days": {"type": "integer", "minimum": 0},
+                # CodeQL stale-configuration threshold: a configuration is
+                # stale once its last scan trails the default branch's newest
+                # commit by more than this many days. No zero: every push
+                # briefly outruns its own scan.
+                "codeql_stale_days": {"type": "integer", "minimum": 1},
                 # Automation-backlog thresholds colouring the Pull Requests
                 # table's Auto column: warn above the first, error at or above
                 # the second. The defaults track GitHub's own

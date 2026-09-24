@@ -153,6 +153,12 @@ class ReportConfig:
     # gives every repository a 60-day window: one tagged or released inside that
     # window is treated as recently maintained and omitted from the table.
     release_max_age_days: int = 60
+    # A CodeQL configuration is reported stale once its last scan trails the
+    # default branch's newest commit by more than this many days. GitHub does
+    # not publish the threshold behind its own "results may be out of date"
+    # warning; healthy configurations measured within five days of their head
+    # and abandoned ones beyond eighty, so thirty sits well clear of both.
+    codeql_stale_days: int = 30
     # Open-automation thresholds colouring the Pull Requests table's Auto
     # column. The defaults track GitHub's own behaviour: Dependabot's
     # ``open-pull-requests-limit`` defaults to 5, so 5 is where updates stop

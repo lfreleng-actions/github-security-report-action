@@ -243,7 +243,7 @@ def apply_configured_order(
 
 def report_tables(report: OrgReport) -> list[TableSection | None]:
     """Every generic table attached to an org report, in render order."""
-    return [*report.dependabot_tables, *report.standalone_tables]
+    return [*report.nested_tables, *report.standalone_tables]
 
 
 # --------------------------------------------------------------------------- #

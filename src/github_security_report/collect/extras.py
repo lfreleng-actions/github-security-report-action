@@ -3,12 +3,12 @@
 """Reporting categories outside the four-state per-signal model.
 
 Dependabot configuration posture, release/tag freshness, release mutability,
-private vulnerability reporting and the auto-merge setting are rendered as
-standalone tables rather than as pass/fail signals, so they are assembled here
-once the signal report exists. The Dependabot alerts enablement flag, the
-auto-merge flag and the release/tag data are reused from the batched GraphQL
-prefetch; the security-updates and private-vulnerability-reporting flags are
-still per-repo REST calls.
+private vulnerability reporting, the auto-merge setting and CodeQL scan health
+are rendered as tables rather than as pass/fail signals, so they are assembled
+here once the signal report exists. The Dependabot alerts enablement flag, the
+auto-merge flag, the default branch head and the release/tag data are reused
+from the batched GraphQL prefetch; the security-updates,
+private-vulnerability-reporting and CodeQL reads are still per-repo REST calls.
 """
 
 from __future__ import annotations
@@ -16,7 +16,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from github_security_report import layout, posture
+from github_security_report import codeql, layout, posture
+from github_security_report.collect.codeql import collect_codeql_facts
 from github_security_report.collect.context import (
     OrgCollectContext,
     gather_in_batches,
@@ -100,6 +101,12 @@ async def attach_extra_tables(
     report.mutable_releases = posture.build_mutable_releases_table(postures)
     report.private_vulnerability_reporting = posture.build_pvr_table(postures)
     report.auto_merge = posture.build_auto_merge_table(postures)
+    codeql_facts = await collect_codeql_facts(
+        in_scope, ctx, stale_days=report_cfg.codeql_stale_days
+    )
+    report.codeql_tables = codeql.build_codeql_tables(
+        codeql_facts, stale_days=report_cfg.codeql_stale_days
+    )
     # Organisation membership is collected once and reused by both author-aware
     # tables, so classifying contributions costs one query rather than a probe
     # per author. It is the token-independent basis for "outside the

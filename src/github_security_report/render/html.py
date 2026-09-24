@@ -292,13 +292,13 @@ def render_org_html(
                 excluded=footer.excluded_shown(org, key),
                 top_n=limit_for(key),
             )
-            # When the parent signal is shown, its posture sub-tables render
-            # beneath it inside the same card.
+            # When the parent signal is shown, its sub-tables render beneath
+            # it inside the same card.
             if children:
                 ctx["extra_tables"] = children
             sections.append(ctx)
         else:
-            # The parent signal is hidden, but the posture tables are toggled
+            # The parent signal is hidden, but its sub-tables are toggled
             # independently: surface any enabled ones as their own top-level
             # sections so their per-category toggles are honoured here too --
             # matching the terminal, Markdown and Slack renderers, which

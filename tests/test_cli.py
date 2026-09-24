@@ -152,6 +152,9 @@ def test_org_mode_writes_pages(tmp_path: Path) -> None:
     respx.get(url__startswith=f"{API}/repos/o/r/private-vulnerability-reporting").mock(
         return_value=httpx.Response(200, json={"enabled": True})
     )
+    respx.get(f"{API}/repos/o/r/code-scanning/default-setup").mock(
+        return_value=httpx.Response(200, json={"state": "not-configured"})
+    )
 
     out = tmp_path / "site"
     result = cli.invoke(
@@ -229,6 +232,9 @@ def _mock_org_o_r() -> None:
     )
     respx.get(url__startswith=f"{API}/repos/o/r/private-vulnerability-reporting").mock(
         return_value=httpx.Response(200, json={"enabled": True})
+    )
+    respx.get(f"{API}/repos/o/r/code-scanning/default-setup").mock(
+        return_value=httpx.Response(200, json={"state": "not-configured"})
     )
 
 
@@ -878,6 +884,9 @@ def test_org_mode_top_n_from_config(tmp_path: Path) -> None:
     respx.get(
         url__regex=rf"{re.escape(API)}/repos/o/r\d/private-vulnerability-reporting"
     ).mock(return_value=httpx.Response(200, json={"enabled": True}))
+    respx.get(
+        url__regex=rf"{re.escape(API)}/repos/o/r\d/code-scanning/default-setup"
+    ).mock(return_value=httpx.Response(200, json={"state": "not-configured"}))
 
     cfg = (
         '{"report": {"top_n": 1}, '
@@ -964,6 +973,9 @@ def _mock_offender_org() -> None:
     )
     respx.get(url__startswith=f"{API}/repos/o/r/private-vulnerability-reporting").mock(
         return_value=httpx.Response(200, json={"enabled": False})
+    )
+    respx.get(f"{API}/repos/o/r/code-scanning/default-setup").mock(
+        return_value=httpx.Response(200, json={"state": "not-configured"})
     )
 
 

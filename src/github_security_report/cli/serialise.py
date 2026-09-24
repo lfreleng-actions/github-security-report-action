@@ -114,6 +114,9 @@ def _org_to_dict(org: OrgReport, hidden: Collection[CategoryKey] = ()) -> dict:
             if s.signal.category_key not in suppressed
         ],
         # Extra reporting categories outside the four-state per-signal model.
+        "codeql_tables": [
+            entry for t in org.codeql_tables if (entry := table(t)) is not None
+        ],
         "dependabot_tables": [
             entry for t in org.dependabot_tables if (entry := table(t)) is not None
         ],
