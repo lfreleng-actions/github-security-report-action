@@ -1518,7 +1518,7 @@ cause:
 | ----- | ------ |
 | Default setup disabled; workflow removed; superseded by default setup; language removed from default setup | **Delete** the configuration: it can never upload again |
 | Workflow disabled after inactivity | **Re-enable** the workflow, restoring the scan |
-| Analyses failing, workflow disabled by hand, active but not uploading, or state unreadable | Reported only; needs a person |
+| Analyses failing, default setup changing state or not uploading, uploaded outside GitHub Actions, workflow disabled by hand, active but not uploading, or state unreadable | Reported only; needs a person |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -1530,14 +1530,22 @@ when:
 - no current configuration scans its language: the stale results are then
   the only record of it, so add scanning for the language first (the refusal
   names it, and **CodeQL: Language Coverage** lists the gap);
-- it would close an open alert that only it reports;
+- it would help close an open alert. This is judged across **every deletion
+  planned in the repository**, not one at a time: an alert held by two stale
+  configurations would close if both went, so both are refused, although
+  neither holds it alone. An alert also reported by a live configuration
+  blocks nothing;
 - the repository's open alerts cannot be read.
 
 Refusals are listed beside the work done and do not fail the run. Deletion is
-paced at one request a second, as GitHub asks of mutating requests, and is
-resumable: an interrupted run's next pass picks up the remaining analyses.
-The token needs the classic `repo` scope. See
-[ADR-0005](docs/adr/0005-codeql-configuration-cleanup.md) for the reasoning.
+paced at one request a second across the whole run, as GitHub asks of
+mutating requests, and is resumable: an interrupted run's next pass picks up
+the remaining analyses. GitHub answers requests it will not authorise with
+`404`, so a deletion's `404` counts as already done only once the analysis
+also reads back as gone; a token that may not delete fails instead of
+reporting a cleanup that never happened. The token needs the classic `repo`
+scope. See [ADR-0005](docs/adr/0005-codeql-configuration-cleanup.md) for the
+reasoning.
 
 ## Bulk Remediation Scripts
 

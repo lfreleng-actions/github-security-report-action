@@ -60,9 +60,17 @@ class CleanupItem:
 
     @property
     def label(self) -> str:
-        """The repository and the configuration, as remediation output names it."""
-        language = self.config.language or "unknown language"
-        return f"{self.repo.name} ({self.config.setup.value}, {language})"
+        """The repository and exactly what is acted on, as remediation names it.
+
+        A deletion names its category rather than setup and language: two
+        workflows, or two matrix variants, can scan the same language in one
+        repository, and each outcome must map back to exactly one Stale
+        Configurations row. A re-enable names the workflow instead, since it
+        acts once for every configuration that workflow uploads.
+        """
+        if self.action is CleanupAction.REENABLE_WORKFLOW:
+            return f"{self.repo.name}: {self.config.workflow_path}"
+        return f"{self.repo.name}: {self.config.category}"
 
 
 def plan_cleanup(facts: Sequence[CodeQLFacts], *, stale_days: int) -> list[CleanupItem]:
@@ -70,7 +78,9 @@ def plan_cleanup(facts: Sequence[CodeQLFacts], *, stale_days: int) -> list[Clean
 
     Only fully readable repositories are planned: an unknown state is never
     acted on, matching every other remediator. Items come out in repository
-    order, stalest configuration first within each.
+    order, stalest configuration first within each. A disabled workflow
+    uploading several configurations (a language matrix, say) is re-enabled
+    once, not once per configuration: the call is the same each time.
     """
     items: list[CleanupItem] = []
     for repo_facts in sorted(facts, key=lambda f: f.repo.name):
@@ -81,10 +91,16 @@ def plan_cleanup(facts: Sequence[CodeQLFacts], *, stale_days: int) -> list[Clean
             repo_facts.stale_configurations(stale_days),
             key=lambda c: (c.scan_order, c.category),
         )
+        workflows_done: set[str | None] = set()
         for config in stale:
             item = _plan_one(repo_facts, config, current)
-            if item is not None:
-                items.append(item)
+            if item is None:
+                continue
+            if item.action is CleanupAction.REENABLE_WORKFLOW:
+                if config.workflow_path in workflows_done:
+                    continue
+                workflows_done.add(config.workflow_path)
+            items.append(item)
     return items
 
 

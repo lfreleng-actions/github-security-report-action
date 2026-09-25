@@ -648,7 +648,11 @@ def test_plan_deletes_orphans_whose_language_is_still_scanned() -> None:
         ),
         ("/language:python", CleanupAction.DELETE, None),
     ]
-    assert items[0].label == "dependamerge (Advanced, python)"
+    # Labelled by the exact category, which is unique per configuration
+    # even when two workflows scan the same language.
+    assert items[0].label == (
+        f"dependamerge: {RENAMED_KEY}/build-mode:none/language:python"
+    )
 
 
 def test_plan_deletes_a_superseded_advanced_configuration() -> None:
@@ -804,3 +808,34 @@ def test_plan_leaves_unsettled_and_external_configurations(
     assert plan_cleanup([facts], stale_days=STALE_DAYS) == []
     assert not StaleCause.DEFAULT_SETUP_TRANSITIONAL.orphaned
     assert not StaleCause.EXTERNAL_UPLOADER.orphaned
+
+
+def test_a_disabled_matrix_workflow_is_reenabled_once() -> None:
+    # One workflow, two languages: two stale configurations, one re-enable.
+    # The call is identical for both, so repeating it would only spend the
+    # mutation budget and double-count the workflow in the summary.
+    facts = _facts(
+        "matrix",
+        _with_ids(_config("python", ADVANCED_KEY, days_behind=70), 1),
+        _with_ids(_config("actions", ADVANCED_KEY, days_behind=70), 2),
+        setup=DefaultSetup(configured=False, languages=frozenset()),
+        workflows={".github/workflows/codeql.yml": "disabled_inactivity"},
+    )
+    items = plan_cleanup([facts], stale_days=STALE_DAYS)
+    assert [(i.action, i.label) for i in items] == [
+        (CleanupAction.REENABLE_WORKFLOW, "matrix: .github/workflows/codeql.yml")
+    ]
+
+
+def test_deletion_ids_keep_the_apis_order_for_equal_timestamps() -> None:
+    # Only the newest analysis is deletable, and the API lists newest first:
+    # a tie reversed here would send the older id first and be refused.
+    same = "2026-09-24T00:00:00Z"
+    (config,) = latest_codeql_configurations(
+        [
+            {**_entry(same), "id": 5},
+            {**_entry(same), "id": 4},
+            {**_entry("2026-09-01T00:00:00Z"), "id": 3},
+        ]
+    )
+    assert config.analysis_ids == (5, 4, 3)

@@ -25,130 +25,36 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Protocol
 
-from github_security_report.categories import (
-    CategoryKey,
-    CategoryMeta,
-    category_meta,
-)
-from github_security_report.codeql import CleanupAction, CleanupItem, plan_cleanup
+from github_security_report.categories import CategoryKey, category_meta
 from github_security_report.models import Repo, SignalType
+from github_security_report.remediate.codeql import (
+    _cleanup_precheck,
+    _cleanup_targets,
+    _cleanup_write,
+)
+from github_security_report.remediate.model import (
+    _DONE,
+    _FAILED,
+    _REFUSED,
+    CategoryRemediation,
+    RemediationClient,
+    RepoOutcome,
+    _repo_targets,
+    _Target,
+)
 from github_security_report.report import OrgReport, TableSection
 
-
-class RemediationClient(Protocol):
-    """The write surface a remediator needs (a subset of ``GitHubClient``).
-
-    Each method enables one feature on one repository and returns
-    ``(ok, note)``: ``ok`` is whether the write succeeded, and ``note`` carries
-    a short diagnostic (an error status/body on failure, or a hint such as
-    ``"accepted (async)"`` on success). Tests supply an in-memory fake.
-    """
-
-    async def enable_dependabot_alerts(
-        self, org: str, repo: str
-    ) -> tuple[bool, str]: ...
-
-    async def enable_dependabot_security_updates(
-        self, org: str, repo: str
-    ) -> tuple[bool, str]: ...
-
-    async def enable_private_vulnerability_reporting(
-        self, org: str, repo: str
-    ) -> tuple[bool, str]: ...
-
-    async def enable_codeql_default_setup(
-        self, org: str, repo: str
-    ) -> tuple[bool, str]: ...
-
-    async def enable_secret_scanning(self, org: str, repo: str) -> tuple[bool, str]: ...
-
-    async def enable_auto_merge(self, org: str, repo: str) -> tuple[bool, str]: ...
-
-    async def delete_codeql_analyses(
-        self, org: str, repo: str, analysis_ids: tuple[int, ...]
-    ) -> tuple[bool, str]: ...
-
-    async def enable_workflow(
-        self, org: str, repo: str, path: str
-    ) -> tuple[bool, str]: ...
-
-    async def codeql_alerts_held_only_by(
-        self, org: str, repo: str, category: str, branch: str
-    ) -> int | None: ...
-
-
-# Outcome states. "would <verb>" is the dry-run preview; the past participle
-# and "FAILED" are the two terminal states after an apply; "refused" is a
-# target a guard stopped, in either mode, before anything was written.
-_FAILED = "FAILED"
-_REFUSED = "refused"
-
-# The past participle of each verb a remediator acts with.
-_DONE = {"enable": "enabled", "delete": "deleted", "re-enable": "re-enabled"}
-
-
-@dataclass(frozen=True)
-class RepoOutcome:
-    """The result of (planning to) remediate one target.
-
-    ``name`` is the target as the output names it: a repository, or for the
-    CodeQL cleanup a repository and configuration. ``verb`` is what was, or
-    would be, done to it.
-    """
-
-    name: str
-    action: str  # "would <verb>" | past participle | "FAILED" | "refused"
-    note: str = ""
-    verb: str = "enable"
-
-    @property
-    def failed(self) -> bool:
-        return self.action == _FAILED
-
-    @property
-    def refused(self) -> bool:
-        return self.action == _REFUSED
-
-
-@dataclass(frozen=True)
-class CategoryRemediation:
-    """Every repository outcome for one remediated category."""
-
-    category: CategoryMeta
-    outcomes: tuple[RepoOutcome, ...]
-
-    @property
-    def failures(self) -> int:
-        return sum(1 for o in self.outcomes if o.failed)
-
-
-# --------------------------------------------------------------------------- #
-# Targets
-# --------------------------------------------------------------------------- #
-@dataclass(frozen=True)
-class _Target:
-    """One unit of remediation work, with anything its write needs."""
-
-    repo: Repo
-    name: str
-    verb: str = "enable"
-    # Set when the plan already knows this target must not be written.
-    refusal: str | None = None
-    # The CodeQL cleanup's planned item; None for a feature toggle.
-    cleanup: CleanupItem | None = None
-
-
-def _repo_targets(
-    offenders: Callable[[OrgReport], list[Repo]],
-) -> Callable[[OrgReport], list[_Target]]:
-    """A feature toggle's targets: one per offending repository."""
-
-    def _get(report: OrgReport) -> list[_Target]:
-        return [_Target(repo, repo.name) for repo in offenders(report)]
-
-    return _get
+__all__ = [
+    "DEFAULT_REMEDIABLE",
+    "EXPLICIT_ONLY",
+    "REMEDIABLE",
+    "CategoryRemediation",
+    "RemediationClient",
+    "RepoOutcome",
+    "parse_categories",
+    "remediate_org",
+]
 
 
 # --------------------------------------------------------------------------- #
@@ -184,63 +90,6 @@ def _table_offenders(key: CategoryKey) -> Callable[[OrgReport], list[Repo]]:
         return [row.repo for row in table.rows] if table is not None else []
 
     return _get
-
-
-# --------------------------------------------------------------------------- #
-# CodeQL stale-configuration cleanup
-# --------------------------------------------------------------------------- #
-def _cleanup_targets(report: OrgReport) -> list[_Target]:
-    """One target per stale configuration with a safe fix, from the report."""
-    health = report.codeql_health
-    if health is None:
-        return []
-    return [
-        _Target(
-            item.repo,
-            item.label,
-            verb=item.action.value,
-            refusal=item.refusal,
-            cleanup=item,
-        )
-        for item in plan_cleanup(health.facts, stale_days=health.stale_days)
-    ]
-
-
-def _planned(target: _Target) -> CleanupItem:
-    if target.cleanup is None:  # pragma: no cover - registry wiring invariant
-        raise ValueError(f"{target.name}: no cleanup plan")
-    return target.cleanup
-
-
-async def _cleanup_precheck(
-    client: RemediationClient, org: str, target: _Target
-) -> str | None:
-    """Refuse a deletion that would close an open alert, or can't rule it out."""
-    item = _planned(target)
-    if item.action is not CleanupAction.DELETE:
-        return None
-    held = await client.codeql_alerts_held_only_by(
-        org, item.repo.name, item.config.category, item.repo.default_branch
-    )
-    if held is None:
-        return "open alerts could not be read; nothing deleted"
-    if held:
-        return f"would close {held} open alert(s) that only it reports"
-    return None
-
-
-async def _cleanup_write(
-    client: RemediationClient, org: str, target: _Target
-) -> tuple[bool, str]:
-    item = _planned(target)
-    if item.action is CleanupAction.DELETE:
-        return await client.delete_codeql_analyses(
-            org, item.repo.name, item.config.analysis_ids
-        )
-    path = item.config.workflow_path
-    if path is None:  # pragma: no cover - the planner only re-enables workflows
-        return False, "no workflow path"
-    return await client.enable_workflow(org, item.repo.name, path)
 
 
 # --------------------------------------------------------------------------- #
