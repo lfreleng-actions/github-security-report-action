@@ -10,12 +10,16 @@ repositories that swapped the other way and left their workflow behind.
 from __future__ import annotations
 
 import datetime as dt
+from dataclasses import replace
 from types import MappingProxyType
 
 import pytest
 
 from github_security_report.categories import CategoryKey
-from github_security_report.client.codeql_parsers import latest_codeql_configurations
+from github_security_report.client.codeql_parsers import (
+    _parse_default_setup,
+    latest_codeql_configurations,
+)
 from github_security_report.codeql import (
     CodeQLConfiguration,
     CodeQLFacts,
@@ -37,6 +41,11 @@ RENAMED_KEY = ".github/workflows/codeql.yaml:analyze"
 
 def _repo(name: str) -> Repo:
     return Repo(name, f"o/{name}", f"https://github.com/o/{name}")
+
+
+def _scanned_on(config: CodeQLConfiguration) -> str | None:
+    """A configuration's last successful scan as an ISO date (None: never)."""
+    return config.last_scan_at.date().isoformat() if config.last_scan_at else None
 
 
 def _config(
@@ -356,7 +365,7 @@ def test_latest_configurations_keeps_the_newest_analysis_per_category() -> None:
         ]
     )
     assert len(configs) == 1
-    assert configs[0].last_scan_at.day == 24
+    assert _scanned_on(configs[0]) == "2026-06-24"
 
 
 def test_language_falls_back_to_the_environment() -> None:
@@ -372,3 +381,232 @@ def test_language_falls_back_to_the_environment() -> None:
         ]
     )
     assert config.language == "java-kotlin"
+
+
+# --------------------------------------------------------------------------- #
+# Failing analyses (Copilot review, #173)
+# --------------------------------------------------------------------------- #
+def _entry(created: str, error: str = "", key: str = ADVANCED_KEY) -> dict:
+    return {
+        "category": f"{key}/build-mode:none/language:python",
+        "analysis_key": key,
+        "created_at": created,
+        "error": error,
+    }
+
+
+def test_an_errored_analysis_is_not_a_scan() -> None:
+    # A workflow that fails on every run still uploads, with a fresh
+    # timestamp. Counting it would keep the configuration looking current
+    # indefinitely: the last scan is the newest *successful* upload.
+    (config,) = latest_codeql_configurations(
+        [
+            _entry("2026-06-01T00:00:00Z"),
+            _entry("2026-09-20T00:00:00Z", error="CodeQL extraction failed"),
+            _entry("2026-09-24T00:00:00Z", error="CodeQL extraction failed"),
+        ]
+    )
+    assert _scanned_on(config) == "2026-06-01"
+    assert config.failing is True
+
+
+def test_a_configuration_that_never_succeeded_has_never_scanned() -> None:
+    # A first attempt that failed on the current head of a quiet repository
+    # must not read as a scan: measured against the head it would never go
+    # stale, and its language would count as covered, although CodeQL has
+    # never produced a result.
+    (config,) = latest_codeql_configurations(
+        [
+            _entry("2026-09-24T00:00:00Z", error="boom"),
+            _entry("2026-07-01T00:00:00Z", error="boom"),
+        ]
+    )
+    assert (_scanned_on(config), config.failing) == (None, True)
+    assert config.is_stale(dt.datetime(2026, 7, 1, tzinfo=dt.timezone.utc), 30)
+    facts = _facts(
+        "r",
+        replace(config, language="python"),
+        setup=DefaultSetup(configured=False, languages=frozenset({"python"})),
+        head=dt.datetime(2026, 9, 24, tzinfo=dt.timezone.utc),
+    )
+    stale = build_stale_configurations_table([facts], stale_days=STALE_DAYS)
+    assert [row.cells[2:] for row in stale.rows] == [
+        ("never", "Analyses failing; check the latest run")
+    ]
+    coverage = build_language_coverage_table([facts], stale_days=STALE_DAYS)
+    assert [row.cells[1] for row in coverage.rows] == ["python"]
+
+
+def test_a_recovered_configuration_is_not_failing() -> None:
+    (config,) = latest_codeql_configurations(
+        [
+            _entry("2026-09-20T00:00:00Z", error="boom"),
+            _entry("2026-09-24T00:00:00Z"),
+        ]
+    )
+    assert (_scanned_on(config), config.failing) == ("2026-09-24", False)
+
+
+def test_failing_analyses_are_the_reported_cause() -> None:
+    # The setup exists and still runs, whatever else is true of it, so the
+    # reader's next step is the failing run's logs.
+    failing = replace(_config("python", ADVANCED_KEY, days_behind=60), failing=True)
+    facts = _facts(
+        "r",
+        failing,
+        setup=DefaultSetup(configured=False, languages=frozenset({"python"})),
+        workflows={".github/workflows/codeql.yml": "active"},
+    )
+    table = build_stale_configurations_table([facts], stale_days=STALE_DAYS)
+    assert table.rows[0].cells[-1] == "Analyses failing; check the latest run"
+
+
+def test_a_new_setup_under_the_same_category_continues_the_configuration() -> None:
+    # GitHub defines a configuration as ref + tool + category, so an upload
+    # under an existing category continues that configuration whichever setup
+    # sent it: the newest analysis's key describes it, and nothing is orphaned.
+    shared = "/language:python"
+    (config,) = latest_codeql_configurations(
+        [
+            {
+                "category": shared,
+                "analysis_key": DEFAULT_KEY,
+                "created_at": "2026-06-01T00:00:00Z",
+            },
+            {
+                "category": shared,
+                "analysis_key": ADVANCED_KEY,
+                "created_at": "2026-09-24T00:00:00Z",
+            },
+        ]
+    )
+    assert (config.analysis_key, _scanned_on(config)) == (ADVANCED_KEY, "2026-09-24")
+
+
+# --------------------------------------------------------------------------- #
+# Third review (#173): setup states, external uploaders, sort keys
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    ("state", "configured", "transitional"),
+    [
+        ("configured", True, False),
+        ("not-configured", False, False),
+        ("evaluating", False, True),
+        ("failed", False, True),
+        (None, False, True),
+    ],
+)
+def test_default_setup_keeps_transitional_states_apart(
+    state: str | None, configured: bool, transitional: bool
+) -> None:
+    # Only a real "not-configured" means default setup is off. A state GitHub
+    # is still settling into, or one it failed to reach, is neither on nor
+    # off, and must not be read as "disabled".
+    setup = _parse_default_setup({"state": state, "languages": ["python"]})
+    assert (setup.configured, setup.transitional) == (configured, transitional)
+
+
+def test_a_transitional_default_setup_is_not_reported_as_disabled() -> None:
+    facts = _facts(
+        "r",
+        _config("python", days_behind=60),
+        setup=DefaultSetup(configured=False, transitional=True),
+    )
+    table = build_stale_configurations_table([facts], stale_days=STALE_DAYS)
+    assert table.rows[0].cells[-1] == "Default setup changing state; recheck later"
+
+
+def test_an_upload_from_outside_actions_is_not_a_workflow_problem() -> None:
+    # CodeQL run from another CI system uploads under an analysis key that
+    # names no workflow file, so no workflow state is read or blamed.
+    external = CodeQLConfiguration(
+        category="ci/codeql/language:python",
+        analysis_key="jenkins:codeql",
+        last_scan_at=HEAD - dt.timedelta(days=60),
+        language="python",
+    )
+    off = _facts(
+        "r", external, setup=DefaultSetup(configured=False, languages=frozenset())
+    )
+    on = _facts(
+        "r", external, setup=DefaultSetup(configured=True, languages=frozenset())
+    )
+    (off_row,) = build_stale_configurations_table([off], stale_days=STALE_DAYS).rows
+    (on_row,) = build_stale_configurations_table([on], stale_days=STALE_DAYS).rows
+    assert off_row.cells[-1] == "Uploaded outside GitHub Actions; check that pipeline"
+    # Default setup blocks advanced uploads from anywhere, so it still wins.
+    assert on_row.cells[-1] == "Superseded by default setup"
+
+
+def test_never_sorts_as_the_oldest_last_scan() -> None:
+    # The cell reads "never", but its sort key is the oldest possible date,
+    # so a configured ascending sort on Last scan keeps it stalest-first.
+    never = replace(
+        _config("python", ADVANCED_KEY, days_behind=0), last_scan_at=None, failing=True
+    )
+    facts = _facts(
+        "r",
+        never,
+        _config("actions", days_behind=90),
+        setup=DefaultSetup(configured=False, languages=frozenset()),
+    )
+    rows = build_stale_configurations_table([facts], stale_days=STALE_DAYS).rows
+    by_cell = {row.cells[2]: row.sort_values[2] for row in rows}
+    assert by_cell == {"never": "0001-01-01", "2026-06-26": "2026-06-26"}
+
+
+# --------------------------------------------------------------------------- #
+# Fourth review (#173): transitional setup, tie order
+# --------------------------------------------------------------------------- #
+def test_a_transitional_setup_blames_no_advanced_uploader() -> None:
+    # Mid-change, default setup may be about to supersede the configuration,
+    # so neither its workflow nor an external pipeline is the cause.
+    facts = _facts(
+        "r",
+        _config("python", ADVANCED_KEY, days_behind=60),
+        setup=DefaultSetup(configured=False, transitional=True),
+        workflows={".github/workflows/codeql.yml": "active"},
+    )
+    (row,) = build_stale_configurations_table([facts], stale_days=STALE_DAYS).rows
+    assert row.cells[-1] == "Default setup changing state; recheck later"
+
+
+def test_coverage_is_unknown_while_default_setup_is_transitional() -> None:
+    # Its languages are neither the configured set nor the detected
+    # inventory, so the repository is neither covered nor a gap.
+    facts = _facts(
+        "r",
+        _config("python", ADVANCED_KEY, days_behind=0),
+        setup=DefaultSetup(
+            configured=False, transitional=True, languages=frozenset({"go"})
+        ),
+    )
+    table = build_language_coverage_table([facts], stale_days=STALE_DAYS)
+    assert (table.fail_count, table.pass_count, table.unknown_count) == (0, 0, 1)
+
+
+def test_equal_timestamps_keep_the_apis_newest_first_order() -> None:
+    # The API lists analyses newest first. Two sharing a timestamp must keep
+    # that order, or the older one is taken as the newest attempt.
+    same = "2026-09-24T00:00:00Z"
+    (config,) = latest_codeql_configurations(
+        [
+            {**_entry(same, error="boom"), "analysis_key": "newest"},
+            {**_entry(same), "analysis_key": "older"},
+        ]
+    )
+    assert (config.analysis_key, config.failing) == ("newest", True)
+
+
+def test_a_transitional_setup_outranks_a_removed_workflow() -> None:
+    # Even a confirmed-removed workflow is not final while default setup is
+    # mid-change: reaching "orphaned" here would let a cleanup delete an
+    # unsettled configuration.
+    facts = _facts(
+        "r",
+        _config("python", ADVANCED_KEY, days_behind=60),
+        setup=DefaultSetup(configured=False, transitional=True),
+        workflows={".github/workflows/codeql.yml": "missing"},
+    )
+    (row,) = build_stale_configurations_table([facts], stale_days=STALE_DAYS).rows
+    assert row.cells[-1] == "Default setup changing state; recheck later"

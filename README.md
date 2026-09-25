@@ -65,8 +65,10 @@ tables (org mode):
     `codeql_stale_days` (default 30) — the condition GitHub's tool status page
     flags as *"Code Scanning results may be out of date"*. Each row names the
     setup type (**Default**, GitHub-managed; or **Advanced**, a workflow in the
-    repository), the language, the last scan, and the cause: default setup
-    switched off, a workflow removed or disabled, or an advanced workflow
+    repository), the language, the last *successful* scan, and the cause:
+    analyses failing (a run that errors still uploads, but its results do not
+    count as a scan), default setup switched off, a workflow removed or
+    disabled, or an advanced workflow
     **superseded** by default setup (GitHub rejects advanced CodeQL uploads
     while default setup is on). An *orphaned* configuration will never scan
     again; delete it from the tool status page once the live setup covers its
@@ -74,7 +76,9 @@ tables (org mode):
   - **Language Coverage** lists repositories where GitHub detects a
     CodeQL-supported language that no current configuration scans — typically
     an advanced workflow whose language matrix omits one the repository
-    contains, such as `actions` for its own workflows.
+    contains, such as `actions` for its own workflows. On default setup GitHub
+    reports only the languages it is set to scan, so a detected language
+    deliberately left out of default setup is not visible to this check.
 
   Both consider only repositories where CodeQL has run at least once; the rest
   already appear in the Results/Findings not-enabled list. Finding a stale

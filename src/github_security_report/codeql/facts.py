@@ -17,7 +17,7 @@ coexist. Switching from one to the other leaves the previous setup's
 configurations behind, frozen at their last scan.
 
 Everything here is pure. The client gathers the raw payloads and maps them onto
-these types (see ``client.parsers``), and the tables classify them.
+these types (see ``client.codeql_parsers``), and the tables classify them.
 """
 
 from __future__ import annotations
@@ -78,9 +78,14 @@ class CodeQLConfiguration:
 
     category: str
     analysis_key: str
-    last_scan_at: dt.datetime
+    # The newest successful upload. None when no upload has ever succeeded:
+    # a configuration that has never produced results has never scanned,
+    # whatever its attempts' timestamps say.
+    last_scan_at: dt.datetime | None
     # The normalised CodeQL language, or None when the analysis names none.
     language: str | None = None
+    # True when the newest attempt uploaded an error rather than results.
+    failing: bool = False
 
     @property
     def setup(self) -> SetupType:
@@ -97,18 +102,29 @@ class CodeQLConfiguration:
         path = self.analysis_key.partition(":")[0]
         return path if path.startswith(_WORKFLOW_DIR) else None
 
-    def lag(self, head_committed_at: dt.datetime) -> dt.timedelta:
-        """How far this configuration's last scan trails the branch head."""
-        return head_committed_at - self.last_scan_at
-
     def is_stale(self, head_committed_at: dt.datetime, stale_days: int) -> bool:
         """Whether the last scan trails the branch head by over ``stale_days``.
 
         Measured against the newest commit rather than the clock: a repository
         nobody has pushed to in a year, scanned only on push, is not out of
-        date -- nothing it would scan has changed.
+        date -- nothing it would scan has changed. A configuration that has
+        never once succeeded is always stale: measuring a failed attempt
+        against the head would let a first run that failed on a quiet
+        repository read as current, and its language as covered, forever.
         """
-        return self.lag(head_committed_at) > dt.timedelta(days=stale_days)
+        if self.last_scan_at is None:
+            return True
+        return head_committed_at - self.last_scan_at > dt.timedelta(days=stale_days)
+
+    @property
+    def scan_order(self) -> dt.datetime:
+        """The last scan for ordering: a never-successful one sorts oldest."""
+        return self.last_scan_at or _NEVER
+
+
+# Aware sentinel so a configuration that never succeeded sorts ahead of every
+# dated one, without comparing a naive and an aware value.
+_NEVER = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -117,13 +133,20 @@ class DefaultSetup:
 
     ``languages`` is what GitHub detects as CodeQL-scannable when default setup
     is off, and the languages it is set to scan when default setup is on. So
-    for a repository on default setup, a detected language excluded from that
-    list is invisible here -- an accepted limit, since no public API reports
-    detection independently of the setup.
+    for a repository on default setup, a detected language deliberately left
+    out of that list is invisible here, and Language Coverage cannot report it.
+    No public API reports detection independently of the setup, and the
+    alternative inventory (Linguist's repository languages) names no
+    ``actions`` and misreads vendored code, so the limit is stated rather than
+    papered over.
     """
 
     configured: bool
     languages: frozenset[str] = frozenset()
+    # True when GitHub reports a state other than configured or
+    # not-configured (it is evaluating a change, say, or the last change
+    # failed). Neither "on" nor "off" can then be assumed.
+    transitional: bool = False
 
 
 @dataclass(frozen=True)

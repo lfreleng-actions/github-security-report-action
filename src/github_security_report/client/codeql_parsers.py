@@ -9,6 +9,7 @@ default-setup state.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import re
 from collections.abc import Iterable, Mapping
@@ -51,30 +52,55 @@ def _analysis_language(analysis: Mapping[str, object]) -> str | None:
 def latest_codeql_configurations(
     analyses: Iterable[Mapping[str, object]],
 ) -> tuple[CodeQLConfiguration, ...]:
-    """Each configuration's newest analysis, from raw ``analyses`` entries.
+    """Each configuration's state as of its latest analysis, from raw entries.
 
-    Keyed by ``category``, which is how GitHub itself separates
-    configurations. The newest entry wins whatever order the API returned them
-    in; an entry lacking a category or a parsable timestamp is skipped rather
-    than guessed at.
+    Grouped by ``category``, which is how GitHub itself separates
+    configurations: GitHub defines a set of analyses by ref, tool and
+    category, so a new setup uploading under the same category continues that
+    configuration rather than orphaning it. An entry lacking a category or a
+    parsable timestamp is skipped rather than guessed at.
+
+    The last scan is the newest *successful* upload. An analysis whose
+    ``error`` is set still has a fresh timestamp, and taking it would let a
+    workflow that fails on every run read as current indefinitely. A
+    configuration that has never once succeeded has no last scan at all
+    (``None``), which makes it stale however recent its attempts. ``failing``
+    records whether the newest attempt errored.
     """
-    newest: dict[str, CodeQLConfiguration] = {}
+    grouped: dict[str, list[tuple[dt.datetime, Mapping[str, object]]]] = {}
     for analysis in analyses:
         category = analysis.get("category")
         created = _parse_iso(analysis.get("created_at"))
-        if not isinstance(category, str) or created is None:
-            continue
-        current = newest.get(category)
-        if current is not None and current.last_scan_at >= created:
-            continue
-        key = analysis.get("analysis_key")
-        newest[category] = CodeQLConfiguration(
-            category=category,
-            analysis_key=key if isinstance(key, str) else "",
-            last_scan_at=created,
-            language=_analysis_language(analysis),
-        )
-    return tuple(sorted(newest.values(), key=lambda c: c.category))
+        if isinstance(category, str) and created is not None:
+            grouped.setdefault(category, []).append((created, analysis))
+    # Newest first, by a stable sort, so equal timestamps keep the API's own
+    # newest-first order: only the newest analysis is deletable, and a tie
+    # resolved the other way would pick an older one as "newest".
+    return tuple(
+        _configuration(category, sorted(entries, key=lambda e: e[0], reverse=True))
+        for category, entries in sorted(grouped.items())
+    )
+
+
+def _errored(analysis: Mapping[str, object]) -> bool:
+    error = analysis.get("error")
+    return isinstance(error, str) and bool(error.strip())
+
+
+def _configuration(
+    category: str, entries: list[tuple[dt.datetime, Mapping[str, object]]]
+) -> CodeQLConfiguration:
+    """One configuration from its analyses, newest first."""
+    _newest_at, newest = entries[0]
+    succeeded = [created for created, analysis in entries if not _errored(analysis)]
+    key = newest.get("analysis_key")
+    return CodeQLConfiguration(
+        category=category,
+        analysis_key=key if isinstance(key, str) else "",
+        last_scan_at=succeeded[0] if succeeded else None,
+        language=_analysis_language(newest),
+        failing=_errored(newest),
+    )
 
 
 def _parse_default_setup(body: Mapping[str, object]) -> DefaultSetup:
@@ -85,6 +111,9 @@ def _parse_default_setup(body: Mapping[str, object]) -> DefaultSetup:
         if isinstance(raw, list)
         else frozenset()
     )
+    state = body.get("state")
     return DefaultSetup(
-        configured=body.get("state") == "configured", languages=languages
+        configured=state == "configured",
+        languages=languages,
+        transitional=state not in ("configured", "not-configured"),
     )

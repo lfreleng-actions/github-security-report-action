@@ -314,8 +314,14 @@ class ReadClient(OrgReadClient):
         """The Actions state of the workflow at ``path`` (None when unreadable).
 
         ``active``, ``deleted`` or one of the ``disabled_*`` states, as GitHub
-        reports them; ``missing`` when the repository has no such workflow,
-        which is how a renamed or removed workflow file shows up.
+        reports them; ``missing`` when the repository demonstrably has no such
+        workflow file, which is how a renamed or removed workflow shows up.
+
+        A ``404`` alone does not establish that: GitHub answers a token that
+        cannot see a repository's Actions the same way. Since "missing" lets a
+        cleanup treat the configuration as orphaned and delete it, absence is
+        confirmed through the contents API before it is reported; anything the
+        token cannot confirm is unreadable (``None``) instead.
         """
         name = path.rsplit("/", 1)[-1]
         resp = await self._request(
@@ -324,7 +330,29 @@ class ReadClient(OrgReadClient):
         status = resp.status_code
         if status != 200:
             await resp.aclose()  # unread body would leak a pooled connection
-            return WORKFLOW_MISSING if status == 404 else None
+            if status == 404 and await self._workflow_file_absent(org, repo, path):
+                return WORKFLOW_MISSING
+            return None
         state = resp.json().get("state")
         await resp.aclose()  # release the connection once the body is read
         return state if isinstance(state, str) else None
+
+    async def _workflow_file_absent(self, org: str, repo: str, path: str) -> bool:
+        """Whether the repository's contents show no file at ``path``.
+
+        Proven by a readable listing of the workflow directory without the
+        file, or, when the directory itself 404s, by a readable repository
+        root (so the directory is truly absent rather than hidden). Every
+        other answer is inconclusive and reported as not absent.
+        """
+        directory, _, name = path.rpartition("/")
+        base = f"{self._api_url}/repos/{org}/{repo}/contents"
+        status, entries = await self._get_list(f"{base}/{directory}")
+        if status == 200:
+            return all(entry.get("name") != name for entry in entries)
+        if status != 404:
+            return False
+        resp = await self._request("GET", f"{base}/")
+        readable = resp.status_code == 200
+        await resp.aclose()  # only the status matters here
+        return readable

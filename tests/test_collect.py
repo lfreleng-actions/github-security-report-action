@@ -938,3 +938,45 @@ async def test_collect_org_codeql_threshold_comes_from_the_report_config() -> No
     stale, _coverage = report.codeql_tables
     assert stale.rows == []
     assert client.workflow_reads == []
+
+
+async def test_collect_org_reads_codeql_on_each_repos_default_branch() -> None:
+    # A repository on "master" must be read on refs/heads/master; reading
+    # "main" would find no CodeQL there and drop it from both tables.
+    class BranchRecordingClient(FakeClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.repos = [
+                Repo("old", "o/old", "u", default_branch="master"),
+                Repo("new", "o/new", "u"),
+            ]
+            self.branches: dict[str, str] = {}
+
+        async def codeql_configurations(
+            self, org: str, repo: str, branch: str
+        ) -> tuple[int, tuple[CodeQLConfiguration, ...]]:
+            self.branches[repo] = branch
+            return await super().codeql_configurations(org, repo, branch)
+
+    client = BranchRecordingClient()
+    await collect.collect_org(
+        client, OrgConfig(name="o"), ReportConfig(), generated_at=WHEN
+    )
+    assert client.branches == {"old": "master", "new": "main"}
+
+
+async def test_collect_org_skips_workflow_reads_for_an_unreadable_history() -> None:
+    # A partial analyses read leaves the repository unknown in both tables,
+    # so looking up its workflows would spend requests on discarded data.
+    class PartialHistoryClient(CodeQLHealthClient):
+        async def codeql_configurations(
+            self, org: str, repo: str, branch: str
+        ) -> tuple[int, tuple[CodeQLConfiguration, ...]]:
+            _status, configs = await super().codeql_configurations(org, repo, branch)
+            return 502, configs
+
+    client = PartialHistoryClient()
+    await collect.collect_org(
+        client, OrgConfig(name="o"), ReportConfig(), generated_at=WHEN
+    )
+    assert client.workflow_reads == []

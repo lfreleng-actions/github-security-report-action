@@ -71,6 +71,32 @@ async def test_list_org_repos_skips_disabled_and_empty(client: GitHubClient) -> 
 
 
 @respx.mock
+async def test_list_org_repos_keeps_each_default_branch(client: GitHubClient) -> None:
+    # Every per-branch read follows Repo.default_branch, so a repository on
+    # "master" must not silently become "main" and query the wrong ref.
+    respx.get(f"{API}/orgs/o/repos").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "name": "old",
+                    "full_name": "o/old",
+                    "html_url": "u",
+                    "size": 10,
+                    "default_branch": "master",
+                },
+                {"name": "bare", "full_name": "o/bare", "html_url": "u", "size": 10},
+            ],
+        )
+    )
+    _status, repos = await client.list_org_repos("o")
+    assert {r.name: r.default_branch for r in repos} == {
+        "old": "master",
+        "bare": "main",
+    }
+
+
+@respx.mock
 async def test_list_org_repos_reports_incomplete_status(client: GitHubClient) -> None:
     # A first page that succeeds followed by a failing page must surface the
     # failing status so the caller can flag the report as partial.
@@ -1405,8 +1431,10 @@ async def test_codeql_configurations_walks_the_whole_history(
     assert status == 200
     by_language = {c.language: c for c in configs}
     assert set(by_language) == {"python", "actions"}
-    assert by_language["actions"].last_scan_at.date().isoformat() == "2026-06-24"
-    assert by_language["python"].last_scan_at.day == 24
+    actions, python = by_language["actions"], by_language["python"]
+    assert actions.last_scan_at is not None and python.last_scan_at is not None
+    assert actions.last_scan_at.date().isoformat() == "2026-06-24"
+    assert python.last_scan_at.day == 24
 
 
 @respx.mock
@@ -1462,7 +1490,6 @@ async def test_codeql_default_setup_unreadable_is_none(client: GitHubClient) -> 
     ("status", "body", "expected"),
     [
         (200, {"state": "disabled_manually"}, "disabled_manually"),
-        (404, {"message": "Not Found"}, "missing"),
         (403, {"message": "Forbidden"}, None),
     ],
 )
@@ -1470,7 +1497,7 @@ async def test_workflow_state(
     client: GitHubClient, status: int, body: dict, expected: str | None
 ) -> None:
     # The workflow is looked up by file name, which the API accepts in place
-    # of its numeric id; a 404 is how a removed or renamed file shows up.
+    # of its numeric id.
     route = respx.get(f"{API}/repos/o/r/actions/workflows/codeql.yaml").mock(
         return_value=httpx.Response(
             status, json=body, headers={"x-ratelimit-remaining": "4999"}
@@ -1478,6 +1505,48 @@ async def test_workflow_state(
     )
     state = await client.workflow_state("o", "r", ".github/workflows/codeql.yaml")
     assert route.called
+    assert state == expected
+
+
+_CONTENTS = f"{API}/repos/o/r/contents"
+
+
+def _no_such_workflow() -> None:
+    respx.get(f"{API}/repos/o/r/actions/workflows/codeql.yaml").mock(
+        return_value=httpx.Response(404, json={"message": "Not Found"})
+    )
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("listing", "root", "expected"),
+    [
+        # The directory lists, without the file: demonstrably removed.
+        (httpx.Response(200, json=[{"name": "codeql.yml"}]), None, "missing"),
+        # The file is there after all, so the 404 hid something: unreadable.
+        (httpx.Response(200, json=[{"name": "codeql.yaml"}]), None, None),
+        # No workflow directory, in a repository the token can read: removed.
+        (httpx.Response(404), httpx.Response(200, json=[]), "missing"),
+        # Nothing readable either way: GitHub masks missing access as 404.
+        (httpx.Response(404), httpx.Response(404), None),
+        (httpx.Response(403, headers={"x-ratelimit-remaining": "4999"}), None, None),
+    ],
+    ids=["listed-absent", "present", "no-dir", "masked", "forbidden"],
+)
+async def test_workflow_404_is_missing_only_when_confirmed(
+    client: GitHubClient,
+    listing: httpx.Response,
+    root: httpx.Response | None,
+    expected: str | None,
+) -> None:
+    # "missing" lets cleanup treat a configuration as orphaned and delete it,
+    # so a 404 is confirmed against the repository's contents first; a token
+    # that cannot see Actions must read as unreadable, never as removed.
+    _no_such_workflow()
+    respx.get(f"{_CONTENTS}/.github/workflows").mock(return_value=listing)
+    if root is not None:
+        respx.get(f"{_CONTENTS}/").mock(return_value=root)
+    state = await client.workflow_state("o", "r", ".github/workflows/codeql.yaml")
     assert state == expected
 
 
