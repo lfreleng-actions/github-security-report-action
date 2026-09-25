@@ -14,7 +14,9 @@ from github_security_report.severity import Severity
 SIGNAL_CATEGORIES: dict[CategoryKey, CategoryMeta] = {
     CategoryKey.CODEQL: CategoryMeta(
         key=CategoryKey.CODEQL,
-        title="CodeQL",
+        # Qualified so the alerts table reads apart from the two CodeQL
+        # scan-health tables nested beneath it.
+        title="CodeQL: Results/Findings",
         pass_label="Clean",
         fail_label=None,
         url="https://codeql.github.com/",

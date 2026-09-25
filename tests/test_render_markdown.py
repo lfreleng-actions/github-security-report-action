@@ -40,7 +40,7 @@ class TestSection:
         )
         section = next(s for s in _org([sig]).sections if s.signal is SignalType.CODEQL)
         out = markdown.render_section(section)
-        assert "## CodeQL" in out
+        assert "## CodeQL: Results/Findings" in out
         assert "| Repository | Critical | High | Medium | Low | Total |" in out
         assert "[bad](https://github.com/o/bad)" in out
         assert "| 1 | 2 | 0 | 0 | 3 |" in out
