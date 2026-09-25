@@ -9,8 +9,10 @@ import logging
 
 import pytest
 
-from github_security_report import collect, pulls
+from github_security_report import collect, layout, pulls, scope
+from github_security_report.categories import CategoryKey
 from github_security_report.client import GraphBatchError
+from github_security_report.codeql import CodeQLConfiguration, DefaultSetup
 from github_security_report.config import OrgConfig, ReportConfig
 from github_security_report.models import Repo, RepoGraphData, RepoState, SignalType
 from github_security_report.report import OrgReport, SignalSection
@@ -60,6 +62,19 @@ class FakeClient:
         self.scores = {"dependamerge": 8.2}
         self.members: set[str] = {"insider"}
         self.viewer: str = "insider"
+        # "Allow auto-merge" per repository; absent names default to enabled.
+        # Unlike the other posture flags this one rides the GraphQL prefetch,
+        # so it is set here rather than behind a per-repo helper method.
+        self.auto_merge: dict[str, bool] = {}
+        # CodeQL scan health: per-repo configurations, default-setup state and
+        # the Actions state of each workflow path. Every repository defaults to
+        # no CodeQL configurations, so the scan-health tables stay empty unless
+        # a test opts in. ``workflow_reads`` records each workflow lookup.
+        self.codeql: dict[str, tuple[CodeQLConfiguration, ...]] = {}
+        self.default_setup: dict[str, DefaultSetup] = {}
+        self.workflows: dict[tuple[str, str], str] = {}
+        self.workflow_reads: list[tuple[str, str]] = []
+        self.head: dict[str, dt.datetime] = {}
 
     async def list_org_repos(self, org: str) -> tuple[int, list[Repo]]:
         return 200, self.repos
@@ -125,6 +140,18 @@ class FakeClient:
     async def private_vulnerability_reporting(self, org: str, repo: str) -> bool | None:
         return True
 
+    async def codeql_configurations(
+        self, org: str, repo: str, branch: str
+    ) -> tuple[int, tuple[CodeQLConfiguration, ...]]:
+        return 200, self.codeql.get(repo, ())
+
+    async def codeql_default_setup(self, org: str, repo: str) -> DefaultSetup | None:
+        return self.default_setup.get(repo, DefaultSetup(configured=False))
+
+    async def workflow_state(self, org: str, repo: str, path: str) -> str | None:
+        self.workflow_reads.append((repo, path))
+        return self.workflows.get((repo, path))
+
     async def dependabot_config(self, org: str, repo: str) -> tuple[int, str]:
         return 404, ""  # no Dependabot configuration by default
 
@@ -144,6 +171,8 @@ class FakeClient:
             cfg_status, cfg_text = await self.dependabot_config(org, name)
             out[name] = RepoGraphData(
                 dependabot_alerts_enabled=await self.dependabot_enabled(org, name),
+                auto_merge_allowed=self.auto_merge.get(name, True),
+                head_committed_at=self.head.get(name, WHEN),
                 latest_tag_at=await self.latest_tag_at(org, name),
                 latest_release_at=await self.latest_release_at(org, name),
                 dependabot_config=cfg_text if cfg_status == 200 else None,
@@ -503,6 +532,8 @@ class PostureClient(FakeClient):
         # Private vulnerability reporting: on for dependamerge, off for
         # git-configure-action (so the PVR table has exactly one offender).
         self._pvr = {"dependamerge": True, "git-configure-action": False}
+        # Auto-merge: same split, so the Auto-merge table has one offender too.
+        self.auto_merge = {"dependamerge": True, "git-configure-action": False}
         self._configs = {
             "dependamerge": (
                 200,
@@ -588,6 +619,14 @@ async def test_collect_org_attaches_dependabot_tables_and_releases() -> None:
     assert pvr.title == "Private Vulnerability Reporting"
     assert [r.repo.name for r in pvr.rows] == ["git-configure-action"]
     assert (pvr.fail_count, pvr.pass_count) == (1, 1)
+
+    # Auto-merge rides the batched GraphQL prefetch rather than a probe of its
+    # own, so this also confirms the flag survives that route into the table.
+    auto_merge = report.auto_merge
+    assert auto_merge is not None
+    assert auto_merge.title == "Auto-merge"
+    assert [r.repo.name for r in auto_merge.rows] == ["git-configure-action"]
+    assert (auto_merge.fail_count, auto_merge.pass_count) == (1, 1)
 
 
 async def test_collect_org_omits_the_personal_queue_without_a_person() -> None:
@@ -804,3 +843,218 @@ async def test_graph_batch_treats_a_zero_size_as_one() -> None:
     graph = await _collect_graph(client, batch_size=0)
     assert client.batches == [1, 1]
     assert len(graph) == 2
+
+
+# --------------------------------------------------------------------------- #
+# CodeQL scan health
+# --------------------------------------------------------------------------- #
+_DEFAULT_KEY = "dynamic/github-code-scanning/codeql:analyze"
+_ADVANCED_KEY = ".github/workflows/codeql.yml:analyze"
+
+
+def _codeql_config(language: str, key: str, days_behind: int) -> CodeQLConfiguration:
+    prefix = "" if key == _DEFAULT_KEY else f"{key}/build-mode:none"
+    return CodeQLConfiguration(
+        category=f"{prefix}/language:{language}",
+        analysis_key=key,
+        last_scan_at=WHEN - dt.timedelta(days=days_behind),
+        language=language,
+    )
+
+
+class CodeQLHealthClient(FakeClient):
+    """dependamerge swapped default setup for a Python-only workflow.
+
+    git-configure-action went the other way: default setup is live and the old
+    advanced workflow, now disabled, left its configuration behind.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.codeql = {
+            "dependamerge": (
+                _codeql_config("python", _ADVANCED_KEY, 0),
+                _codeql_config("python", _DEFAULT_KEY, 91),
+                _codeql_config("actions", _DEFAULT_KEY, 91),
+            ),
+            "git-configure-action": (
+                _codeql_config("python", _ADVANCED_KEY, 101),
+                _codeql_config("python", _DEFAULT_KEY, 1),
+            ),
+        }
+        self.default_setup = {
+            "dependamerge": DefaultSetup(
+                configured=False, languages=frozenset({"actions", "python"})
+            ),
+            "git-configure-action": DefaultSetup(
+                configured=True, languages=frozenset({"python"})
+            ),
+        }
+        self.workflows = {
+            ("git-configure-action", ".github/workflows/codeql.yml"): (
+                "disabled_manually"
+            ),
+        }
+
+
+async def test_collect_org_attaches_codeql_tables_beneath_the_codeql_signal() -> None:
+    client = CodeQLHealthClient()
+    report = await collect.collect_org(
+        client, OrgConfig(name="o"), ReportConfig(), generated_at=WHEN
+    )
+    stale, coverage = report.codeql_tables
+    assert stale.category.key is CategoryKey.CODEQL_STALE_CONFIGURATIONS
+    assert [(r.repo.name, r.cells[-1]) for r in stale.rows] == [
+        ("git-configure-action", "Superseded by default setup; workflow disabled"),
+        ("dependamerge", "Default setup disabled; orphaned"),
+        ("dependamerge", "Default setup disabled; orphaned"),
+    ]
+    assert [(r.repo.name, r.cells[1]) for r in coverage.rows] == [
+        ("dependamerge", "actions")
+    ]
+    # Workflow state is read only for a stale advanced configuration: never
+    # for dependamerge's live workflow, never for a default configuration.
+    assert client.workflow_reads == [
+        ("git-configure-action", ".github/workflows/codeql.yml")
+    ]
+    # Both tables travel with the CodeQL signal rather than floating free.
+    by_key = {item.key: item for item in layout.plan(report)}
+    assert [t.category.key for t in by_key[CategoryKey.CODEQL].children] == [
+        CategoryKey.CODEQL_STALE_CONFIGURATIONS,
+        CategoryKey.CODEQL_LANGUAGE_COVERAGE,
+    ]
+    assert CategoryKey.CODEQL_STALE_CONFIGURATIONS not in by_key
+
+
+async def test_collect_org_codeql_threshold_comes_from_the_report_config() -> None:
+    # At 120 days nothing in the fake is stale, so no workflow is looked up.
+    client = CodeQLHealthClient()
+    report = await collect.collect_org(
+        client,
+        OrgConfig(name="o"),
+        ReportConfig(codeql_stale_days=120),
+        generated_at=WHEN,
+    )
+    stale, _coverage = report.codeql_tables
+    assert stale.rows == []
+    assert client.workflow_reads == []
+
+
+async def test_collect_org_reads_codeql_on_each_repos_default_branch() -> None:
+    # A repository on "master" must be read on refs/heads/master; reading
+    # "main" would find no CodeQL there and drop it from both tables.
+    class BranchRecordingClient(FakeClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.repos = [
+                Repo("old", "o/old", "u", default_branch="master"),
+                Repo("new", "o/new", "u"),
+            ]
+            self.branches: dict[str, str] = {}
+
+        async def codeql_configurations(
+            self, org: str, repo: str, branch: str
+        ) -> tuple[int, tuple[CodeQLConfiguration, ...]]:
+            self.branches[repo] = branch
+            return await super().codeql_configurations(org, repo, branch)
+
+    client = BranchRecordingClient()
+    await collect.collect_org(
+        client, OrgConfig(name="o"), ReportConfig(), generated_at=WHEN
+    )
+    assert client.branches == {"old": "master", "new": "main"}
+
+
+async def test_collect_org_skips_workflow_reads_for_an_unreadable_history() -> None:
+    # A partial analyses read leaves the repository unknown in both tables,
+    # so looking up its workflows would spend requests on discarded data.
+    class PartialHistoryClient(CodeQLHealthClient):
+        async def codeql_configurations(
+            self, org: str, repo: str, branch: str
+        ) -> tuple[int, tuple[CodeQLConfiguration, ...]]:
+            _status, configs = await super().codeql_configurations(org, repo, branch)
+            return 502, configs
+
+    client = PartialHistoryClient()
+    await collect.collect_org(
+        client, OrgConfig(name="o"), ReportConfig(), generated_at=WHEN
+    )
+    assert client.workflow_reads == []
+
+
+# --------------------------------------------------------------------------- #
+# Named repository selection (remediate --repos)
+# --------------------------------------------------------------------------- #
+async def test_collect_org_limited_to_named_repositories_reads_only_those() -> None:
+    # A selection is collected as given, without listing the organisation
+    # again, so only the selected repository reaches the per-repository
+    # probes and the prefetch.
+    class ProbeRecordingClient(CodeQLHealthClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.probed: list[str] = []
+            self.prefetched: list[str] = []
+
+        async def codeql_configurations(
+            self, org: str, repo: str, branch: str
+        ) -> tuple[int, tuple[CodeQLConfiguration, ...]]:
+            self.probed.append(repo)
+            return await super().codeql_configurations(org, repo, branch)
+
+        async def repo_graph_batch(
+            self, org: str, names: list[str]
+        ) -> dict[str, RepoGraphData]:
+            self.prefetched.extend(names)
+            return await super().repo_graph_batch(org, names)
+
+    client = ProbeRecordingClient()
+    report = await collect.collect_org(
+        client,
+        OrgConfig(name="o"),
+        ReportConfig(),
+        generated_at=WHEN,
+        selected=[_repo("dependamerge")],
+    )
+    assert report.repo_count == 1
+    assert client.probed == ["dependamerge"]
+    assert client.prefetched == ["dependamerge"]
+
+
+async def test_a_selected_run_does_not_list_the_organisation_again() -> None:
+    # A second listing that came back incomplete could silently drop a
+    # requested repository from a run that then reported nothing to do.
+    class ListingCountingClient(FakeClient):
+        listings = 0
+
+        async def list_org_repos(self, org: str) -> tuple[int, list[Repo]]:
+            self.listings += 1
+            return 206, []  # would drop everything, were it consulted
+
+    client = ListingCountingClient()
+    report = await collect.collect_org(
+        client,
+        OrgConfig(name="o"),
+        ReportConfig(),
+        generated_at=WHEN,
+        selected=[_repo("dependamerge")],
+    )
+    assert client.listings == 0
+    assert (report.repo_count, report.partial) == (1, False)
+
+
+async def test_check_named_repos_separates_in_scope_from_excluded() -> None:
+    # A named repository the config excludes is reported with the reason, so
+    # naming it cannot bring it back into a run.
+    client = FakeClient()
+    named = await collect.check_named_repos(
+        client,
+        OrgConfig(name="o", exclude=("git-configure-action",)),
+        ReportConfig(),
+        scope.parse_repo_selection(["dependamerge,git-configure-action,a-fork"]),
+    )
+    assert [r.name for r in named.in_scope] == ["dependamerge"]
+    assert sorted((r.name, why) for r, why in named.excluded) == [
+        ("a-fork", "fork"),
+        ("git-configure-action", "explicitly excluded"),
+    ]
+    assert named.partial is False

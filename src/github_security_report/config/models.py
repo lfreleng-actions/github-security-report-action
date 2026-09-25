@@ -17,6 +17,7 @@ from types import MappingProxyType
 from github_security_report.categories import CategoryKey
 from github_security_report.config.order import OrderConfig
 from github_security_report.severity import Severity
+from github_security_report.summary import ExcludedDisplay, RepoList
 
 
 @dataclass(frozen=True)
@@ -91,7 +92,9 @@ class CategoryToggle:
     high-volume category can be uncapped (``0``) while the rest stay limited;
     ``None`` falls back to the per-output limit. ``sort`` overrides the row
     ordering of a generic table with a list of column names; ``None`` keeps the
-    ordering the table's builder chose.
+    ordering the table's builder chose. ``repo_list`` overrides which side of a
+    boolean feature category is named (see :class:`RepoList`); ``None`` falls
+    back to the report-wide ``repo_list``.
     """
 
     enabled: bool = True
@@ -99,6 +102,7 @@ class CategoryToggle:
     fail_severity: Severity | None = None
     top_n: int | None = None
     sort: tuple[str, ...] | None = None
+    repo_list: RepoList | None = None
 
     def shows_on(self, output: str) -> bool:
         """Whether this category renders on ``output`` (cli/slack/markdown/html)."""
@@ -149,6 +153,12 @@ class ReportConfig:
     # gives every repository a 60-day window: one tagged or released inside that
     # window is treated as recently maintained and omitted from the table.
     release_max_age_days: int = 60
+    # A CodeQL configuration is reported stale once its last scan trails the
+    # default branch's newest commit by more than this many days. GitHub does
+    # not publish the threshold behind its own "results may be out of date"
+    # warning; healthy configurations measured within five days of their head
+    # and abandoned ones beyond eighty, so thirty sits well clear of both.
+    codeql_stale_days: int = 30
     # Open-automation thresholds colouring the Pull Requests table's Auto
     # column. The defaults track GitHub's own behaviour: Dependabot's
     # ``open-pull-requests-limit`` defaults to 5, so 5 is where updates stop
@@ -188,6 +198,15 @@ class ReportConfig:
     # rather than a hard limit -- but a larger value buys nothing except a
     # longer first failure.
     graph_batch: int = 10
+    # Which side of each boolean feature category (Dependabot alerts/updates
+    # enabled, private vulnerability reporting, auto-merge) is named beneath its
+    # counts, on every surface. ``auto`` names the shorter list; a category's
+    # own ``repo_list`` overrides this.
+    repo_list: RepoList = RepoList.AUTO
+    # When each category's footer shows the organisation's excluded
+    # repositories: always (the default), never, or only for a category whose
+    # exclusions differ from the organisation's own list.
+    excluded_display: ExcludedDisplay = ExcludedDisplay.ALWAYS_SHOW
     # Read-only mapping (frozen dataclasses do not deep-freeze a plain dict, so a
     # MappingProxyType prevents in-place mutation of a shared config).
     ruleset_workflows: Mapping[str, str] = field(
@@ -271,6 +290,13 @@ class ReportConfig:
         """
         toggle = self.categories.get(key.value)
         return toggle.sort if toggle is not None else None
+
+    def repo_list_for(self, key: CategoryKey) -> RepoList:
+        """Which side of category ``key`` to name: its own setting, else ours."""
+        toggle = self.categories.get(key.value)
+        if toggle is not None and toggle.repo_list is not None:
+            return toggle.repo_list
+        return self.repo_list
 
 
 @dataclass(frozen=True)

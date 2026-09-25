@@ -40,6 +40,7 @@ from github_security_report.config.schema import (
 from github_security_report.issues import RESERVED_COLUMNS
 from github_security_report.models import SignalType
 from github_security_report.severity import Severity, from_name
+from github_security_report.summary import ExcludedDisplay, RepoList
 
 log = logging.getLogger(__name__)
 
@@ -163,6 +164,7 @@ def _report_from(data: dict, base: ReportConfig) -> ReportConfig:
                 "include_test",
                 "repo_min_age_days",
                 "release_max_age_days",
+                "codeql_stale_days",
                 "dependabot_warn_threshold",
                 "dependabot_error_threshold",
                 "gating",
@@ -186,6 +188,13 @@ def _report_from(data: dict, base: ReportConfig) -> ReportConfig:
         )
     if "order" in data:
         result = replace(result, order=order_from(data["order"], base.order))
+    if "repo_list" in data:
+        # The schema constrains the value to a RepoList member.
+        result = replace(result, repo_list=RepoList(data["repo_list"]))
+    if "excluded_display" in data:
+        result = replace(
+            result, excluded_display=ExcludedDisplay(data["excluded_display"])
+        )
     if (
         result.dependabot_error_threshold
         and result.dependabot_error_threshold <= result.dependabot_warn_threshold
@@ -243,6 +252,9 @@ def _categories_from(
             fail_severity=fail_severity,
             top_n=raw.get("top_n", current.top_n),
             sort=tuple(raw["sort"]) if "sort" in raw else current.sort,
+            repo_list=(
+                RepoList(raw["repo_list"]) if "repo_list" in raw else current.repo_list
+            ),
         )
     return MappingProxyType(merged)
 

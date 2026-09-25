@@ -40,7 +40,7 @@ class TestSection:
         )
         section = next(s for s in _org([sig]).sections if s.signal is SignalType.CODEQL)
         out = markdown.render_section(section)
-        assert "## CodeQL" in out
+        assert "## CodeQL: Results/Findings" in out
         assert "| Repository | Critical | High | Medium | Low | Total |" in out
         assert "[bad](https://github.com/o/bad)" in out
         assert "| 1 | 2 | 0 | 0 | 3 |" in out
@@ -349,7 +349,10 @@ class TestExtraTables:
         )
         out = markdown.render_org(org)
         assert "## Private Vulnerability Reporting\n" in out
-        assert "| [z](https://github.com/o/z) |" in out
+        # A boolean feature table names its repositories beneath the count
+        # line, linked, rather than drawing a one-column table.
+        assert "**Not enabled:** [z](https://github.com/o/z)" in out
+        assert "| [z](https://github.com/o/z) |" not in out
         assert "❌ 1 Not enabled" in out
         assert "✅ 1 Enabled" in out
 
@@ -443,3 +446,55 @@ class TestTableTotalsRow:
             fail_count=1,
         )
         assert "**Total**" not in markdown.render_table_section(section, level=2)
+
+
+def _auto_merge_org() -> report.OrgReport:
+    """Two repositories with auto-merge on, five with it off."""
+    org = _org([], count=7)
+    org.auto_merge = report.TableSection(
+        category=category_meta(CategoryKey.AUTO_MERGE),
+        columns=("Repository",),
+        rows=[report.TableRow(repo=_repo(n), cells=()) for n in "vwxyz"],
+        pass_count=2,
+        fail_count=5,
+        pass_repos=(_repo("a"), _repo("b")),
+    )
+    return org
+
+
+class TestRepoList:
+    def test_auto_links_the_shorter_side(self) -> None:
+        out = markdown.render_org(_auto_merge_org())
+        assert (
+            "**Enabled:** [a](https://github.com/o/a), [b](https://github.com/o/b)"
+            in out
+        )
+        assert "**Not enabled:**" not in out
+        assert "| Repository |" not in out  # no one-column table
+
+    def test_footer_options_force_the_disabled_side(self) -> None:
+        out = markdown.render_org(
+            _auto_merge_org(),
+            footer=report.FooterOptions(
+                repo_list=lambda _key: report.RepoList.DISABLED
+            ),
+        )
+        assert "**Not enabled:** [v](https://github.com/o/v)" in out
+        assert "**Enabled:**" not in out
+
+
+def test_excluded_display_governs_the_markdown_footer() -> None:
+    org = report.build_org_report(
+        "o", [], repo_count=7, generated_at=WHEN, excluded_repos=[_repo("fixture")]
+    )
+    org.auto_merge = _auto_merge_org().auto_merge
+    org.category_excluded[CategoryKey.AUTO_MERGE] = [_repo("fixture"), _repo("extra")]
+
+    def render(mode: report.ExcludedDisplay) -> str:
+        return markdown.render_org(org, footer=report.FooterOptions(excluded=mode))
+
+    assert render(report.ExcludedDisplay.ALWAYS_SHOW).count("**Excluded:**") > 1
+    assert "Excluded" not in render(report.ExcludedDisplay.ALWAYS_HIDE)
+    conditional = render(report.ExcludedDisplay.CONDITIONAL_HIDE)
+    assert conditional.count("**Excluded:**") == 1
+    assert "[extra](https://github.com/o/extra)" in conditional

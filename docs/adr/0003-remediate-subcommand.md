@@ -5,7 +5,8 @@
 
 # ADR-0003: A `remediate` subcommand that enables missing features
 
-- **Status:** Accepted
+- **Status:** Accepted (decision 5 amended by
+  [ADR-0005](0005-codeql-configuration-cleanup.md))
 - **Date:** 2026-07-02
 - **Supersedes:** —
 - **Superseded by:** —
@@ -61,10 +62,11 @@ needs.
 5. **A narrower remediable set than the report.** Only simple on/off features
    with a documented enablement endpoint are remediable: `codeql`,
    `secret_scanning`, `dependabot_alerts_enabled`, `dependabot_updates_enabled`,
-   `private_vulnerability_reporting`. Qualitative findings (Scorecard, zizmor,
-   open alerts, cooldown, release freshness/mutability) are reported but not
-   auto-remediated. The remediable keys reuse the ADR-0002 category registry, so
-   selection (`--category`) speaks the same vocabulary as the report.
+   `private_vulnerability_reporting`, `auto_merge`. Qualitative findings
+   (Scorecard, zizmor, open alerts, cooldown, release freshness/mutability) are
+   reported but not auto-remediated. The remediable keys reuse the ADR-0002
+   category registry, so selection (`--category`) speaks the same vocabulary as
+   the report.
 
 6. **A registry-driven remediator, mirroring the report's inline style.** Each
    remediable category pairs an offender extractor (a signal's NAG repos, or a

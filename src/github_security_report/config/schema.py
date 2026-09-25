@@ -8,7 +8,13 @@ weekdays), the error raised on invalid input, and ``CONFIG_SCHEMA`` itself.
 
 from __future__ import annotations
 
-from github_security_report.categories import all_categories, orderable_categories
+from github_security_report.categories import (
+    REPO_LIST_CATEGORIES,
+    CategoryMeta,
+    all_categories,
+    orderable_categories,
+)
+from github_security_report.summary import ExcludedDisplay, RepoList
 
 # The render surfaces a category can be toggled on or off for, independently of
 # whether the data is collected (collection is always exhaustive). ``cli`` is
@@ -34,6 +40,12 @@ WEEKDAYS = (
 # :mod:`github_security_report.layout` for what each one does.
 ORDER_STYLES = ("auto", "automatic", "dual", "single", "fixed")
 
+# Which side of a boolean feature category is named beneath its counts.
+REPO_LIST_VALUES = [value.value for value in RepoList]
+
+# When a category's footer shows the organisation's excluded repositories.
+EXCLUDED_DISPLAY_VALUES = [value.value for value in ExcludedDisplay]
+
 # Categories an ordering list may name. The nested Dependabot posture tables are
 # excluded: they render beneath their parent signal and have no position of
 # their own, so accepting one here would validate and then do nothing.
@@ -45,6 +57,42 @@ _TOKEN_PREFIXES = ("ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_")
 
 class ConfigError(ValueError):
     """Raised when configuration is malformed or fails validation."""
+
+
+def _category_schema(meta: CategoryMeta) -> dict:
+    """The schema for one category's block under ``report.categories``.
+
+    ``repo_list`` is offered only to the boolean feature categories, the only
+    ones with an enabled list to name: anywhere else it would validate and then
+    do nothing, so it is left out and the schema rejects it by name.
+    """
+    properties: dict = {
+        "enabled": {"type": "boolean"},
+        "outputs": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {output: {"type": "boolean"} for output in REPORT_OUTPUTS},
+        },
+        # The lowest finding severity that counts as a failure for this
+        # category (severity signals only). Overrides the category default.
+        "fail_severity": {"enum": list(SEVERITY_NAMES)},
+        # Rows this category shows before an "and N more" tally, overriding the
+        # per-output limit (0 = no limit, show every row).
+        "top_n": {"type": "integer", "minimum": 0},
+        # Row ordering for a table: column names, most significant first. A
+        # leading '-' forces descending and '+' forces ascending; bare names
+        # take the direction implied by the column's type. The severity signal
+        # tables resolve these against a fixed vocabulary
+        # (repository/score/critical/high/medium/low/info/total) rather than
+        # rendered headings.
+        "sort": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+        },
+    }
+    if meta.key in REPO_LIST_CATEGORIES:
+        properties["repo_list"] = {"enum": REPO_LIST_VALUES}
+    return {"type": "object", "additionalProperties": False, "properties": properties}
 
 
 CONFIG_SCHEMA: dict = {
@@ -87,6 +135,11 @@ CONFIG_SCHEMA: dict = {
                 # Releases/Tagging only when its newest release or tag is older
                 # than this many days (0 = flag every eligible repository).
                 "release_max_age_days": {"type": "integer", "minimum": 0},
+                # CodeQL stale-configuration threshold: a configuration is
+                # stale once its last scan trails the default branch's newest
+                # commit by more than this many days. No zero: every push
+                # briefly outruns its own scan.
+                "codeql_stale_days": {"type": "integer", "minimum": 1},
                 # Automation-backlog thresholds colouring the Pull Requests
                 # table's Auto column: warn above the first, error at or above
                 # the second. The defaults track GitHub's own
@@ -109,6 +162,14 @@ CONFIG_SCHEMA: dict = {
                 # a batch that fails any of those ways is halved
                 # automatically, so this sets the starting size.
                 "graph_batch": {"type": "integer", "minimum": 1},
+                # Which side of each boolean feature category is named beneath
+                # its counts: the shorter list (auto), or always the enabled or
+                # the disabled repositories. Overridable per category.
+                "repo_list": {"enum": REPO_LIST_VALUES},
+                # When each category's footer lists the excluded repositories:
+                # always, never, or only where a category's exclusions differ
+                # from the organisation's own list.
+                "excluded_display": {"enum": EXCLUDED_DISPLAY_VALUES},
                 "ruleset_workflows": {
                     "type": "object",
                     "additionalProperties": {"type": "string"},
@@ -164,41 +225,7 @@ CONFIG_SCHEMA: dict = {
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
-                        meta.key.value: {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "properties": {
-                                "enabled": {"type": "boolean"},
-                                "outputs": {
-                                    "type": "object",
-                                    "additionalProperties": False,
-                                    "properties": {
-                                        output: {"type": "boolean"}
-                                        for output in REPORT_OUTPUTS
-                                    },
-                                },
-                                # The lowest finding severity that counts as a
-                                # failure for this category (severity signals
-                                # only). Overrides the category default.
-                                "fail_severity": {"enum": list(SEVERITY_NAMES)},
-                                # Rows this category shows before an "and N
-                                # more" tally, overriding the per-output limit
-                                # (0 = no limit, show every row).
-                                "top_n": {"type": "integer", "minimum": 0},
-                                # Row ordering for a table: column names, most
-                                # significant first. A leading '-' forces
-                                # descending and '+' forces ascending; bare
-                                # names take the direction implied by the
-                                # column's type. The severity signal tables
-                                # resolve these against a fixed vocabulary
-                                # (repository/score/critical/high/medium/low/
-                                # info/total) rather than rendered headings.
-                                "sort": {
-                                    "type": "array",
-                                    "items": {"type": "string", "minLength": 1},
-                                },
-                            },
-                        }
+                        meta.key.value: _category_schema(meta)
                         for meta in all_categories()
                     },
                 },

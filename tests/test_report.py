@@ -330,3 +330,90 @@ class TestTableColumnTotals:
     def test_empty_row_set_totals_to_zero(self) -> None:
         section = self._section([], sum_columns=frozenset({1, 2}))
         assert report.table_column_totals(section, []) == ("Total", "0", "0", "")
+
+
+class TestExcludedDisplay:
+    """When a category's footer shows the excluded repositories."""
+
+    BASELINE = ("fixture", "sandbox")
+
+    def _org(self) -> report.OrgReport:
+        return report.build_org_report(
+            "o",
+            [],
+            repo_count=3,
+            generated_at=WHEN,
+            excluded_repos=[_repo(name) for name in self.BASELINE],
+        )
+
+    def _shown(
+        self,
+        org: report.OrgReport,
+        mode: report.ExcludedDisplay,
+        key: report.CategoryKey = report.CategoryKey.CODEQL,
+    ) -> list[str]:
+        options = report.FooterOptions(excluded=mode)
+        return [repo.name for repo in options.excluded_shown(org, key)]
+
+    def test_always_show_is_the_default_and_shows_the_baseline(self) -> None:
+        org = self._org()
+        assert report.FooterOptions().excluded is report.ExcludedDisplay.ALWAYS_SHOW
+        assert self._shown(org, report.ExcludedDisplay.ALWAYS_SHOW) == [
+            "fixture",
+            "sandbox",
+        ]
+
+    def test_always_hide_hides_every_category(self) -> None:
+        org = self._org()
+        org.category_excluded[report.CategoryKey.RELEASES] = [_repo("other")]
+        hide = report.ExcludedDisplay.ALWAYS_HIDE
+        assert self._shown(org, hide) == []
+        # Even a category whose exclusions differ: "always" means always.
+        assert self._shown(org, hide, report.CategoryKey.RELEASES) == []
+
+    def test_conditional_hide_hides_a_category_matching_the_baseline(self) -> None:
+        assert self._shown(self._org(), report.ExcludedDisplay.CONDITIONAL_HIDE) == []
+
+    def test_conditional_hide_shows_a_deviating_category_in_full(self) -> None:
+        # The whole list, not the difference: a reader sees exactly what that
+        # category left out without reconstructing it from the baseline.
+        org = self._org()
+        org.category_excluded[report.CategoryKey.RELEASES] = [
+            _repo("fixture"),
+            _repo("sandbox"),
+            _repo("internal-only"),
+        ]
+        mode = report.ExcludedDisplay.CONDITIONAL_HIDE
+        assert self._shown(org, mode, report.CategoryKey.RELEASES) == [
+            "fixture",
+            "sandbox",
+            "internal-only",
+        ]
+        # Categories inheriting the baseline stay hidden.
+        assert self._shown(org, mode, report.CategoryKey.CODEQL) == []
+
+    def test_conditional_hide_compares_membership_not_order(self) -> None:
+        org = self._org()
+        org.category_excluded[report.CategoryKey.RELEASES] = [
+            _repo(name) for name in reversed(self.BASELINE)
+        ]
+        mode = report.ExcludedDisplay.CONDITIONAL_HIDE
+        assert self._shown(org, mode, report.CategoryKey.RELEASES) == []
+
+    def test_a_category_with_fewer_exclusions_also_deviates(self) -> None:
+        # Excluding *less* than the organisation is as much a difference as
+        # excluding more, and hiding it would imply the baseline applied.
+        org = self._org()
+        org.category_excluded[report.CategoryKey.RELEASES] = [_repo("fixture")]
+        mode = report.ExcludedDisplay.CONDITIONAL_HIDE
+        assert self._shown(org, mode, report.CategoryKey.RELEASES) == ["fixture"]
+
+    def test_hiding_lets_a_clean_category_collapse_to_all(self) -> None:
+        # The header's repository count already leaves excluded repositories
+        # out, so once no Excluded line qualifies it "All Clean" is accurate.
+        section = report.SignalSection(signal=SignalType.CODEQL, clean_count=3)
+        org = self._org()
+        shown = report.build_summary(section.summary_counts(org.excluded_repos))
+        hidden = report.build_summary(section.summary_counts(()))
+        assert [line.text for line in shown] == ["3 Clean", "2 Excluded"]
+        assert [line.text for line in hidden] == ["All Clean"]

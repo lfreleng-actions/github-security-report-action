@@ -85,11 +85,12 @@ Pages report it links to is worse than either order alone.
    config asked for something specific and would otherwise have silently got
    something else.
 
-8. **The Dependabot posture tables are not independently placeable.** They
-   travel with their parent signal as `LayoutItem.children`. Detaching them
-   would leave three near-identical headings adrift with nothing to say which
-   signal they qualified. The config schema refuses to accept one in an
-   ordering list, rather than validating a setting that would do nothing.
+8. **Nested tables are not independently placeable.** The Dependabot posture
+   tables and the CodeQL scan-health tables (stale configurations, language
+   coverage) travel with their parent signal as `LayoutItem.children`.
+   Detaching them would leave near-identical headings adrift with nothing to
+   say which signal they qualified. The config schema refuses to accept one in
+   an ordering list, rather than validating a setting that would do nothing.
 
 9. **`section_order` is always the realised sequence.** `resolve()` returns
    what the renderers will actually draw -- every section the report carries,
@@ -117,5 +118,6 @@ Pages report it links to is worse than either order alone.
   when the parent was both skipped and visible, but rendered them when the
   parent was hidden. Routing every surface through one layout makes the
   sub-tables independent of the parent's state everywhere, matching the other
-  three renderers. Only gated signals could reach that path, and Dependabot is
-  never gated, so no released output changes.
+  three renderers. Only gated signals could reach that path, and neither
+  Dependabot nor CodeQL (the two signals carrying sub-tables) is gated, so no
+  released output changes.

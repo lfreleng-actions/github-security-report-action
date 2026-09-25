@@ -14,9 +14,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from github_security_report.categories import CategoryMeta
+from github_security_report.categories import REPO_LIST_CATEGORIES, CategoryMeta
 from github_security_report.models import Repo
-from github_security_report.summary import SummaryCount
+from github_security_report.summary import RepoList, SummaryCount
 
 # Semantic emphasis a builder can attach to a table cell, mapped to a concrete
 # presentation by each render surface. Deliberately meaning rather than colour:
@@ -118,25 +118,83 @@ class TableSection:
     # dropped from every published artifact, where "mine" would name the token
     # owner rather than the reader. See :func:`table_footer_rows`.
     personal_footer_labels: frozenset[str] = frozenset()
+    # The repositories counted in ``pass_count``, for the boolean feature
+    # categories only (see :data:`REPO_LIST_CATEGORIES`), where the passing side
+    # is a plain repository list that can be named in place of the rows. Empty
+    # everywhere else: a qualitative table's passing repositories carry nothing
+    # a reader would act on.
+    pass_repos: tuple[Repo, ...] = ()
 
     @property
     def title(self) -> str:
         return self.category.title
 
+    @property
+    def lists_repos(self) -> bool:
+        """Whether this is a boolean feature table, named inline not tabulated.
+
+        Such a table has no column beyond the repository, so drawing one would
+        only restate the name list -- and could not say which side it lists
+        once :class:`RepoList` may pick the enabled side. Every surface renders
+        these as a name list beneath the matching count line instead.
+        """
+        return self.category.key in REPO_LIST_CATEGORIES
+
+    def listed_kind(self, repo_list: RepoList = RepoList.AUTO) -> str | None:
+        """The footer bucket (``"fail"`` or ``"pass"``) whose repos are named.
+
+        ``None`` for a table that is not a boolean feature table. ``auto``
+        names the shorter list, with two deliberate exceptions that keep the
+        actionable side in view: a tie names the offenders, and an empty
+        passing list never displaces them -- "list the zero repositories that
+        have it" would print nothing where a reader wants the ones to fix.
+        """
+        if not self.lists_repos:
+            return None
+        if repo_list is RepoList.ENABLED:
+            return "pass"
+        if repo_list is RepoList.DISABLED:
+            return "fail"
+        return "pass" if 0 < len(self.pass_repos) < len(self.rows) else "fail"
+
     def resolved_description(self) -> str:
         """The description to show, falling back to the category default."""
         return self.description or self.category.description
 
-    def summary_counts(self, excluded: Sequence[Repo] = ()) -> list[SummaryCount]:
-        """Footer count buckets for this table (failure, unknown, pass, excluded)."""
+    def repos_by_name(self) -> dict[str, Repo]:
+        """Every repository this table can name, keyed by name, for linking."""
+        return {
+            repo.name: repo
+            for repo in (*(row.repo for row in self.rows), *self.pass_repos)
+        }
+
+    def summary_counts(
+        self,
+        excluded: Sequence[Repo] = (),
+        *,
+        repo_list: RepoList = RepoList.AUTO,
+    ) -> list[SummaryCount]:
+        """Footer count buckets for this table (failure, unknown, pass, excluded).
+
+        A boolean feature table also names one side's repositories, chosen by
+        ``repo_list`` (see :meth:`listed_kind`); both sides are always counted.
+        """
         fail_label = self.category.fail_label or "Failing"
+        listed = self.listed_kind(repo_list)
+        fail_names = (
+            tuple(row.repo.name for row in self.rows) if listed == "fail" else ()
+        )
+        pass_names = (
+            tuple(repo.name for repo in self.pass_repos) if listed == "pass" else ()
+        )
         return [
-            SummaryCount("fail", self.fail_count, fail_label),
+            SummaryCount("fail", self.fail_count, fail_label, fail_names),
             SummaryCount("unknown", self.unknown_count, "Unknown"),
             SummaryCount(
                 "pass",
                 self.pass_count,
                 self.category.pass_label,
+                pass_names,
                 all_label=self.category.pass_all_label,
             ),
             SummaryCount(

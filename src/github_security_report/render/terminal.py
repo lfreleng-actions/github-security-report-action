@@ -11,7 +11,6 @@ sections 10-11.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import replace
 
 from rich.console import Console
 from rich.markup import escape
@@ -27,11 +26,14 @@ from github_security_report.report import (
     CELL_BAD,
     CELL_GOOD,
     CELL_WARN,
+    DEFAULT_FOOTER,
     ORG_SETUP_DOC_URL,
     SKIP_MESSAGE,
     SUMMARY_EMOJI,
+    FooterOptions,
     LimitFor,
     OrgReport,
+    RepoList,
     SignalSection,
     SummaryLine,
     TableRow,
@@ -73,9 +75,6 @@ _CELL_LEVEL_STYLE = {
     CELL_WARN: "yellow",
     CELL_BAD: "red",
 }
-
-# Label prefixing the repository-name list printed beneath a summary line.
-_NAME_LIST_LABEL = {"disabled": "Disabled", "excluded": "Excluded"}
 
 
 def _add_columns(
@@ -122,28 +121,23 @@ def _render_summary(
     lines: Sequence[SummaryLine],
     *,
     top_n: int | None,
-    name_labels: dict[str, str] | None = None,
 ) -> None:
     """Print the standardised footer: count lines, then any name lists.
 
     Counts come first (failures and not-enabled at the top, the healthy pass
-    line lower down), then the repository-name breakdowns for the kinds in
-    ``name_labels`` -- numbers and names are never mixed on one line, and the
-    name lists honour the same offender limit as the tables. ``name_labels``
-    defaults to the disabled/excluded kinds; a boolean feature table passes an
-    extended map so its offenders list inline under the fail line too.
+    line lower down), then the repository-name breakdown for every line that
+    names its repositories -- numbers and names are never mixed on one line,
+    and the name lists honour the same offender limit as the tables.
     """
-    if name_labels is None:
-        name_labels = _NAME_LIST_LABEL
     for line in lines:
         style = _SUMMARY_STYLE[line.kind]
         console.print(f"  [{style}]{SUMMARY_EMOJI[line.kind]} {line.text}[/{style}]")
     for line in lines:
-        label = name_labels.get(line.kind)
-        if label and line.names:
+        if line.listed:
             style = _SUMMARY_STYLE[line.kind]
             console.print(
-                f"  [{style}]{label}:[/{style}] {_truncated_names(line.names, top_n)}"
+                f"  [{style}]{line.names_label}:[/{style}] "
+                f"{_truncated_names(line.names, top_n)}"
             )
 
 
@@ -214,20 +208,21 @@ def render_table_section(
     *,
     excluded: Sequence[Repo] = (),
     top_n: int | None = None,
+    repo_list: RepoList = RepoList.AUTO,
 ) -> None:
     """Render a generic posture/freshness table to the terminal.
 
-    A section with a single column carries only repository names -- a boolean
-    feature check (enabled/not enabled) with no qualitative data -- so it is
-    rendered like a signal section: no table, just the standardised footer with
-    the offenders listed inline under the fail line (e.g. ``Not enabled:``).
+    A boolean feature table (see :attr:`TableSection.lists_repos`) carries
+    only repository names, so it is rendered like a signal section: no table,
+    just the standardised footer with one side's repositories named inline
+    beneath its count line (e.g. ``Not enabled:``), chosen by ``repo_list``.
     Tables are reserved for sections whose extra columns carry qualitative data
     that cannot be expressed as a count (release/tag ages, ecosystems, release
     tags). The explanatory description is deliberately omitted either way: the
     terminal is a brevity-first surface, so the guidance text is reserved for
     the Markdown and HTML (GitHub Pages) outputs.
     """
-    inline = len(section.columns) == 1
+    inline = section.lists_repos
     rows, hidden = truncate(section.rows, top_n)
     console.print(f"[bold]{section.title}[/bold]")
     if not inline and rows:
@@ -261,23 +256,9 @@ def render_table_section(
         console.print(table)
         if hidden:
             console.print(f"  [dim]\u2026 and {hidden} more[/dim]")
-    counts = section.summary_counts(excluded)
-    name_labels = _NAME_LIST_LABEL
-    if inline:
-        # Surface the offenders inline under the fail line, labelled with the
-        # category's fail wording (e.g. "Not enabled"), instead of a one-column
-        # table. The name list honours top_n like every other breakdown.
-        fail_label = section.category.fail_label or "Failing"
-        counts = [
-            replace(c, names=tuple(r.repo.name for r in section.rows))
-            if c.kind == "fail"
-            else c
-            for c in counts
-        ]
-        name_labels = {**_NAME_LIST_LABEL, "fail": fail_label}
-    lines = build_summary(counts)
+    lines = build_summary(section.summary_counts(excluded, repo_list=repo_list))
     if lines:
-        _render_summary(console, lines, top_n=top_n, name_labels=name_labels)
+        _render_summary(console, lines, top_n=top_n)
     elif not rows:
         console.print("  [dim]No data[/dim]")
     console.print()
@@ -290,6 +271,7 @@ def render_org(
     top_n: int | None = None,
     show: Callable[[CategoryKey], bool] | None = None,
     limit: LimitFor | None = None,
+    footer: FooterOptions = DEFAULT_FOOTER,
 ) -> None:
     visible = show or (lambda _key: True)
     limit_for = limit_resolver(top_n, limit)
@@ -301,8 +283,9 @@ def render_org(
         render_table_section(
             section,
             console,
-            excluded=org.excluded_repos,
+            excluded=footer.excluded_shown(org, section.category.key),
             top_n=limit_for(section.category.key),
+            repo_list=footer.repo_list(section.category.key),
         )
 
     console.rule(f"[bold]Security report: {org.org}[/bold]")
@@ -321,11 +304,11 @@ def render_org(
             render_section(
                 item.section,
                 console,
-                excluded=org.excluded_repos,
+                excluded=footer.excluded_shown(org, key),
                 top_n=limit_for(key),
             )
-        for dependabot_table in item.children:
-            table(dependabot_table)
+        for child in item.children:
+            table(child)
 
 
 def render_orgs(
@@ -342,6 +325,7 @@ def render_remediation(
     *,
     apply: bool,
     top_n: int | None = None,
+    limited_to: Sequence[str] = (),
 ) -> None:
     """Render a remediation run: one block per category, with a trailing summary.
 
@@ -352,39 +336,52 @@ def render_remediation(
     a trailing summary totals the work across categories.
     """
     console.rule(f"[bold]Remediation: {escape(org)}[/bold]")
+    # A narrowed run says so up front, so its results are not read as the
+    # whole organisation's.
+    if limited_to:
+        console.print(f"[dim]Limited to: {escape(', '.join(limited_to))}[/dim]")
     # In apply mode the writes have already happened by the time this renders,
     # so a pre-amble banner would be misleading; only the dry-run notice (shown
     # before nothing is changed) is useful.
     if not apply:
         console.print(
             "[bold yellow]DRY RUN[/bold yellow] — no changes made. Re-run with "
-            "[bold]--apply[/bold] to enable features.\n"
+            "[bold]--apply[/bold] to make changes.\n"
         )
 
-    planned = 0
-    changed = 0
+    planned: dict[str, int] = {}
+    changed: dict[str, int] = {}
     failed = 0
+    refused = 0
     for result in results:
         console.print(f"[bold]{result.category.title}[/bold]")
-        # Classify by run mode and each outcome's own failed flag rather than
-        # by the action string, so the renderer owns no copy of the action
-        # vocabulary defined in remediate.py.
+        # Classify by run mode and each outcome's own flags rather than by the
+        # action string, so the renderer owns no copy of the action vocabulary
+        # defined in remediate.py.
         failures = [o for o in result.outcomes if o.failed]
-        succeeded = [o for o in result.outcomes if not o.failed]
-        would = succeeded if not apply else []
-        enabled = succeeded if apply else []
+        refusals = [o for o in result.outcomes if o.refused]
+        succeeded = [o for o in result.outcomes if not (o.failed or o.refused)]
         if not result.outcomes:
             console.print("  [green]Nothing to remediate[/green]")
-        if would:
-            names = _truncated_names([o.name for o in would], top_n)
+        # One line per verb, in the order the verbs first appear: a category
+        # can both delete one configuration and re-enable another's workflow.
+        for verb in dict.fromkeys(o.verb for o in succeeded):
+            group = [o for o in succeeded if o.verb == verb]
+            names = _truncated_names([o.name for o in group], top_n)
+            if apply:
+                console.print(
+                    f"  [green]{SUMMARY_EMOJI['pass']}[/green] {len(group)} "
+                    f"{escape(group[0].action)}: {escape(names)}"
+                )
+            else:
+                console.print(
+                    f"  [yellow]→[/yellow] {len(group)} would {escape(verb)}: "
+                    f"{escape(names)}"
+                )
+        for outcome in refusals:
             console.print(
-                f"  [yellow]→[/yellow] {len(would)} would enable: {escape(names)}"
-            )
-        if enabled:
-            names = _truncated_names([o.name for o in enabled], top_n)
-            console.print(
-                f"  [green]{SUMMARY_EMOJI['pass']}[/green] {len(enabled)} enabled: "
-                f"{escape(names)}"
+                f"  [yellow]{SUMMARY_EMOJI['unknown']}[/yellow] "
+                f"{escape(outcome.name)} refused: {escape(outcome.note)}"
             )
         for outcome in failures:
             detail = f": {escape(outcome.note)}" if outcome.note else ""
@@ -392,15 +389,23 @@ def render_remediation(
                 f"  [red]{SUMMARY_EMOJI['fail']}[/red] {escape(outcome.name)} "
                 f"failed{detail}"
             )
-        planned += len(would)
-        changed += len(enabled)
+        tally = changed if apply else planned
+        for outcome in succeeded:
+            label = outcome.action if apply else outcome.verb
+            tally[label] = tally.get(label, 0) + 1
         failed += len(failures)
+        refused += len(refusals)
         console.print()
 
+    refused_note = f", {refused} refused" if refused else ""
     if apply:
-        console.print(f"[bold]Summary:[/bold] {changed} enabled, {failed} failed.")
+        done = ", ".join(f"{n} {label}" for label, n in changed.items()) or "0 changed"
+        console.print(f"[bold]Summary:[/bold] {done}, {failed} failed{refused_note}.")
     else:
+        todo = (
+            ", ".join(f"{n} to {verb}" for verb, n in planned.items()) or "no changes"
+        )
         console.print(
-            f"[bold]Summary:[/bold] {planned} to enable (dry run). Re-run with "
-            "[bold]--apply[/bold] to make changes."
+            f"[bold]Summary:[/bold] {todo} (dry run){refused_note}. "
+            "Re-run with [bold]--apply[/bold] to make changes."
         )

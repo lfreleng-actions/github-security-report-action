@@ -14,81 +14,47 @@ The set of remediable categories is deliberately narrower than the report. Only
 categories that are a simple on/off feature with a documented enablement
 endpoint are here; qualitative findings (Scorecard, zizmor, open alerts,
 cooldown, release freshness/mutability) are reported but not auto-remediated.
+
+One category is destructive: stale CodeQL configurations are cleaned up by
+deleting their analyses (ADR-0005). It runs only when named explicitly, never
+as part of the default set, and each target passes guards that can refuse it
+-- a refusal is reported beside the work done, not treated as a failure.
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Protocol
 
-from github_security_report.categories import (
-    CategoryKey,
-    CategoryMeta,
-    category_meta,
-)
+from github_security_report.categories import CategoryKey, category_meta
 from github_security_report.models import Repo, SignalType
+from github_security_report.remediate.codeql import (
+    _cleanup_precheck,
+    _cleanup_targets,
+    _cleanup_write,
+)
+from github_security_report.remediate.model import (
+    _DONE,
+    _FAILED,
+    _REFUSED,
+    CategoryRemediation,
+    RemediationClient,
+    RepoOutcome,
+    _repo_targets,
+    _Target,
+)
 from github_security_report.report import OrgReport, TableSection
 
-
-class RemediationClient(Protocol):
-    """The write surface a remediator needs (a subset of ``GitHubClient``).
-
-    Each method enables one feature on one repository and returns
-    ``(ok, note)``: ``ok`` is whether the write succeeded, and ``note`` carries
-    a short diagnostic (an error status/body on failure, or a hint such as
-    ``"accepted (async)"`` on success). Tests supply an in-memory fake.
-    """
-
-    async def enable_dependabot_alerts(
-        self, org: str, repo: str
-    ) -> tuple[bool, str]: ...
-
-    async def enable_dependabot_security_updates(
-        self, org: str, repo: str
-    ) -> tuple[bool, str]: ...
-
-    async def enable_private_vulnerability_reporting(
-        self, org: str, repo: str
-    ) -> tuple[bool, str]: ...
-
-    async def enable_codeql_default_setup(
-        self, org: str, repo: str
-    ) -> tuple[bool, str]: ...
-
-    async def enable_secret_scanning(self, org: str, repo: str) -> tuple[bool, str]: ...
-
-
-# Actions a repository outcome can carry. "would enable" is the dry-run preview;
-# "enabled" and "FAILED" are the two terminal states after an apply.
-_WOULD_ENABLE = "would enable"
-_ENABLED = "enabled"
-_FAILED = "FAILED"
-
-
-@dataclass(frozen=True)
-class RepoOutcome:
-    """The result of (planning to) enable one feature on one repository."""
-
-    name: str
-    action: str  # "would enable" | "enabled" | "FAILED"
-    note: str = ""
-
-    @property
-    def failed(self) -> bool:
-        return self.action == _FAILED
-
-
-@dataclass(frozen=True)
-class CategoryRemediation:
-    """Every repository outcome for one remediated category."""
-
-    category: CategoryMeta
-    outcomes: tuple[RepoOutcome, ...]
-
-    @property
-    def failures(self) -> int:
-        return sum(1 for o in self.outcomes if o.failed)
+__all__ = [
+    "DEFAULT_REMEDIABLE",
+    "EXPLICIT_ONLY",
+    "REMEDIABLE",
+    "CategoryRemediation",
+    "RemediationClient",
+    "RepoOutcome",
+    "parse_categories",
+    "remediate_org",
+]
 
 
 # --------------------------------------------------------------------------- #
@@ -109,12 +75,9 @@ def _nag_offenders(signal: SignalType) -> Callable[[OrgReport], list[Repo]]:
 
 
 def _find_table(report: OrgReport, key: CategoryKey) -> TableSection | None:
-    """The posture table for ``key`` (Dependabot sub-tables or the PVR table)."""
-    candidates = list(report.dependabot_tables)
-    if report.private_vulnerability_reporting is not None:
-        candidates.append(report.private_vulnerability_reporting)
-    for table in candidates:
-        if table.category.key is key:
+    """The posture table for ``key``, whether nested or a section of its own."""
+    for table in (*report.nested_tables, *report.standalone_tables):
+        if table is not None and table.category.key is key:
             return table
     return None
 
@@ -135,35 +98,54 @@ def _table_offenders(key: CategoryKey) -> Callable[[OrgReport], list[Repo]]:
 @dataclass(frozen=True)
 class _Remediator:
     key: CategoryKey
-    offenders: Callable[[OrgReport], list[Repo]]
-    enable: Callable[[RemediationClient, str, str], Awaitable[tuple[bool, str]]]
+    targets: Callable[[OrgReport], list[_Target]]
+    write: Callable[[RemediationClient, str, _Target], Awaitable[tuple[bool, str]]]
+    # A last read before the write, in either mode: a reason to refuse the
+    # target, or None to proceed.
+    precheck: (
+        Callable[[RemediationClient, str, _Target], Awaitable[str | None]] | None
+    ) = None
+    # Destructive remediators act only when named with --category.
+    explicit_only: bool = False
 
 
 _REMEDIATORS: tuple[_Remediator, ...] = (
     _Remediator(
         CategoryKey.CODEQL,
-        _nag_offenders(SignalType.CODEQL),
-        lambda c, o, r: c.enable_codeql_default_setup(o, r),
+        _repo_targets(_nag_offenders(SignalType.CODEQL)),
+        lambda c, o, t: c.enable_codeql_default_setup(o, t.repo.name),
     ),
     _Remediator(
         CategoryKey.SECRET_SCANNING,
-        _nag_offenders(SignalType.SECRET_SCANNING),
-        lambda c, o, r: c.enable_secret_scanning(o, r),
+        _repo_targets(_nag_offenders(SignalType.SECRET_SCANNING)),
+        lambda c, o, t: c.enable_secret_scanning(o, t.repo.name),
     ),
     _Remediator(
         CategoryKey.DEPENDABOT_ALERTS_ENABLED,
-        _table_offenders(CategoryKey.DEPENDABOT_ALERTS_ENABLED),
-        lambda c, o, r: c.enable_dependabot_alerts(o, r),
+        _repo_targets(_table_offenders(CategoryKey.DEPENDABOT_ALERTS_ENABLED)),
+        lambda c, o, t: c.enable_dependabot_alerts(o, t.repo.name),
     ),
     _Remediator(
         CategoryKey.DEPENDABOT_UPDATES_ENABLED,
-        _table_offenders(CategoryKey.DEPENDABOT_UPDATES_ENABLED),
-        lambda c, o, r: c.enable_dependabot_security_updates(o, r),
+        _repo_targets(_table_offenders(CategoryKey.DEPENDABOT_UPDATES_ENABLED)),
+        lambda c, o, t: c.enable_dependabot_security_updates(o, t.repo.name),
     ),
     _Remediator(
         CategoryKey.PRIVATE_VULNERABILITY_REPORTING,
-        _table_offenders(CategoryKey.PRIVATE_VULNERABILITY_REPORTING),
-        lambda c, o, r: c.enable_private_vulnerability_reporting(o, r),
+        _repo_targets(_table_offenders(CategoryKey.PRIVATE_VULNERABILITY_REPORTING)),
+        lambda c, o, t: c.enable_private_vulnerability_reporting(o, t.repo.name),
+    ),
+    _Remediator(
+        CategoryKey.AUTO_MERGE,
+        _repo_targets(_table_offenders(CategoryKey.AUTO_MERGE)),
+        lambda c, o, t: c.enable_auto_merge(o, t.repo.name),
+    ),
+    _Remediator(
+        CategoryKey.CODEQL_STALE_CONFIGURATIONS,
+        _cleanup_targets,
+        _cleanup_write,
+        precheck=_cleanup_precheck,
+        explicit_only=True,
     ),
 )
 
@@ -171,6 +153,16 @@ _BY_KEY: dict[CategoryKey, _Remediator] = {r.key: r for r in _REMEDIATORS}
 
 # The remediable category keys, in the order they are acted on and rendered.
 REMEDIABLE: tuple[CategoryKey, ...] = tuple(r.key for r in _REMEDIATORS)
+
+# What runs when no --category is given: everything but the destructive ones.
+DEFAULT_REMEDIABLE: tuple[CategoryKey, ...] = tuple(
+    r.key for r in _REMEDIATORS if not r.explicit_only
+)
+
+# The remediable keys that run only when named.
+EXPLICIT_ONLY: tuple[CategoryKey, ...] = tuple(
+    r.key for r in _REMEDIATORS if r.explicit_only
+)
 
 
 def parse_categories(values: Iterable[str]) -> tuple[list[CategoryKey], list[str]]:
@@ -200,21 +192,25 @@ async def remediate_org(
     categories: Sequence[CategoryKey] | None = None,
     apply: bool,
 ) -> list[CategoryRemediation]:
-    """Enable (or, in dry run, preview enabling) features across one org report.
+    """Remediate (or, in dry run, preview remediating) one org report.
 
-    Acts on every selected category (defaulting to all remediable categories),
-    in the canonical :data:`REMEDIABLE` order. In dry run every offender yields
-    a ``"would enable"`` outcome and no write is issued; with ``apply`` each
-    offender is written and yields ``"enabled"`` or ``"FAILED"`` with the
-    write's diagnostic note. Categories are always represented (with an empty
-    outcome list when they have no offenders) so the renderer can show that a
-    selected category had nothing to do.
+    Acts on every selected category -- by default every remediable category
+    except the explicit-only, destructive ones -- in the canonical
+    :data:`REMEDIABLE` order. In dry run every target yields a ``"would
+    <verb>"`` outcome and no write is issued; with ``apply`` each target is
+    written and yields the verb's past participle or ``"FAILED"`` with the
+    write's diagnostic note. A target the plan or its precheck refuses yields
+    ``"refused"`` with the reason, in either mode, and is never written; the
+    precheck is a read, so a dry run reports refusals exactly as an apply would.
+    Categories are always represented (with an empty outcome list when they
+    have no targets) so the renderer can show a selected category had nothing
+    to do.
 
     Raises :class:`ValueError` if ``categories`` contains a key that is not
     remediable, rather than failing later with an opaque ``KeyError``.
-    Duplicate keys are collapsed so a feature is never enabled twice in a run.
+    Duplicate keys are collapsed so nothing is remediated twice in a run.
     """
-    requested = list(categories) if categories is not None else list(REMEDIABLE)
+    requested = list(categories) if categories is not None else list(DEFAULT_REMEDIABLE)
     invalid = [key for key in requested if key not in _BY_KEY]
     if invalid:
         names = ", ".join(key.value for key in invalid)
@@ -229,14 +225,32 @@ async def remediate_org(
     results: list[CategoryRemediation] = []
     for key in sorted(selected, key=lambda k: order[k]):
         rem = _BY_KEY[key]
-        outcomes: list[RepoOutcome] = []
-        for repo in rem.offenders(report):
-            if not apply:
-                outcomes.append(RepoOutcome(repo.name, _WOULD_ENABLE))
-                continue
-            ok, note = await rem.enable(client, report.org, repo.name)
-            outcomes.append(RepoOutcome(repo.name, _ENABLED if ok else _FAILED, note))
+        outcomes = [
+            await _remediate_target(client, report.org, rem, target, apply=apply)
+            for target in rem.targets(report)
+        ]
         results.append(
             CategoryRemediation(category=category_meta(key), outcomes=tuple(outcomes))
         )
     return results
+
+
+async def _remediate_target(
+    client: RemediationClient,
+    org: str,
+    rem: _Remediator,
+    target: _Target,
+    *,
+    apply: bool,
+) -> RepoOutcome:
+    """Refuse, preview or write one target, and say which."""
+    refusal = target.refusal
+    if refusal is None and rem.precheck is not None:
+        refusal = await rem.precheck(client, org, target)
+    if refusal is not None:
+        return RepoOutcome(target.name, _REFUSED, refusal, target.verb)
+    if not apply:
+        return RepoOutcome(target.name, f"would {target.verb}", verb=target.verb)
+    ok, note = await rem.write(client, org, target)
+    action = _DONE[target.verb] if ok else _FAILED
+    return RepoOutcome(target.name, action, note, target.verb)

@@ -13,25 +13,30 @@ from pathlib import Path
 import httpx
 import pytest
 import respx
+from rich.console import Console
 from typer.testing import CliRunner
 
+from github_security_report import scope
 from github_security_report.categories import CategoryKey
 from github_security_report.cli import _safe_component, app
-from github_security_report.cli.modes import _load_config
+from github_security_report.cli.modes import _check_selection, _load_config
 from github_security_report.cli.options import ReportOverrides
 from github_security_report.cli.outputs import (
     TopNLimits,
     most_generous,
+    slack_footer,
     slack_limit,
     slack_show,
 )
 from github_security_report.config import (
     CategoryToggle,
+    Config,
     OrgConfig,
     OutputToggles,
     ReportConfig,
 )
-from github_security_report.report import OrgReport, build_org_report
+from github_security_report.models import Repo
+from github_security_report.report import OrgReport, RepoList, build_org_report
 
 API = "https://api.github.com"
 SCORECARD = "https://api.securityscorecards.dev"
@@ -151,6 +156,9 @@ def test_org_mode_writes_pages(tmp_path: Path) -> None:
     respx.get(url__startswith=f"{API}/repos/o/r/private-vulnerability-reporting").mock(
         return_value=httpx.Response(200, json={"enabled": True})
     )
+    respx.get(f"{API}/repos/o/r/code-scanning/default-setup").mock(
+        return_value=httpx.Response(200, json={"state": "not-configured"})
+    )
 
     out = tmp_path / "site"
     result = cli.invoke(
@@ -228,6 +236,9 @@ def _mock_org_o_r() -> None:
     )
     respx.get(url__startswith=f"{API}/repos/o/r/private-vulnerability-reporting").mock(
         return_value=httpx.Response(200, json={"enabled": True})
+    )
+    respx.get(f"{API}/repos/o/r/code-scanning/default-setup").mock(
+        return_value=httpx.Response(200, json={"state": "not-configured"})
     )
 
 
@@ -877,6 +888,9 @@ def test_org_mode_top_n_from_config(tmp_path: Path) -> None:
     respx.get(
         url__regex=rf"{re.escape(API)}/repos/o/r\d/private-vulnerability-reporting"
     ).mock(return_value=httpx.Response(200, json={"enabled": True}))
+    respx.get(
+        url__regex=rf"{re.escape(API)}/repos/o/r\d/code-scanning/default-setup"
+    ).mock(return_value=httpx.Response(200, json={"state": "not-configured"}))
 
     cfg = (
         '{"report": {"top_n": 1}, '
@@ -964,6 +978,9 @@ def _mock_offender_org() -> None:
     respx.get(url__startswith=f"{API}/repos/o/r/private-vulnerability-reporting").mock(
         return_value=httpx.Response(200, json={"enabled": False})
     )
+    respx.get(f"{API}/repos/o/r/code-scanning/default-setup").mock(
+        return_value=httpx.Response(200, json={"state": "not-configured"})
+    )
 
 
 @respx.mock
@@ -992,6 +1009,31 @@ def test_remediate_dry_run_makes_no_writes() -> None:
     assert "would enable" in result.stdout
     for route in (codeql, secret, alerts, fixes, pvr):
         assert route.call_count == 0, result.stdout
+    # The destructive cleanup is never part of the default run.
+    assert "CodeQL: Stale Configurations" not in result.stdout
+
+
+@respx.mock
+def test_remediate_runs_the_codeql_cleanup_only_when_named() -> None:
+    # Named explicitly, the cleanup category is accepted and reported. This
+    # org has no CodeQL at all, so there is nothing to clean up -- and any
+    # delete it attempted would hit an unmocked route and fail the run.
+    _mock_offender_org()
+    result = cli.invoke(
+        app,
+        [
+            "remediate",
+            "--org",
+            "o",
+            "--category",
+            "codeql_stale_configurations",
+            "--apply",
+            "--no-color",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert "CodeQL: Stale Configurations" in result.stdout
+    assert "Nothing to remediate" in result.stdout
 
 
 @respx.mock
@@ -1019,6 +1061,82 @@ def test_remediate_apply_enables_every_category() -> None:
     assert "enabled: r" in result.stdout
     for route in (codeql, secret, alerts, fixes, pvr):
         assert route.called, result.stdout
+
+
+@respx.mock
+@pytest.mark.parametrize("repos", ["r", "o/R", "elsewhere/x,r"])
+def test_remediate_limited_to_named_repositories(repos: str) -> None:
+    # --repos narrows every category, not just one: a bare name, an owner-
+    # qualified one (matched case-insensitively), or a list mixing a name
+    # for another org. The narrowed run says so above its results.
+    _mock_offender_org()
+    pvr = respx.put(
+        url__startswith=f"{API}/repos/o/r/private-vulnerability-reporting"
+    ).mock(return_value=httpx.Response(204))
+    result = cli.invoke(
+        app,
+        [
+            "remediate",
+            "--org",
+            "o",
+            "--repos",
+            repos,
+            "--category",
+            "private_vulnerability_reporting",
+            "--apply",
+            "--no-color",
+        ],
+    )
+    if "elsewhere" in repos:
+        # elsewhere/x names a repository in no configured org: refused.
+        assert result.exit_code == 2, result.stdout
+        assert "no repository named elsewhere/x in o" in result.stdout
+        assert not pvr.called
+        return
+    assert result.exit_code == 0, result.stdout
+    assert "Limited to:" in result.stdout
+    assert "enabled: r" in result.stdout
+    assert pvr.called
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("repos", "message"),
+    [
+        ("nope", "--repos: no repository named nope in o"),
+        ("a/b/c", "--repos: not a repository name or owner/name: 'a/b/c'"),
+    ],
+)
+def test_remediate_rejects_a_bad_selection_before_any_work(
+    repos: str, message: str
+) -> None:
+    # A typo must not quietly do nothing, and no write may happen: every write
+    # route is left unmocked, so any attempt would fail the run differently.
+    _mock_offender_org()
+    result = cli.invoke(
+        app, ["remediate", "--org", "o", "--repos", repos, "--apply", "--no-color"]
+    )
+    assert result.exit_code == 2, result.stdout
+    assert message in result.stdout
+
+
+@respx.mock
+def test_remediate_refuses_to_act_on_an_excluded_repository() -> None:
+    # Naming a repository must not bypass the config's exclude list.
+    _mock_offender_org()
+    data = json.dumps(
+        {
+            "organizations": [
+                {"name": "o", "token_env": "GITHUB_TOKEN", "exclude": ["r"]}
+            ]
+        }
+    )
+    result = cli.invoke(
+        app,
+        ["remediate", "--config-data", data, "--repos", "r", "--apply", "--no-color"],
+    )
+    assert result.exit_code == 2, result.stdout
+    assert "--repos: o/r is excluded (explicitly excluded)" in result.stdout
 
 
 class TestTopNLimits:
@@ -1184,3 +1302,142 @@ class TestSlackShow:
         stranger = build_org_report("other", [], repo_count=0)
         visible = slack_show([self._pair(shows=False)])
         assert visible(stranger, CategoryKey.CODEQL) is True
+
+
+class TestSlackFooter:
+    """Channel footers follow the configuration of the report they belong to."""
+
+    def _pair(self, repo_list: RepoList) -> tuple[OrgConfig, OrgReport]:
+        org = OrgConfig(name="o", report=ReportConfig(repo_list=repo_list))
+        return (org, build_org_report("o", [], repo_count=0))
+
+    def test_duplicate_org_names_keep_their_own_setting(self) -> None:
+        enabled = self._pair(RepoList.ENABLED)
+        disabled = self._pair(RepoList.DISABLED)
+        resolve = slack_footer([enabled, disabled])
+        key = CategoryKey.AUTO_MERGE
+        assert resolve(enabled[1]).repo_list(key) is RepoList.ENABLED
+        assert resolve(disabled[1]).repo_list(key) is RepoList.DISABLED
+
+    def test_unconfigured_report_gets_the_defaults(self) -> None:
+        stranger = build_org_report("other", [], repo_count=0)
+        resolve = slack_footer([self._pair(RepoList.DISABLED)])
+        assert resolve(stranger).repo_list(CategoryKey.AUTO_MERGE) is RepoList.AUTO
+
+
+def test_remediate_repos_naming_nothing_does_not_widen_to_everything() -> None:
+    # "--repos ," is an explicit narrowing that parses to nothing; running
+    # it as "no selection" would act on every repository.
+    result = cli.invoke(
+        app, ["remediate", "--org", "o", "--repos", " , ", "--apply", "--no-color"]
+    )
+    assert result.exit_code == 2, result.stdout
+    assert "--repos: names no repository" in result.stdout
+
+
+class _TwoOrgClient:
+    """Org "a" has "shared" in scope; org "b" has an archived "shared"."""
+
+    async def list_org_repos(self, org: str) -> tuple[int, list[Repo]]:
+        archived = org == "b"
+        return 200, [Repo("shared", f"{org}/shared", "u", archived=archived)]
+
+
+async def test_a_name_usable_in_one_org_is_not_refused_for_another() -> None:
+    # A bare name excluded in org b is fine while org a has it in scope: the
+    # run acts on a's repository only, so nothing excluded is touched.
+    cfg = Config(organizations=(OrgConfig(name="a"), OrgConfig(name="b")))
+    console = Console(record=True, no_color=True)
+    touched = await _check_selection(
+        _TwoOrgClient(),  # type: ignore[arg-type]
+        cfg,
+        scope.parse_repo_selection(["shared"]),
+        console=console,
+    )
+    # Keyed by configuration entry: entry 0 is org "a".
+    assert {
+        index: [r.full_name for r in repos] for index, repos in (touched or {}).items()
+    } == {0: ["a/shared"]}
+    assert console.export_text() == ""
+
+
+async def test_a_name_excluded_everywhere_is_refused() -> None:
+    cfg = Config(organizations=(OrgConfig(name="b"),))
+    console = Console(record=True, no_color=True, width=200)
+    touched = await _check_selection(
+        _TwoOrgClient(),  # type: ignore[arg-type]
+        cfg,
+        scope.parse_repo_selection(["shared"]),
+        console=console,
+    )
+    assert touched is None
+    assert "--repos: b/shared is excluded (archived)" in console.export_text()
+
+
+async def test_duplicate_org_entries_keep_their_own_exclusions() -> None:
+    # One org listed twice: the first entry excludes "shared", the second
+    # does not. Each entry must act only on what its own configuration
+    # allows, so the selection is kept per entry, not per organisation name.
+    cfg = Config(
+        organizations=(
+            OrgConfig(name="a", exclude=("shared",)),
+            OrgConfig(name="a"),
+        )
+    )
+    console = Console(record=True, no_color=True)
+    touched = await _check_selection(
+        _TwoOrgClient(),  # type: ignore[arg-type]
+        cfg,
+        scope.parse_repo_selection(["shared"]),
+        console=console,
+    )
+    assert touched is not None
+    assert sorted(touched) == [1]
+
+
+async def test_an_exclusion_holds_whatever_its_capitalisation() -> None:
+    # GitHub names match case-insensitively, and so does --repos, so an
+    # exclude entry must too, or "--repos shared" could reach "Shared".
+    cfg = Config(organizations=(OrgConfig(name="a", exclude=("SHARED",)),))
+    console = Console(record=True, no_color=True, width=200)
+    touched = await _check_selection(
+        _TwoOrgClient(),  # type: ignore[arg-type]
+        cfg,
+        scope.parse_repo_selection(["shared"]),
+        console=console,
+    )
+    assert touched is None
+    assert "a/shared is excluded (explicitly excluded)" in console.export_text()
+
+
+@respx.mock
+def test_remediate_limited_to_names_only_the_orgs_own_repositories() -> None:
+    # A selector for another org must not appear under this one: the line is
+    # an audit of what this org's run actually covered.
+    _mock_offender_org()
+    respx.put(url__startswith=f"{API}/repos/o/r/private-vulnerability-reporting").mock(
+        return_value=httpx.Response(204)
+    )
+    data = json.dumps(
+        {
+            "organizations": [
+                {"name": "o", "token_env": "GITHUB_TOKEN"},
+            ]
+        }
+    )
+    result = cli.invoke(
+        app,
+        [
+            "remediate",
+            "--config-data",
+            data,
+            "--repos",
+            "O/R",
+            "--category",
+            "private_vulnerability_reporting",
+            "--no-color",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    # The repository's own name as GitHub lists it, not the typed selector.
+    assert "Limited to: r\n" in result.stdout

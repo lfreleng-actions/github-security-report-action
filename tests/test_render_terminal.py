@@ -464,3 +464,131 @@ def test_render_remediation_escapes_bracketed_failure_notes() -> None:
     out = console.export_text()
     assert "[Errno 8]" in out
     assert "bad failed: 422 [Errno 8] nodename nor servname" in out
+
+
+def _auto_merge_org() -> report.OrgReport:
+    """Two repositories with auto-merge on, five with it off."""
+    org = _org([], count=7)
+    org.auto_merge = report.TableSection(
+        category=category_meta(CategoryKey.AUTO_MERGE),
+        columns=("Repository",),
+        rows=[report.TableRow(repo=_repo(n), cells=()) for n in "vwxyz"],
+        pass_count=2,
+        fail_count=5,
+        pass_repos=(_repo("a"), _repo("b")),
+    )
+    return org
+
+
+def test_auto_repo_list_names_the_shorter_side() -> None:
+    out = _render(_auto_merge_org())
+    assert "5 Not enabled" in out  # both sides are still counted
+    assert "2 Enabled" in out
+    assert "Enabled: a, b" in out
+    assert "Not enabled: v" not in out
+
+
+def test_repo_list_can_force_the_disabled_side() -> None:
+    console = Console(record=True, width=120, no_color=True)
+    terminal.render_org(
+        _auto_merge_org(),
+        console,
+        footer=report.FooterOptions(repo_list=lambda _key: report.RepoList.DISABLED),
+    )
+    out = console.export_text()
+    assert "Not enabled: v, w, x, y, z" in out
+    assert "Enabled: a" not in out
+
+
+def _excluded_org() -> report.OrgReport:
+    """Two org-wide exclusions, and an Auto-merge table that excludes a third."""
+    org = report.build_org_report(
+        "lfreleng-actions",
+        [],
+        repo_count=7,
+        generated_at=WHEN,
+        excluded_repos=[_repo("fixture"), _repo("sandbox")],
+    )
+    org.auto_merge = _auto_merge_org().auto_merge
+    org.category_excluded[CategoryKey.AUTO_MERGE] = [
+        _repo("fixture"),
+        _repo("sandbox"),
+        _repo("internal-only"),
+    ]
+    return org
+
+
+def _render_excluded(mode: report.ExcludedDisplay) -> str:
+    console = Console(record=True, width=120, no_color=True)
+    terminal.render_org(
+        _excluded_org(), console, footer=report.FooterOptions(excluded=mode)
+    )
+    return console.export_text()
+
+
+def test_always_show_repeats_the_excluded_line_under_every_category() -> None:
+    out = _render_excluded(report.ExcludedDisplay.ALWAYS_SHOW)
+    assert out.count("Excluded: fixture, sandbox") > 1
+
+
+def test_always_hide_drops_every_excluded_line() -> None:
+    out = _render_excluded(report.ExcludedDisplay.ALWAYS_HIDE)
+    assert "Excluded" not in out
+
+
+def test_conditional_hide_keeps_only_the_deviating_category() -> None:
+    out = _render_excluded(report.ExcludedDisplay.CONDITIONAL_HIDE)
+    assert out.count("Excluded:") == 1
+    assert "Excluded: fixture, sandbox, internal-only" in out
+    assert "3 Excluded" in out
+
+
+def _cleanup(
+    outcomes: list[tuple[str, str, str, str]],
+) -> remediate.CategoryRemediation:
+    return remediate.CategoryRemediation(
+        category=category_meta(CategoryKey.CODEQL_STALE_CONFIGURATIONS),
+        outcomes=tuple(
+            remediate.RepoOutcome(name, action, note, verb)
+            for name, action, note, verb in outcomes
+        ),
+    )
+
+
+def test_render_remediation_groups_verbs_and_lists_refusals() -> None:
+    # One category can delete one configuration and re-enable another's
+    # workflow; each verb gets its own line, a refusal carries its reason, and
+    # the summary totals by verb rather than calling a deletion "enabled".
+    results = [
+        _cleanup(
+            [
+                ("a (Default, python)", "deleted", "12 analyses deleted", "delete"),
+                ("b (Advanced, python)", "re-enabled", "", "re-enable"),
+                ("c (Default, actions)", "refused", "add scanning first", "delete"),
+            ]
+        )
+    ]
+    console = Console(record=True, width=120, no_color=True)
+    terminal.render_remediation("o", results, console, apply=True)
+    out = console.export_text()
+    assert "1 deleted: a (Default, python)" in out
+    assert "1 re-enabled: b (Advanced, python)" in out
+    assert "c (Default, actions) refused: add scanning first" in out
+    assert "Summary: 1 deleted, 1 re-enabled, 0 failed, 1 refused." in out
+
+
+def test_render_remediation_dry_run_names_each_verb() -> None:
+    results = [
+        _cleanup(
+            [
+                ("a (Default, python)", "would delete", "", "delete"),
+                ("b (Advanced, python)", "would re-enable", "", "re-enable"),
+            ]
+        )
+    ]
+    console = Console(record=True, width=120, no_color=True)
+    terminal.render_remediation("o", results, console, apply=False)
+    out = console.export_text()
+    assert "1 would delete: a (Default, python)" in out
+    assert "1 would re-enable: b (Advanced, python)" in out
+    assert "1 to delete, 1 to re-enable (dry run)" in out

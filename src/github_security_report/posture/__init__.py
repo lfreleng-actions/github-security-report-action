@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from github_security_report.posture.enablement import (
     build_alerts_table,
+    build_auto_merge_table,
     build_cooldown_table,
     build_dependabot_tables,
     build_pvr_table,
@@ -54,4 +55,5 @@ __all__ = [
     "build_security_updates_table",
     "build_cooldown_table",
     "build_pvr_table",
+    "build_auto_merge_table",
 ]

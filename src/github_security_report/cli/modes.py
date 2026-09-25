@@ -20,7 +20,7 @@ from typing import NoReturn
 import typer
 from rich.console import Console
 
-from github_security_report import collect, config, layout, runner
+from github_security_report import collect, config, layout, runner, scope
 from github_security_report import remediate as remediate_mod
 from github_security_report.categories import CategoryKey
 from github_security_report.cli import publish
@@ -31,11 +31,14 @@ from github_security_report.cli.options import (
 )
 from github_security_report.cli.outputs import (
     TopNLimits,
+    footer,
     repo_outputs,
     show,
 )
 from github_security_report.client import AuthError, GitHubClient, NetworkError
+from github_security_report.collect.protocols import ClientProtocol
 from github_security_report.config import Config, OrgConfig, ReportConfig
+from github_security_report.models import Repo
 from github_security_report.render import markdown as md_render
 from github_security_report.render import terminal as term_render
 from github_security_report.report import build_org_report
@@ -161,6 +164,7 @@ async def _run_org(cfg: Config, options: OrgRunOptions, *, console: Console) -> 
             top_n=limits.resolve(org_cfg.report, "cli"),
             show=show(org_cfg.report, "cli", options.hidden),
             limit=limits.resolver(org_cfg.report, "cli"),
+            footer=footer(org_cfg.report),
         )
     if options.output_dir:
         publish.write_pages(
@@ -225,6 +229,7 @@ async def _run_repo(
         top_n=caps.resolve(cfg, "cli"),
         show=show(cfg, "cli", hidden),
         limit=caps.resolver(cfg, "cli"),
+        footer=footer(cfg),
     )
 
     runner.append_step_summary(
@@ -233,6 +238,7 @@ async def _run_repo(
             top_n=caps.resolve(cfg, "report"),
             show=show(cfg, "markdown", hidden),
             limit=caps.resolver(cfg, "report"),
+            footer=footer(cfg),
         )
     )
     outputs = repo_outputs(signals, fail_threshold)
@@ -257,19 +263,35 @@ async def _run_remediate(
     token: str,
     categories: Sequence[CategoryKey],
     apply: bool,
+    repos: Sequence[scope.RepoRef] = (),
 ) -> int:
     """Collect each org's posture and enable (or preview enabling) features.
 
     A single write-capable token drives both the read (collection) and the
     writes for every configured org, so the per-org read ``token_env`` in the
-    config is intentionally bypassed. Returns 1 when any enable failed, else 0.
+    config is intentionally bypassed. ``repos``, when given, limits every
+    category to those repositories; the selection is checked against every
+    org before anything is read or written, and a name that matches nothing,
+    or only an excluded repository, stops the run. Returns 2 for a bad
+    selection, 1 when any write failed, else 0.
     """
     now = dt.datetime.now(dt.timezone.utc)
     failures = 0
     async with GitHubClient(token) as client:
-        for org_cfg in cfg.organizations:
+        selected = await _check_selection(client, cfg, repos, console=console)
+        if selected is None:
+            return 2
+        for index, org_cfg in enumerate(cfg.organizations):
+            if repos and index not in selected:
+                continue  # none of the named repositories live here
+            # The validated repositories themselves, so collection cannot
+            # silently lose one to a second, incomplete listing.
             report = await collect.collect_org(
-                client, org_cfg, org_cfg.report, generated_at=now
+                client,
+                org_cfg,
+                org_cfg.report,
+                generated_at=now,
+                selected=selected[index] if repos else None,
             )
             results = await remediate_mod.remediate_org(
                 client, report, categories=categories, apply=apply
@@ -282,6 +304,69 @@ async def _run_remediate(
                 console,
                 apply=apply,
                 top_n=org_cfg.report.cli_top_n,
+                # This entry's own validated repositories, not every selector:
+                # in a multi-org run each org names only what it collected.
+                limited_to=[r.name for r in selected[index]] if repos else [],
             )
             failures += sum(result.failures for result in results)
     return 1 if failures else 0
+
+
+async def _check_selection(
+    client: ClientProtocol,
+    cfg: Config,
+    repos: Sequence[scope.RepoRef],
+    *,
+    console: Console,
+) -> dict[int, tuple[Repo, ...]] | None:
+    """Each org entry's repositories a selection names, or None to stop.
+
+    Keyed by the entry's position in the configuration, holding only entries
+    with a match: a run collects exactly these, so an entry the selection
+    never touches is skipped. Keyed by position rather than name because the
+    configuration may list one organisation twice with different scoping;
+    each entry must act only on what its own configuration allows. Every name must
+    match a repository some configured org has in scope. A name matching
+    nothing is almost always a typo, and one matching only an excluded
+    repository (the exclude list, archived, fork, template, test) must not
+    bypass that exclusion, so both stop the run, reporting every problem at
+    once. An empty selection returns an empty mapping, which callers read as
+    "no selection".
+    """
+    if not repos:
+        return {}
+    usable: dict[scope.RepoRef, bool] = dict.fromkeys(repos, False)
+    excluded: dict[scope.RepoRef, list[str]] = {ref: [] for ref in repos}
+    touched: dict[int, tuple[Repo, ...]] = {}
+    problems: list[str] = []
+    partial = False
+    for index, org_cfg in enumerate(cfg.organizations):
+        named = await collect.check_named_repos(client, org_cfg, org_cfg.report, repos)
+        partial = partial or named.partial
+        for ref in repos:
+            if any(ref.matches(org_cfg.name, r.name) for r in named.in_scope):
+                usable[ref] = True
+            excluded[ref].extend(
+                f"{r.full_name} is excluded ({reason})"
+                for r, reason in named.excluded
+                if ref.matches(org_cfg.name, r.name)
+            )
+        if named.in_scope:
+            touched[index] = named.in_scope
+    # A bare name may be usable in one org and excluded in another: only a
+    # name with no usable match anywhere is a problem, so the run acts on the
+    # usable match and never on the excluded one.
+    for ref in repos:
+        if not usable[ref]:
+            problems.extend(excluded[ref])
+    unknown = [str(ref) for ref in repos if not usable[ref] and not excluded[ref]]
+    if unknown:
+        where = ", ".join(org_cfg.name for org_cfg in cfg.organizations)
+        note = " (the repository listing was incomplete)" if partial else ""
+        problems.append(f"no repository named {', '.join(unknown)} in {where}{note}")
+    if problems:
+        # markup=False: repository names come from the command line and the API.
+        for problem in problems:
+            console.print(f"--repos: {problem}", style="red", markup=False)
+        return None
+    return touched

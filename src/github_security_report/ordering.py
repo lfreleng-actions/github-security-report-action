@@ -164,21 +164,21 @@ def _sort_key(row: TableRow, term: SortTerm) -> tuple[bool, float | str]:
     )
 
 
-def _sorted_by(section: TableSection, terms: Sequence[SortTerm]) -> list[TableRow]:
-    """A table's rows ordered by resolved ``terms``, most significant first.
+def _sorted_by(rows: Sequence[TableRow], terms: Sequence[SortTerm]) -> list[TableRow]:
+    """``rows`` ordered by resolved ``terms``, most significant first.
 
     Applies the terms least-significant first onto Python's stable sort, which
     keeps multi-column ordering correct while letting a text column descend --
     something a single composite key cannot express, since a string has no
     negation.
     """
-    rows = sorted(section.rows, key=lambda row: row.repo.name)
+    ordered = sorted(rows, key=lambda row: row.repo.name)
     for term in reversed(terms):
-        rows.sort(
+        ordered.sort(
             key=lambda row, term=term: _sort_key(row, term),  # type: ignore[misc]
             reverse=term.descending,
         )
-    return rows
+    return ordered
 
 
 def sort_rows(section: TableSection, order: Sequence[str]) -> list[TableRow]:
@@ -186,7 +186,7 @@ def sort_rows(section: TableSection, order: Sequence[str]) -> list[TableRow]:
     terms = resolve_terms(section, order)
     if not terms:
         return list(section.rows)
-    return _sorted_by(section, terms)
+    return _sorted_by(section.rows, terms)
 
 
 def _order_note(named: Sequence[tuple[str, bool]]) -> str:
@@ -230,7 +230,12 @@ def apply_configured_order(
         terms = resolve_terms(section, order)
         if not terms:
             continue
-        section.rows = _sorted_by(section, terms)
+        section.rows = _sorted_by(section.rows, terms)
+        # A boolean feature table can name its enabled side instead of its
+        # rows; that list must follow the same order, or switching `repo_list`
+        # would silently undo the configured sort.
+        passing = [TableRow(repo=repo, cells=()) for repo in section.pass_repos]
+        section.pass_repos = tuple(row.repo for row in _sorted_by(passing, terms))
         section.description = section.resolved_description() + _order_note(
             [(section.columns[term.index], term.descending) for term in terms]
         )
@@ -238,15 +243,7 @@ def apply_configured_order(
 
 def report_tables(report: OrgReport) -> list[TableSection | None]:
     """Every generic table attached to an org report, in render order."""
-    return [
-        *report.dependabot_tables,
-        report.releases,
-        report.mutable_releases,
-        report.private_vulnerability_reporting,
-        report.issues,
-        report.pull_requests,
-        report.assigned_pull_requests,
-    ]
+    return [*report.nested_tables, *report.standalone_tables]
 
 
 # --------------------------------------------------------------------------- #

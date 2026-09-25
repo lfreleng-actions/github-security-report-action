@@ -25,6 +25,8 @@ class RepoPosture:
     security_updates: bool | None = None
     # GitHub "private vulnerability reporting" enablement (None = indeterminate).
     private_vulnerability_reporting: bool | None = None
+    # Repository "Allow auto-merge" setting (None = indeterminate).
+    auto_merge: bool | None = None
     # Ecosystems declared in .github/dependabot.yml that set no cooldown.
     cooldown_missing: tuple[str, ...] = ()
     # True when .github/dependabot.yml exists and declares version updates.

@@ -30,6 +30,10 @@ from github_security_report.collect.protocols import (
     RepoClientProtocol,
 )
 from github_security_report.collect.repo import collect_repo
+from github_security_report.collect.scoping import (
+    NamedRepos,
+    check_named_repos,
+)
 from github_security_report.config import ReportConfig
 
 # Deprecated: the GraphQL prefetch batch size is ``report.graph_batch`` (config,
@@ -43,6 +47,8 @@ __all__ = [
     "ClientProtocol",
     "OrgCollectContext",
     "RepoClientProtocol",
+    "NamedRepos",
+    "check_named_repos",
     "collect_org",
     "collect_repo",
     "gather_in_batches",
