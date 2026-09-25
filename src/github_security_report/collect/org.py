@@ -10,7 +10,7 @@ then bounded per-repo enabled-probes.
 :func:`collect_org` reads as a pipeline of named phases, each implemented by a
 helper in this module:
 
-1. :func:`_resolve_scope` -- list the organisation's repositories and scope them
+1. :func:`~github_security_report.collect.scoping.resolve_scope` -- list the organisation's repositories and scope them
 2. :func:`_run_sweeps` -- one org-bulk read per signal, plus ruleset coverage
 3. :func:`_gate_signals` -- decide which workflow-driven signals to collect
 4. :func:`_build_context` -- freeze the org-wide evidence per-repo probes need
@@ -24,9 +24,10 @@ import asyncio
 import datetime as dt
 import logging
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
 
-from github_security_report import gating, rulesets, scope
+from github_security_report import gating, rulesets
 from github_security_report.classify import RepoFacts, classify_repo
 from github_security_report.client import GraphBatchError
 from github_security_report.collect.context import (
@@ -35,6 +36,7 @@ from github_security_report.collect.context import (
 )
 from github_security_report.collect.extras import attach_extra_tables
 from github_security_report.collect.protocols import ClientProtocol
+from github_security_report.collect.scoping import resolve_scope, selected_scope
 from github_security_report.config import OrgConfig, ReportConfig
 from github_security_report.models import (
     CODE_SCANNING_TOOLS,
@@ -72,53 +74,6 @@ def _group_by_repo(alerts: list[dict]) -> dict[str, list[dict]]:
         if name:
             grouped[name].append(alert)
     return grouped
-
-
-# --------------------------------------------------------------------------- #
-# Repository scope
-# --------------------------------------------------------------------------- #
-@dataclass(frozen=True)
-class _OrgScope:
-    """The repositories a run covers, and whether the listing was complete."""
-
-    status: int
-    in_scope: list[Repo]
-    excluded: list[Repo]
-
-    @property
-    def partial(self) -> bool:
-        """Whether the listing was incomplete, so the report must say so."""
-        return self.status != 200
-
-
-async def _resolve_scope(
-    client: ClientProtocol, org_cfg: OrgConfig, report_cfg: ReportConfig
-) -> _OrgScope:
-    """List the organisation's repositories and apply the scoping rules."""
-    org = org_cfg.name
-    status, repos = await client.list_org_repos(org)
-    if status != 200:
-        log.warning(
-            "repository listing for org %s is incomplete (status %s); the "
-            "report may omit repositories and their findings",
-            org,
-            status,
-        )
-    in_scope = scope.filter_repos(
-        repos,
-        include_archived=report_cfg.include_archived,
-        include_test=report_cfg.include_test,
-        exclude=org_cfg.exclude,
-    )
-    # Repositories removed specifically by the per-org exclude list (not by
-    # fork/template/archived/test filtering) are tracked so the report can show
-    # them as explicitly excluded rather than silently dropping them.
-    exclude_names = set(org_cfg.exclude)
-    return _OrgScope(
-        status=status,
-        in_scope=in_scope,
-        excluded=[repo for repo in repos if repo.name in exclude_names],
-    )
 
 
 # --------------------------------------------------------------------------- #
@@ -398,12 +353,25 @@ async def collect_org(
     report_cfg: ReportConfig,
     *,
     generated_at: dt.datetime | None = None,
+    selected: Sequence[Repo] | None = None,
 ) -> OrgReport:
-    """Collect and build the report for one organisation."""
+    """Collect and build the report for one organisation.
+
+    ``selected``, when given, is the exact set of repositories to collect:
+    the in-scope matches of a named selection, already validated by
+    :func:`~github_security_report.collect.scoping.check_named_repos`. The
+    organisation is then not listed again. Per-repository reads cover only
+    these; the org-bulk alert sweeps still read the organisation's open
+    alerts, as they are single organisation-wide requests.
+    """
     org = org_cfg.name
     log.info("collecting %s", org)
 
-    scoped = await _resolve_scope(client, org_cfg, report_cfg)
+    scoped = (
+        selected_scope(selected)
+        if selected is not None
+        else await resolve_scope(client, org_cfg, report_cfg)
+    )
     sweeps = await _run_sweeps(client, org)
     skipped = await _gate_signals(client, org, scoped.in_scope, sweeps, report_cfg)
     ctx = await _build_context(

@@ -325,6 +325,7 @@ def render_remediation(
     *,
     apply: bool,
     top_n: int | None = None,
+    limited_to: Sequence[str] = (),
 ) -> None:
     """Render a remediation run: one block per category, with a trailing summary.
 
@@ -335,6 +336,10 @@ def render_remediation(
     a trailing summary totals the work across categories.
     """
     console.rule(f"[bold]Remediation: {escape(org)}[/bold]")
+    # A narrowed run says so up front, so its results are not read as the
+    # whole organisation's.
+    if limited_to:
+        console.print(f"[dim]Limited to: {escape(', '.join(limited_to))}[/dim]")
     # In apply mode the writes have already happened by the time this renders,
     # so a pre-amble banner would be misleading; only the dry-run notice (shown
     # before nothing is changed) is useful.
