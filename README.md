@@ -363,7 +363,8 @@ organisation, as `--top-n` does.
 
 The per-org `exclude` list removes repositories from analysis entirely; they are
 reported as **excluded** (distinct from "not enabled"), so an intentional
-exclusion is visible rather than silently dropped.
+exclusion is visible rather than silently dropped. Entries match repository
+names case-insensitively, as GitHub does.
 
 Every category reports those exclusions beneath its counts, so an
 organisation-wide list repeats under each one. `report.excluded_display`
@@ -1476,7 +1477,29 @@ uvx github-security-report remediate \
 # Limit to specific categories (repeatable).
 uvx github-security-report remediate --org lfreleng-actions \
   --category codeql --category private_vulnerability_reporting --apply
+
+# Limit to specific repositories, for any category (comma-separated and/or
+# repeatable; `name` in any configured org, or `owner/name`).
+uvx github-security-report remediate --org lfreleng-actions \
+  --repos dependamerge,python-nss-ng --apply
 ```
+
+`--repos` narrows the run itself, not just its output. Everything done per
+repository (the feature probes, the batched prefetch, the CodeQL history walk
+and every write) covers only the named repositories, so a targeted run skips
+the bulk of a full one. The organisation-wide alert sweeps are the exception:
+each is a single org-bulk request, so its cost follows the organisation's open
+alert backlog rather than its repository count. It combines with
+`--category`. Every name is checked against every configured organisation
+before anything is written: a name that matches no repository (almost always
+a typo), or one that matches only repositories the configuration excludes
+(the `exclude` list, archived, fork, template or test), stops the run with
+exit code 2 and says which. A bare name excluded in one organisation but in
+scope in another runs against the in-scope one only; naming a repository never
+brings an excluded one back. A `--repos` value that names nothing also stops
+the run, rather than falling back to every repository. The run then collects
+exactly the repositories that check validated, without listing the
+organisation again, and prints `Limited to:` beneath its heading.
 
 The remediable categories are the simple on/off features with a documented
 enablement endpoint:

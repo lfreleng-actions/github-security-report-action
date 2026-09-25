@@ -81,3 +81,43 @@ class TestNagScope:
 
     def test_normal_repo_nagged(self) -> None:
         assert scope.in_nag_scope(_repo("dependamerge"))
+
+
+# --------------------------------------------------------------------------- #
+# Named repository selection (remediate --repos)
+# --------------------------------------------------------------------------- #
+def test_parse_repo_selection_takes_commas_and_repeats() -> None:
+    # Comma-separated, repeatable, whitespace-tolerant, trailing commas
+    # ignored, and duplicates (case-insensitively) collapsed in first order.
+    refs = scope.parse_repo_selection(["a, b,", " o/c ", "A", "O/C,d"])
+    assert [str(ref) for ref in refs] == ["a", "b", "o/c", "d"]
+    assert refs[2] == scope.RepoRef(name="c", owner="o")
+
+
+@pytest.mark.parametrize("bad", ["a/b/c", "/name", "owner/"])
+def test_parse_repo_selection_rejects_malformed_names(bad: str) -> None:
+    with pytest.raises(scope.RepoSelectionError, match="not a repository name"):
+        scope.parse_repo_selection([bad])
+
+
+def test_parse_repo_selection_of_nothing_selects_nothing() -> None:
+    assert scope.parse_repo_selection([]) == ()
+    assert scope.parse_repo_selection([" , "]) == ()
+
+
+def test_repo_ref_matches_case_insensitively_and_by_owner() -> None:
+    bare, owned = scope.RepoRef("Dependamerge"), scope.RepoRef("x", owner="LFReleng")
+    assert bare.matches("any-org", "dependamerge")
+    assert owned.matches("lfreleng", "X")
+    assert not owned.matches("other-org", "x")
+
+
+def test_select_named_keeps_only_the_named_repositories() -> None:
+    repos = [_repo("a"), _repo("b"), _repo("c")]
+    refs = scope.parse_repo_selection(["c,a,elsewhere/b"])
+    assert [r.name for r in scope.select_named("o", repos, refs)] == ["a", "c"]
+
+
+def test_exclude_matches_case_insensitively() -> None:
+    decision = scope.decide(_repo("MyRepo"), exclude=("myrepo",))
+    assert (decision.included, decision.reason) == (False, "explicitly excluded")

@@ -27,6 +27,7 @@ from github_security_report.cli.modes import (
 )
 from github_security_report.cli.options import OrgRunOptions, ReportOverrides
 from github_security_report.cli.outputs import TopNLimits
+from github_security_report.scope import RepoSelectionError, parse_repo_selection
 
 app = typer.Typer(
     name="github-security-report",
@@ -301,6 +302,11 @@ def remediate(
         "--apply",
         help="Perform the writes. Without this flag remediate only previews (dry run).",
     ),
+    repos: list[str] | None = typer.Option(
+        None,
+        "--repos",
+        help="Limit every selected category to these repositories: comma-separated and/or repeatable, each 'name' (in any configured org) or 'owner/name'. A name matching nothing, or an excluded repository, stops the run before anything is read or written.",
+    ),
     no_color: bool = typer.Option(False, "--no-color", help="Disable coloured output."),
 ) -> None:
     """Enable security features on repositories that lack them.
@@ -331,6 +337,21 @@ def remediate(
         raise typer.Exit(2)
     categories = keys or list(remediate_mod.DEFAULT_REMEDIABLE)
 
+    try:
+        selection = parse_repo_selection(repos or [])
+    except RepoSelectionError as exc:
+        # markup=False: the value is printed exactly as the user typed it.
+        console.print(f"--repos: {exc}", style="red", markup=False)
+        raise typer.Exit(2) from exc
+    if repos and not selection:
+        # An explicit narrowing must never widen to "every repository".
+        console.print(
+            "--repos: names no repository; omit it to act on every one",
+            style="red",
+            markup=False,
+        )
+        raise typer.Exit(2)
+
     cfg = _load_config(config_file, config_data, org, token_env, console=console)
     if cfg is None:
         console.print(
@@ -357,6 +378,7 @@ def remediate(
             token=token,
             categories=categories,
             apply=apply,
+            repos=selection,
         ),
     )
     raise typer.Exit(code)
