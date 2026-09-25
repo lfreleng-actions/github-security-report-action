@@ -37,6 +37,10 @@ async def _codeql_for_repo(
         head_committed_at=ctx.graph_for(repo.name).head_committed_at,
         default_setup=default_setup,
     )
+    if not facts.readable:
+        # A partial history or an unknown head: both tables report this
+        # repository as unknown, so its workflow states would go unused.
+        return facts
     paths = sorted(
         {
             path

@@ -85,6 +85,11 @@ class OrgReadClient(AlertReads):
                     fork=raw.get("fork", False),
                     is_template=raw.get("is_template", False),
                     private=raw.get("private", False),
+                    # Every per-branch read (the CodeQL analyses, the head it
+                    # is measured against) follows this, so a repository whose
+                    # default branch is not "main" must not inherit that
+                    # default from the model.
+                    default_branch=raw.get("default_branch") or "main",
                     created_at=_parse_iso(raw.get("created_at")),
                 )
             )

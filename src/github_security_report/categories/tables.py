@@ -28,7 +28,9 @@ TABLE_CATEGORIES: dict[CategoryKey, CategoryMeta] = {
             "since changed, so a stale configuration can hold a Results/Findings "
             "row 'Clean' while nothing is being scanned. Setup is Default (GitHub-"
             "managed) or Advanced (a workflow in the repository), and Cause says "
-            "why the configuration stopped. Orphaned means the setup that "
+            "why the configuration stopped. Last scan is the newest successful "
+            "upload: a configuration whose runs keep failing ages from its last "
+            "success, and its cause says so. Orphaned means the setup that "
             "produced it no longer exists, so it will never scan again: once the "
             "live setup covers its language (see Language Coverage), delete it "
             "from the repository's code-scanning tool status page. Superseded "
@@ -50,7 +52,10 @@ TABLE_CATEGORIES: dict[CategoryKey, CategoryMeta] = {
             "no current configuration scans -- typically an advanced workflow "
             "whose language matrix omits one the repository contains, such as "
             "'actions' for its own workflow files. Repositories with no CodeQL "
-            "at all appear in the Results/Findings not-enabled list instead."
+            "at all appear in the Results/Findings not-enabled list instead. "
+            "On default setup GitHub reports only the languages it is set to "
+            "scan, so a detected language deliberately left out of default "
+            "setup is not visible here."
         ),
     ),
     CategoryKey.DEPENDABOT_ALERTS_ENABLED: CategoryMeta(

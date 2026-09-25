@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from urllib.parse import quote
 
 from github_security_report.client.codeql_parsers import (
     _parse_default_setup,
@@ -314,17 +315,48 @@ class ReadClient(OrgReadClient):
         """The Actions state of the workflow at ``path`` (None when unreadable).
 
         ``active``, ``deleted`` or one of the ``disabled_*`` states, as GitHub
-        reports them; ``missing`` when the repository has no such workflow,
-        which is how a renamed or removed workflow file shows up.
+        reports them; ``missing`` when the repository demonstrably has no such
+        workflow file, which is how a renamed or removed workflow shows up.
+
+        A ``404`` alone does not establish that: GitHub answers a token that
+        cannot see a repository's Actions the same way. Since "missing" lets a
+        cleanup treat the configuration as orphaned and delete it, absence is
+        confirmed through the contents API before it is reported; anything the
+        token cannot confirm is unreadable (``None``) instead.
         """
-        name = path.rsplit("/", 1)[-1]
+        # Encoded as one path segment: a file name may hold "?" or "#".
+        name = quote(path.rsplit("/", 1)[-1], safe="")
         resp = await self._request(
             "GET", f"{self._api_url}/repos/{org}/{repo}/actions/workflows/{name}"
         )
         status = resp.status_code
         if status != 200:
             await resp.aclose()  # unread body would leak a pooled connection
-            return WORKFLOW_MISSING if status == 404 else None
+            if status == 404 and await self._workflow_file_absent(org, repo, path):
+                return WORKFLOW_MISSING
+            return None
         state = resp.json().get("state")
         await resp.aclose()  # release the connection once the body is read
         return state if isinstance(state, str) else None
+
+    async def _workflow_file_absent(self, org: str, repo: str, path: str) -> bool:
+        """Whether the repository's contents show no file at ``path``.
+
+        The exact path is read rather than its directory listed: the contents
+        API caps a listing at 1,000 entries, and a truncated listing could
+        omit the file. Absence is proven by that path answering ``404`` in a
+        repository whose root the token can read, so the file is truly
+        missing rather than hidden. Every other answer, including the file
+        being there after all, is inconclusive and reported as not absent.
+        """
+        base = f"{self._api_url}/repos/{org}/{repo}/contents"
+        # Each segment encoded, keeping the separators, for the same reason.
+        resp = await self._request("GET", f"{base}/{quote(path, safe='/')}")
+        status = resp.status_code
+        await resp.aclose()  # only the status matters here
+        if status != 404:
+            return False
+        resp = await self._request("GET", f"{base}/")
+        readable = resp.status_code == 200
+        await resp.aclose()  # only the status matters here
+        return readable
