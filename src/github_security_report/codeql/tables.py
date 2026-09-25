@@ -86,6 +86,11 @@ def _advanced_setup_cause(
         # state to read and none to point the reader at.
         return StaleCause.EXTERNAL_UPLOADER
     if state == WORKFLOW_DISABLED_INACTIVITY:
+        # Re-enabling restores the scan only while default setup is off; if
+        # its state is unknown it may be on, blocking the uploads anyway, so
+        # the configuration is left for a person rather than re-enabled.
+        if setup is None:
+            return StaleCause.DEFAULT_SETUP_UNREADABLE
         return StaleCause.WORKFLOW_INACTIVE
     if disabled:
         return StaleCause.WORKFLOW_DISABLED

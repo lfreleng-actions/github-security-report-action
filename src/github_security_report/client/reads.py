@@ -361,33 +361,50 @@ class ReadClient(OrgReadClient):
         await resp.aclose()  # only the status matters here
         return readable
 
-    async def codeql_alerts_held_only_by(
-        self, org: str, repo: str, category: str, branch: str
-    ) -> int | None:
-        """Open CodeQL alerts that only ``category`` still reports on ``branch``.
+    async def codeql_alert_holders(
+        self, org: str, repo: str, branch: str
+    ) -> list[frozenset[str]] | None:
+        """Each open CodeQL alert's holding categories on ``branch``.
 
-        Deleting a configuration closes the alerts it alone was keeping open,
-        so this is the check a cleanup makes before it writes. An alert counts
-        when every one of its instances on the branch belongs to ``category``.
-        ``None`` when the alerts or any alert's instances could not be read in
-        full: an unknown answer must stop a deletion, never permit one.
+        One entry per open alert: the categories of the configurations whose
+        instance of it is still open there. An instance already fixed holds
+        nothing open, so it is not counted. Deleting configurations closes every alert whose
+        holders they all belong to, so a cleanup judges its whole planned
+        deletion set against these, not one deletion at a time. ``None`` when
+        the alerts or any alert's instances could not be read in full: an
+        unknown answer must stop a deletion, never permit one.
         """
         base = f"{self._api_url}/repos/{org}/{repo}/code-scanning"
+        ref = f"refs/heads/{branch}"
+        # Filtered to the branch up front: only its alerts can be held open by
+        # a configuration on it, and each costs an instances read below.
         status, alerts = await self._get_list(
             f"{base}/alerts",
             tool_name=CODE_SCANNING_TOOLS[SignalType.CODEQL],
             state="open",
+            ref=ref,
         )
         if status != 200:
             return None
-        held = 0
+        holders: list[frozenset[str]] = []
         for alert in alerts:
             status, instances = await self._get_list(
-                f"{base}/alerts/{alert.get('number')}/instances",
-                ref=f"refs/heads/{branch}",
+                f"{base}/alerts/{alert.get('number')}/instances", ref=ref
             )
             if status != 200:
                 return None
-            categories = {instance.get("category") for instance in instances}
-            held += categories == {category}
-        return held
+            held_by: set[str] = set()
+            for instance in instances:
+                state = instance.get("state")
+                category = instance.get("category")
+                if state not in ("open", "fixed") or not isinstance(category, str):
+                    # An instance whose state or configuration is unknown could
+                    # be the one keeping the alert open; guessing would not
+                    # fail closed.
+                    return None
+                # Only an open instance holds the alert open: a configuration
+                # that has already fixed its instance keeps nothing alive.
+                if state == "open":
+                    held_by.add(category)
+            holders.append(frozenset(held_by))
+        return holders

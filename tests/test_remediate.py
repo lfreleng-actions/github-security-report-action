@@ -104,9 +104,10 @@ class FakeClient:
     async def enable_auto_merge(self, o: str, r: str) -> tuple[bool, str]:
         return await self._do("auto_merge", o, r)
 
-    # CodeQL cleanup. ``held`` maps a category to the open alerts only it
-    # reports; a category mapped to None models an unreadable alert list.
-    held: dict[str, int | None] = {}
+    # CodeQL cleanup. ``holders`` maps a repository to each open alert's
+    # holding categories; a repository mapped to None models an unreadable
+    # alert list, and an absent one has no open alerts.
+    holders: dict[str, list[frozenset[str]] | None] = {}
 
     async def delete_codeql_analyses(
         self, o: str, r: str, analysis_ids: tuple[int, ...]
@@ -118,11 +119,11 @@ class FakeClient:
         self.calls.append(("workflow", o, f"{r}:{path}"))
         return True, ""
 
-    async def codeql_alerts_held_only_by(
-        self, o: str, r: str, category: str, branch: str
-    ) -> int | None:
-        self.calls.append(("cq-alerts", o, f"{r}:{category}@{branch}"))
-        return self.held.get(category, 0)
+    async def codeql_alert_holders(
+        self, o: str, r: str, branch: str
+    ) -> list[frozenset[str]] | None:
+        self.calls.append(("cq-alerts", o, f"{r}@{branch}"))
+        return self.holders.get(r, [])
 
 
 def _by_key(results: list[remediate.CategoryRemediation]) -> dict:
@@ -361,17 +362,18 @@ async def test_cleanup_dry_run_previews_refuses_and_writes_nothing() -> None:
     outcomes = [(o.name, o.action, o.note) for o in result.outcomes]
     assert outcomes == [
         (
-            "dependamerge (Default, actions)",
+            "dependamerge: /language:actions",
             "refused",
             "no current configuration scans actions; add scanning for it first",
         ),
-        ("dependamerge (Default, python)", "would delete", ""),
-        ("quiet (Advanced, python)", "would re-enable", ""),
+        ("dependamerge: /language:python", "would delete", ""),
+        # A re-enable acts on the workflow, so it is named by the workflow.
+        ("quiet: .github/workflows/codeql.yml", "would re-enable", ""),
     ]
     # The alert guard is a read, so it runs in a dry run too -- but only for
     # a deletion the plan has not already refused.
     kinds = [(kind, detail) for kind, _, detail in client.calls]
-    assert kinds == [("cq-alerts", "dependamerge:/language:python@main")]
+    assert kinds == [("cq-alerts", "dependamerge@main")]
 
 
 async def test_cleanup_apply_deletes_newest_first_and_reenables() -> None:
@@ -397,28 +399,89 @@ async def test_cleanup_apply_deletes_newest_first_and_reenables() -> None:
 
 
 @pytest.mark.parametrize(
-    ("held", "note"),
+    ("holders", "note"),
     [
-        (2, "would close 2 open alert(s) that only it reports"),
+        (
+            [frozenset({"/language:python"})] * 2,
+            "would close 2 open alert(s) that no remaining configuration reports",
+        ),
         (None, "open alerts could not be read; nothing deleted"),
     ],
 )
 async def test_cleanup_refuses_to_close_open_alerts(
-    held: int | None, note: str
+    holders: list[frozenset[str]] | None, note: str
 ) -> None:
     client = FakeClient()
-    client.held = {"/language:python": held}
+    client.holders = {"dependamerge": holders}
     (result,) = await remediate.remediate_org(
         client,
         _cleanup_report(),
         categories=[CategoryKey.CODEQL_STALE_CONFIGURATIONS],
         apply=True,
     )
-    python = next(
-        o for o in result.outcomes if "python" in o.name and "Default" in o.name
-    )
+    python = next(o for o in result.outcomes if o.name.endswith("/language:python"))
     assert (python.action, python.note) == ("refused", note)
     assert not any(kind == "delete" for kind, _, _ in client.calls)
+
+
+def _twin_report() -> OrgReport:
+    """Two orphaned Python configurations in one repository, beside a live one."""
+    renamed = ".github/workflows/codeql.yaml:analyze"
+    twin = CodeQLFacts(
+        repo=_repo("twin"),
+        configurations=(
+            _cq("python", _WORKFLOW_KEY, 0, 100),
+            _cq("python", _DEFAULT_KEY, 91, 21),
+            _cq("python", renamed, 120, 31),
+        ),
+        head_committed_at=_HEAD,
+        default_setup=DefaultSetup(configured=False, languages=frozenset({"python"})),
+        workflow_states=MappingProxyType({".github/workflows/codeql.yaml": "missing"}),
+    )
+    report = _report()
+    report.codeql_health = CodeQLHealth(facts=(twin,), stale_days=30)
+    return report
+
+
+async def test_cleanup_guard_judges_the_batch_not_each_deletion() -> None:
+    # One alert is held by both orphans: neither alone closes it, but deleting
+    # the pair would. Another is held by an orphan and the live configuration,
+    # so it survives any deletion. The batch must spare the first alert's
+    # holders, and read the repository's alerts once for both targets.
+    default = "/language:python"
+    renamed = ".github/workflows/codeql.yaml:analyze/build-mode:none/language:python"
+    live = f"{_WORKFLOW_KEY}/build-mode:none/language:python"
+    client = FakeClient()
+    client.holders = {
+        "twin": [frozenset({default, renamed}), frozenset({default, live})]
+    }
+    (result,) = await remediate.remediate_org(
+        client,
+        _twin_report(),
+        categories=[CategoryKey.CODEQL_STALE_CONFIGURATIONS],
+        apply=True,
+    )
+    assert [(o.action, o.note) for o in result.outcomes] == [
+        (
+            "refused",
+            "would close 1 open alert(s) that no remaining configuration reports",
+        ),
+    ] * 2
+    assert not any(kind == "delete" for kind, _, _ in client.calls)
+    assert [d for k, _, d in client.calls if k == "cq-alerts"] == ["twin@main"]
+
+
+async def test_cleanup_proceeds_when_a_live_configuration_keeps_every_alert() -> None:
+    live = f"{_WORKFLOW_KEY}/build-mode:none/language:python"
+    client = FakeClient()
+    client.holders = {"twin": [frozenset({"/language:python", live})]}
+    (result,) = await remediate.remediate_org(
+        client,
+        _twin_report(),
+        categories=[CategoryKey.CODEQL_STALE_CONFIGURATIONS],
+        apply=True,
+    )
+    assert [o.action for o in result.outcomes] == ["deleted", "deleted"]
 
 
 async def test_cleanup_without_collected_codeql_data_has_nothing_to_do() -> None:

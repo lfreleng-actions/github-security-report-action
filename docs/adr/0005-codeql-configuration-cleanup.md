@@ -43,20 +43,28 @@ that **deletes**: a configuration's analyses, and with them its alert history.
    file removed), blocked (superseded by default setup), or no longer covers
    the language. Re-enable the workflow when GitHub disabled it for
    inactivity; that restores the scan rather than discarding it. Every other
-   cause (analyses failing, a workflow disabled by hand, one active but not
-   uploading, an unreadable state) is reported and left for a person.
+   cause (analyses failing, default setup changing state or not uploading, an
+   upload from outside GitHub Actions, a workflow disabled by hand, one active
+   but not uploading, an unreadable state) is reported and left for a person.
 
 3. **Guards refuse rather than fail.** A deletion is refused when:
    - no current configuration scans its language, since the stale results are
      then the only record of it (add scanning first; the refusal names the
      language);
-   - it would close an open alert that only it reports;
+   - it would help close an open alert. The guard judges the repository's
+     **whole planned deletion set**, not each deletion alone: an alert closes
+     once every configuration holding it is deleted, so two configurations
+     can jointly close an alert neither holds alone. Every deletion holding an
+     alert that no remaining configuration would report is refused, keeping
+     all of that alert's holders rather than choosing one to spare;
    - the alerts cannot be read, because an unknown answer must stop a
      deletion.
 
-   The alert check is a read, so a dry run reports refusals exactly as an
-   apply would. A refusal is shown beside the work done and does not fail the
-   run: nothing broke, the work was withheld.
+   The alert check is a read, taken once per repository before any write, so
+   a dry run reports refusals exactly as an apply would, and nothing depends
+   on instance reads catching up with earlier deletions. A refusal is shown
+   beside the work done and does not fail the run: nothing broke, the work was
+   withheld.
 
 4. **Plan from the report's own data.** The report already reads every
    analysis to find stale configurations, so it keeps each configuration's
@@ -64,12 +72,18 @@ that **deletes**: a configuration's analyses, and with them its alert history.
    needs no second read of the history, and plans from exactly what the
    report showed.
 
-5. **Delete defensively.** Deletion runs serially with a one-second pause
-   between requests, as GitHub asks of mutating requests. It walks the
-   collected ids rather than following `confirm_delete_url`: live, that URL
-   came back null while older analyses remained. A `404` is an analysis
-   already gone (an interrupted run, or the listing lagging a deletion) and is
-   skipped, so re-running resumes the work.
+5. **Delete defensively.** Deletion runs serially, behind a client-wide
+   throttle that spaces every cleanup mutation at least a second from the
+   last, across targets as well as within one, as GitHub asks of mutating
+   requests. It walks the collected ids rather than following
+   `confirm_delete_url`: live, that URL came back null while older analyses
+   remained. GitHub answers a request it will not authorise with `404` as
+   readily as one for something absent, so no `404` is taken at its word. A
+   deletion's `404` is skipped as already gone (an interrupted run, or the
+   listing lagging a deletion) only once reading the analysis back also
+   returns `404`, so a re-run resumes but a token that may not delete fails
+   loudly. A workflow reads as removed only when the repository's contents
+   show no such file.
 
 ## Consequences
 
@@ -82,5 +96,7 @@ that **deletes**: a configuration's analyses, and with them its alert history.
 - `RepoOutcome` gains a per-outcome verb and a refused state, and remediators
   may supply a pre-write check. Feature toggles keep their exact output.
 - Deleting a configuration removes its alert history. The guards above bound
-  that to configurations whose results no longer describe the code, and which
-  hold no open alert.
+  that to configurations whose results no longer describe the code, and to
+  deletions that close no open alert: a deleted configuration may still have
+  reported an open alert, provided a remaining configuration reports it too,
+  so every open alert survives the cleanup.
