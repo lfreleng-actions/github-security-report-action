@@ -22,6 +22,7 @@ from github_security_report.cli.options import ReportOverrides
 from github_security_report.cli.outputs import (
     TopNLimits,
     most_generous,
+    slack_footer,
     slack_limit,
     slack_show,
 )
@@ -31,7 +32,7 @@ from github_security_report.config import (
     OutputToggles,
     ReportConfig,
 )
-from github_security_report.report import OrgReport, build_org_report
+from github_security_report.report import OrgReport, RepoList, build_org_report
 
 API = "https://api.github.com"
 SCORECARD = "https://api.securityscorecards.dev"
@@ -151,6 +152,9 @@ def test_org_mode_writes_pages(tmp_path: Path) -> None:
     respx.get(url__startswith=f"{API}/repos/o/r/private-vulnerability-reporting").mock(
         return_value=httpx.Response(200, json={"enabled": True})
     )
+    respx.get(f"{API}/repos/o/r/code-scanning/default-setup").mock(
+        return_value=httpx.Response(200, json={"state": "not-configured"})
+    )
 
     out = tmp_path / "site"
     result = cli.invoke(
@@ -228,6 +232,9 @@ def _mock_org_o_r() -> None:
     )
     respx.get(url__startswith=f"{API}/repos/o/r/private-vulnerability-reporting").mock(
         return_value=httpx.Response(200, json={"enabled": True})
+    )
+    respx.get(f"{API}/repos/o/r/code-scanning/default-setup").mock(
+        return_value=httpx.Response(200, json={"state": "not-configured"})
     )
 
 
@@ -877,6 +884,9 @@ def test_org_mode_top_n_from_config(tmp_path: Path) -> None:
     respx.get(
         url__regex=rf"{re.escape(API)}/repos/o/r\d/private-vulnerability-reporting"
     ).mock(return_value=httpx.Response(200, json={"enabled": True}))
+    respx.get(
+        url__regex=rf"{re.escape(API)}/repos/o/r\d/code-scanning/default-setup"
+    ).mock(return_value=httpx.Response(200, json={"state": "not-configured"}))
 
     cfg = (
         '{"report": {"top_n": 1}, '
@@ -963,6 +973,9 @@ def _mock_offender_org() -> None:
     )
     respx.get(url__startswith=f"{API}/repos/o/r/private-vulnerability-reporting").mock(
         return_value=httpx.Response(200, json={"enabled": False})
+    )
+    respx.get(f"{API}/repos/o/r/code-scanning/default-setup").mock(
+        return_value=httpx.Response(200, json={"state": "not-configured"})
     )
 
 
@@ -1184,3 +1197,24 @@ class TestSlackShow:
         stranger = build_org_report("other", [], repo_count=0)
         visible = slack_show([self._pair(shows=False)])
         assert visible(stranger, CategoryKey.CODEQL) is True
+
+
+class TestSlackFooter:
+    """Channel footers follow the configuration of the report they belong to."""
+
+    def _pair(self, repo_list: RepoList) -> tuple[OrgConfig, OrgReport]:
+        org = OrgConfig(name="o", report=ReportConfig(repo_list=repo_list))
+        return (org, build_org_report("o", [], repo_count=0))
+
+    def test_duplicate_org_names_keep_their_own_setting(self) -> None:
+        enabled = self._pair(RepoList.ENABLED)
+        disabled = self._pair(RepoList.DISABLED)
+        resolve = slack_footer([enabled, disabled])
+        key = CategoryKey.AUTO_MERGE
+        assert resolve(enabled[1]).repo_list(key) is RepoList.ENABLED
+        assert resolve(disabled[1]).repo_list(key) is RepoList.DISABLED
+
+    def test_unconfigured_report_gets_the_defaults(self) -> None:
+        stranger = build_org_report("other", [], repo_count=0)
+        resolve = slack_footer([self._pair(RepoList.DISABLED)])
+        assert resolve(stranger).repo_list(CategoryKey.AUTO_MERGE) is RepoList.AUTO

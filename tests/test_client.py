@@ -71,6 +71,32 @@ async def test_list_org_repos_skips_disabled_and_empty(client: GitHubClient) -> 
 
 
 @respx.mock
+async def test_list_org_repos_keeps_each_default_branch(client: GitHubClient) -> None:
+    # Every per-branch read follows Repo.default_branch, so a repository on
+    # "master" must not silently become "main" and query the wrong ref.
+    respx.get(f"{API}/orgs/o/repos").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "name": "old",
+                    "full_name": "o/old",
+                    "html_url": "u",
+                    "size": 10,
+                    "default_branch": "master",
+                },
+                {"name": "bare", "full_name": "o/bare", "html_url": "u", "size": 10},
+            ],
+        )
+    )
+    _status, repos = await client.list_org_repos("o")
+    assert {r.name: r.default_branch for r in repos} == {
+        "old": "master",
+        "bare": "main",
+    }
+
+
+@respx.mock
 async def test_list_org_repos_reports_incomplete_status(client: GitHubClient) -> None:
     # A first page that succeeds followed by a failing page must surface the
     # failing status so the caller can flag the report as partial.
@@ -1136,12 +1162,36 @@ async def test_enable_secret_scanning_failure_carries_note(
     assert note.startswith("403")
 
 
+@respx.mock
+async def test_enable_auto_merge_ok(client: GitHubClient) -> None:
+    route = respx.patch(f"{API}/repos/o/r").mock(
+        return_value=httpx.Response(200, json={"name": "r"})
+    )
+    ok, note = await client.enable_auto_merge("o", "r")
+    assert route.called
+    assert json.loads(route.calls.last.request.content) == {"allow_auto_merge": True}
+    assert ok is True
+    assert note == ""
+
+
+@respx.mock
+async def test_enable_auto_merge_failure_carries_note(client: GitHubClient) -> None:
+    # An archived repository rejects the patch; reported, not retried.
+    respx.patch(f"{API}/repos/o/r").mock(
+        return_value=httpx.Response(403, json={"message": "Repository was archived"})
+    )
+    ok, note = await client.enable_auto_merge("o", "r")
+    assert ok is False
+    assert note.startswith("403")
+
+
 # --------------------------------------------------------------------------- #
 # Batched per-repo GraphQL prefetch
 # --------------------------------------------------------------------------- #
 def _graph_repo_node(
     *,
     enabled: bool | None = True,
+    auto_merge: bool | None = True,
     config_text: str | None = None,
     tag_target: dict | None = None,
     # A GraphQL list entry can be null (a sub-object that errored), so the
@@ -1155,6 +1205,7 @@ def _graph_repo_node(
     """Build one repository alias node as the batched query returns it."""
     return {
         "hasVulnerabilityAlertsEnabled": enabled,
+        "autoMergeAllowed": auto_merge,
         "dependabotConfig": (
             {"text": config_text} if config_text is not None else None
         ),
@@ -1282,6 +1333,221 @@ async def test_repo_graph_batch_latest_outside_window(client: GitHubClient) -> N
     # The newest published entry overall is still surfaced as last-published.
     assert a.last_published_release is not None
     assert a.last_published_release.tag == "v2.0.0-rc25"
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("allowed", "expected"),
+    [(True, True), (False, False), (None, None)],
+)
+async def test_repo_graph_batch_reads_auto_merge(
+    client: GitHubClient, allowed: bool | None, expected: bool | None
+) -> None:
+    # The auto-merge setting rides the batched prefetch rather than a probe of
+    # its own, so the query must actually ask for the field: a fragment that
+    # dropped it would leave the parser reading an absent key and reporting
+    # every repository as indeterminate, which renders as an empty table rather
+    # than an error.
+    node = _graph_repo_node(auto_merge=allowed)
+    route = respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": {"r0": node}})
+    )
+    out = await client.repo_graph_batch("o", ["a"])
+    sent = json.loads(route.calls.last.request.content)
+    assert "autoMergeAllowed" in sent["query"]
+    assert out["a"].auto_merge_allowed is expected
+
+
+@respx.mock
+async def test_repo_graph_batch_reads_head_commit_date(client: GitHubClient) -> None:
+    # The CodeQL stale check measures every configuration against this date,
+    # so it must ride the prefetch; an empty repository has no head at all.
+    node = _graph_repo_node()
+    node["defaultBranchRef"] = {"target": {"committedDate": "2026-09-24T07:26:37Z"}}
+    route = respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(
+            200, json={"data": {"r0": node, "r1": _graph_repo_node()}}
+        )
+    )
+    out = await client.repo_graph_batch("o", ["a", "empty"])
+    sent = json.loads(route.calls.last.request.content)
+    assert "defaultBranchRef" in sent["query"]
+    head = out["a"].head_committed_at
+    assert head is not None and (head.month, head.day) == (9, 24)
+    assert out["empty"].head_committed_at is None
+
+
+# --------------------------------------------------------------------------- #
+# CodeQL scan health
+# --------------------------------------------------------------------------- #
+def _analysis(category: str, key: str, created: str) -> dict:
+    return {"category": category, "analysis_key": key, "created_at": created}
+
+
+_DEFAULT_KEY = "dynamic/github-code-scanning/codeql:analyze"
+_ADVANCED_KEY = ".github/workflows/codeql.yml:analyze"
+_ADVANCED_CATEGORY = f"{_ADVANCED_KEY}/build-mode:none/language:python"
+
+
+@respx.mock
+async def test_codeql_configurations_walks_the_whole_history(
+    client: GitHubClient,
+) -> None:
+    # The stale configuration's last upload sits on the second page, beneath
+    # the live one's newer analyses: stopping at page one would miss exactly
+    # the configuration the check exists to find.
+    base = f"{API}/repos/o/r/code-scanning/analyses"
+    route = respx.get(base).mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json=[
+                    _analysis(
+                        _ADVANCED_CATEGORY, _ADVANCED_KEY, "2026-09-24T07:27:48Z"
+                    ),
+                    _analysis(
+                        _ADVANCED_CATEGORY, _ADVANCED_KEY, "2026-09-23T13:16:30Z"
+                    ),
+                ],
+                headers={"link": f'<{base}?page=2>; rel="next"'},
+            ),
+            httpx.Response(
+                200,
+                json=[
+                    _analysis(
+                        "/language:actions", _DEFAULT_KEY, "2026-06-24T14:08:00Z"
+                    ),
+                    _analysis(
+                        "/language:actions", _DEFAULT_KEY, "2026-06-20T10:00:00Z"
+                    ),
+                ],
+            ),
+        ]
+    )
+    status, configs = await client.codeql_configurations("o", "r", "main")
+
+    first = route.calls[0].request.url.params
+    assert (first["tool_name"], first["ref"]) == ("CodeQL", "refs/heads/main")
+    assert status == 200
+    by_language = {c.language: c for c in configs}
+    assert set(by_language) == {"python", "actions"}
+    actions, python = by_language["actions"], by_language["python"]
+    assert actions.last_scan_at is not None and python.last_scan_at is not None
+    assert actions.last_scan_at.date().isoformat() == "2026-06-24"
+    assert python.last_scan_at.day == 24
+
+
+@respx.mock
+async def test_codeql_configurations_partial_walk_reports_failure(
+    client: GitHubClient,
+) -> None:
+    # A later page failing leaves configurations unseen, so the status must
+    # say so rather than let a partial history pass for a complete one.
+    base = f"{API}/repos/o/r/code-scanning/analyses"
+    respx.get(base).mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json=[
+                    _analysis("/language:python", _DEFAULT_KEY, "2026-09-01T00:00:00Z")
+                ],
+                headers={"link": f'<{base}?page=2>; rel="next"'},
+            ),
+            httpx.Response(403, headers={"x-ratelimit-remaining": "4999"}),
+        ]
+    )
+    status, _configs = await client.codeql_configurations("o", "r", "main")
+    assert status == 403
+
+
+@respx.mock
+async def test_codeql_default_setup_parses_state_and_languages(
+    client: GitHubClient,
+) -> None:
+    respx.get(f"{API}/repos/o/r/code-scanning/default-setup").mock(
+        return_value=httpx.Response(
+            200,
+            json={"state": "not-configured", "languages": ["actions", "typescript"]},
+        )
+    )
+    setup = await client.codeql_default_setup("o", "r")
+    assert setup is not None
+    assert setup.configured is False
+    # The API names TypeScript alone; CodeQL scans it as javascript-typescript.
+    assert setup.languages == frozenset({"actions", "javascript-typescript"})
+
+
+@respx.mock
+async def test_codeql_default_setup_unreadable_is_none(client: GitHubClient) -> None:
+    respx.get(f"{API}/repos/o/r/code-scanning/default-setup").mock(
+        return_value=httpx.Response(403, headers={"x-ratelimit-remaining": "4999"})
+    )
+    assert await client.codeql_default_setup("o", "r") is None
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("status", "body", "expected"),
+    [
+        (200, {"state": "disabled_manually"}, "disabled_manually"),
+        (403, {"message": "Forbidden"}, None),
+    ],
+)
+async def test_workflow_state(
+    client: GitHubClient, status: int, body: dict, expected: str | None
+) -> None:
+    # The workflow is looked up by file name, which the API accepts in place
+    # of its numeric id.
+    route = respx.get(f"{API}/repos/o/r/actions/workflows/codeql.yaml").mock(
+        return_value=httpx.Response(
+            status, json=body, headers={"x-ratelimit-remaining": "4999"}
+        )
+    )
+    state = await client.workflow_state("o", "r", ".github/workflows/codeql.yaml")
+    assert route.called
+    assert state == expected
+
+
+_CONTENTS = f"{API}/repos/o/r/contents"
+
+
+def _no_such_workflow() -> None:
+    respx.get(f"{API}/repos/o/r/actions/workflows/codeql.yaml").mock(
+        return_value=httpx.Response(404, json={"message": "Not Found"})
+    )
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("listing", "root", "expected"),
+    [
+        # The directory lists, without the file: demonstrably removed.
+        (httpx.Response(200, json=[{"name": "codeql.yml"}]), None, "missing"),
+        # The file is there after all, so the 404 hid something: unreadable.
+        (httpx.Response(200, json=[{"name": "codeql.yaml"}]), None, None),
+        # No workflow directory, in a repository the token can read: removed.
+        (httpx.Response(404), httpx.Response(200, json=[]), "missing"),
+        # Nothing readable either way: GitHub masks missing access as 404.
+        (httpx.Response(404), httpx.Response(404), None),
+        (httpx.Response(403, headers={"x-ratelimit-remaining": "4999"}), None, None),
+    ],
+    ids=["listed-absent", "present", "no-dir", "masked", "forbidden"],
+)
+async def test_workflow_404_is_missing_only_when_confirmed(
+    client: GitHubClient,
+    listing: httpx.Response,
+    root: httpx.Response | None,
+    expected: str | None,
+) -> None:
+    # "missing" lets cleanup treat a configuration as orphaned and delete it,
+    # so a 404 is confirmed against the repository's contents first; a token
+    # that cannot see Actions must read as unreadable, never as removed.
+    _no_such_workflow()
+    respx.get(f"{_CONTENTS}/.github/workflows").mock(return_value=listing)
+    if root is not None:
+        respx.get(f"{_CONTENTS}/").mock(return_value=root)
+    state = await client.workflow_state("o", "r", ".github/workflows/codeql.yaml")
+    assert state == expected
 
 
 @respx.mock

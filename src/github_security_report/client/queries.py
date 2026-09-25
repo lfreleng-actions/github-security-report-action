@@ -68,9 +68,16 @@ query {
 _CODE_SCANNING_SIGNAL_TOOLS = tuple(CODE_SCANNING_TOOLS.values())
 
 # Batched per-repo prefetch: one aliased query fetches Dependabot enablement,
-# the newest tag's commit date, latest/recent releases with immutability, the
-# raw .github/dependabot.yml, and the open issues, replacing five per-repo
-# round-trips.
+# the auto-merge setting, the newest tag's commit date, latest/recent releases
+# with immutability, the raw .github/dependabot.yml, and the open issues,
+# replacing five per-repo round-trips.
+#
+# ``autoMergeAllowed`` is a plain scalar on Repository, so it adds no nodes and
+# therefore no rate-limit cost, and rides a request the run already makes --
+# which is why the auto-merge check needs no per-repository probe of its own,
+# unlike private vulnerability reporting. The default branch head's commit date
+# rides along for the same reason: it is what the CodeQL stale-configuration
+# check measures each configuration's last scan against.
 #
 # Two notes on the ``issues`` connection:
 #  * GraphQL's ``issues`` excludes pull requests natively, unlike the REST
@@ -150,6 +157,8 @@ _REVIEW_THREAD_WINDOW = 20
 _REPO_GRAPH_FRAGMENT = f"""\
 fragment RepoData on Repository {{
   hasVulnerabilityAlertsEnabled
+  autoMergeAllowed
+  defaultBranchRef {{ target {{ ... on Commit {{ committedDate }} }} }}
   dependabotConfig: object(expression: "HEAD:.github/dependabot.yml") {{
     ... on Blob {{ text }}
   }}

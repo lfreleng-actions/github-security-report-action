@@ -31,6 +31,7 @@ from github_security_report.cli.options import (
 )
 from github_security_report.cli.outputs import (
     TopNLimits,
+    footer,
     repo_outputs,
     show,
 )
@@ -161,6 +162,7 @@ async def _run_org(cfg: Config, options: OrgRunOptions, *, console: Console) -> 
             top_n=limits.resolve(org_cfg.report, "cli"),
             show=show(org_cfg.report, "cli", options.hidden),
             limit=limits.resolver(org_cfg.report, "cli"),
+            footer=footer(org_cfg.report),
         )
     if options.output_dir:
         publish.write_pages(
@@ -225,6 +227,7 @@ async def _run_repo(
         top_n=caps.resolve(cfg, "cli"),
         show=show(cfg, "cli", hidden),
         limit=caps.resolver(cfg, "cli"),
+        footer=footer(cfg),
     )
 
     runner.append_step_summary(
@@ -233,6 +236,7 @@ async def _run_repo(
             top_n=caps.resolve(cfg, "report"),
             show=show(cfg, "markdown", hidden),
             limit=caps.resolver(cfg, "report"),
+            footer=footer(cfg),
         )
     )
     outputs = repo_outputs(signals, fail_threshold)

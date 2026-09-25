@@ -57,6 +57,33 @@ if you want to probe everything regardless.
 Further sections report **configuration posture** and **freshness** as plain
 tables (org mode):
 
+- **CodeQL scan health** — two tables beneath **CodeQL: Results/Findings** (the
+  CodeQL alerts table), whose "Clean" says nothing about whether CodeQL is
+  still running:
+  - **Stale Configurations** lists every CodeQL configuration whose last scan
+    trails the default branch's newest commit by more than
+    `codeql_stale_days` (default 30) — the condition GitHub's tool status page
+    flags as *"Code Scanning results may be out of date"*. Each row names the
+    setup type (**Default**, GitHub-managed; or **Advanced**, a workflow in the
+    repository), the language, the last *successful* scan, and the cause:
+    analyses failing (a run that errors still uploads, but its results do not
+    count as a scan), default setup switched off, a workflow removed or
+    disabled, or an advanced workflow
+    **superseded** by default setup (GitHub rejects advanced CodeQL uploads
+    while default setup is on). An *orphaned* configuration will never scan
+    again; delete it from the tool status page once the live setup covers its
+    language.
+  - **Language Coverage** lists repositories where GitHub detects a
+    CodeQL-supported language that no current configuration scans — typically
+    an advanced workflow whose language matrix omits one the repository
+    contains, such as `actions` for its own workflows. On default setup GitHub
+    reports only the languages it is set to scan, so a detected language
+    deliberately left out of default setup is not visible to this check.
+
+  Both consider only repositories where CodeQL has run at least once; the rest
+  already appear in the Results/Findings not-enabled list. Finding a stale
+  configuration means reading each repository's whole CodeQL analysis history,
+  since GitHub cannot filter it by configuration.
 - **Dependabot** — three tables: repositories with vulnerability **alerts not
   enabled**, repositories with **security updates not enabled**, and ecosystems
   with no update `cooldown` configured (mandatory; any value passes).
@@ -74,6 +101,20 @@ tables (org mode):
   exposes no org-wide or GraphQL equivalent) and, like every other category,
   always collected; hide it with the `private_vulnerability_reporting` render
   toggle.
+- **Auto-merge** — repositories where the **Allow auto-merge** setting is off,
+  so a pull request cannot be queued to merge itself once its requirements are
+  met. The setting only offers the option: an auto-merging pull request still
+  waits for the required checks, reviews and branch protections the repository
+  already enforces, so enabling it relaxes nothing. What it removes is the
+  interval between a change becoming mergeable and somebody noticing — the
+  window a reviewed dependency update sits in while the vulnerability it fixes
+  stays unpatched. Read from the batched GraphQL prefetch, so it costs no extra
+  request; hide it with the `auto_merge` render toggle.
+
+The four enablement categories count the repositories with and without the
+feature (plus any whose state could not be read), and by default name whichever
+known list is shorter — see
+[Enabled or disabled repository lists](#enabled-or-disabled-repository-lists).
 
 ## Operating modes
 
@@ -138,6 +179,7 @@ organisation and **Repository access** set to *All repositories*, then grant:
 | Secret scanning alerts | Open secret-scanning alerts, across every GitHub pattern category |
 | Issues | Open issues and their labels (GitHub Issues table) |
 | Administration | Dependabot enablement + security-updates status, and effective branch rules |
+| Actions | Workflow state behind a stale CodeQL configuration |
 
 **Organization permissions:**
 
@@ -258,6 +300,7 @@ environment-variable name, never embedded.
     "include_test": false,
     "repo_min_age_days": 28,
     "release_max_age_days": 60,
+    "codeql_stale_days": 30,
     "graph_batch": 10,
     "order": { "style": "auto" }
   },
@@ -281,6 +324,17 @@ default for all three outputs; set any of `top_n_report` (GitHub Pages),
 individual output. Set a value to `0` to remove the limit entirely and show
 every offender. Each can also be set at the CLI with `--top-n`,
 `--top-n-report`, `--top-n-cli`, and `--top-n-slack`.
+
+`report.codeql_stale_days` (default `30`, minimum `1`) is the CodeQL
+stale-configuration threshold: a configuration is stale once its last scan
+trails the default branch's newest commit by more than that many days. It is
+measured against the branch head rather than the clock, so a repository nobody
+has pushed to is not flagged just for being quiet. GitHub does not publish the
+threshold behind its own "may be out of date" warning; across the
+`lfreleng-actions` estate healthy configurations trailed their head by at most
+five days and abandoned ones by more than eighty, so the default sits well
+clear of both. The same threshold decides which configurations count as current
+for Language Coverage.
 
 The Releases / Tagging section has two independent freshness levers:
 
@@ -311,6 +365,23 @@ The per-org `exclude` list removes repositories from analysis entirely; they are
 reported as **excluded** (distinct from "not enabled"), so an intentional
 exclusion is visible rather than silently dropped.
 
+Every category reports those exclusions beneath its counts, so an
+organisation-wide list repeats under each one. `report.excluded_display`
+governs that line on every surface:
+
+| Value | Excluded line |
+| ----- | ------------- |
+| `always-show` (default) | Shown under every category |
+| `always-hide` | Never shown |
+| `conditional-hide` | Shown only for a category whose exclusions differ from the organisation's `exclude` list, and then in full |
+
+Hiding the line changes nothing else: every count is unaffected, and the report
+header's repository count already leaves excluded repositories out. So a clean
+category reads `All Clean` once no Excluded line qualifies it. Today every
+category reports the organisation's own list, so `conditional-hide` currently
+hides the same lines `always-hide` does. It differs once a category excludes
+repositories of its own. The `report.json` artifact always lists the exclusions.
+
 Archived and test repositories are excluded from analysis by default. Opt them
 back in with `report.include_archived` / `report.include_test` in the config, or
 for a single run with `--include-archived` / `--include-test`.
@@ -340,10 +411,12 @@ both true.
 
 The example above hides Zizmor on every surface, and keeps Releases / Tagging
 out of the terminal and Slack while still publishing it to the Markdown and HTML
-Pages output. The valid category keys are: `codeql`, `scorecard`, `zizmor`,
-`aislop`, `dependabot_alerts`, `secret_scanning`, `dependabot_alerts_enabled`,
-`dependabot_updates_enabled`, `dependabot_cooldown`, `releases`,
-`mutable_releases`, `private_vulnerability_reporting`, `github_issues`. Like the
+Pages output. The valid category keys are: `codeql`,
+`codeql_stale_configurations`, `codeql_language_coverage`, `scorecard`,
+`zizmor`, `aislop`, `dependabot_alerts`, `secret_scanning`,
+`dependabot_alerts_enabled`, `dependabot_updates_enabled`,
+`dependabot_cooldown`, `releases`, `mutable_releases`,
+`private_vulnerability_reporting`, `auto_merge`, `github_issues`. Like the
 other `report`
 settings, `categories` can be set
 globally and overridden per organisation (overrides merge key-by-key, so
@@ -409,6 +482,52 @@ Slack-style ceiling, but they still apply their own row limits — only the
 `report.json` artifact is unconditionally complete. The digest links to the
 GitHub Pages report whenever `pages_url` is set and short enough to render as a
 link.
+
+### Enabled or disabled repository lists
+
+The four boolean feature categories — `dependabot_alerts_enabled`,
+`dependabot_updates_enabled`, `private_vulnerability_reporting` and `auto_merge`
+— sort each repository into one of three buckets: enabled, not enabled, or
+**unknown** when the feature's state could not be read. The unknown bucket is
+counted but never named, and never treated as either side, so the enabled and
+not-enabled counts need not sum to the repositories analysed. Beneath the counts,
+one of the two known sides is named; `report.repo_list` chooses which, on every
+surface:
+
+| Value | Names |
+| ----- | ----- |
+| `auto` (default) | Whichever list is shorter |
+| `enabled` | The repositories with the feature on |
+| `disabled` | The repositories with the feature off |
+
+`auto` keeps a footer short whichever way an organisation leans: a feature
+nearly every repository has lists its few holdouts, and one almost none have
+lists its few adopters. Two cases resolve towards the actionable side: a tie
+names the repositories without the feature, and so does a category where
+*nothing* is enabled, since naming an empty list would print nothing where a
+reader wants the repositories to fix. Both sides are always counted, whichever is
+named.
+
+A category can override the global value:
+
+```json
+{
+  "report": {
+    "repo_list": "auto",
+    "categories": {
+      "dependabot_alerts_enabled": { "repo_list": "disabled" }
+    }
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
+
+Here Dependabot alerts always name the repositories to fix, and the other three
+feature categories name whichever side is shorter. `repo_list` applies only to
+those four categories; setting it on any other is a configuration error, since a
+table with qualitative columns has no enabled list to name. These categories
+render as a name list rather than a one-column table on every surface. The
+`report.json` artifact is unaffected.
 
 ### Per-category row ordering
 
@@ -1369,6 +1488,7 @@ enablement endpoint:
 | `dependabot_alerts_enabled` | Dependabot vulnerability alerts |
 | `dependabot_updates_enabled` | Dependabot security updates (plus alerts) |
 | `private_vulnerability_reporting` | Private vulnerability reporting |
+| `auto_merge` | The repository's "Allow auto-merge" setting |
 
 Qualitative findings (Scorecard, zizmor, open Dependabot alerts, cooldown,
 release freshness/mutability) are reported but not auto-remediated. Remediation

@@ -16,7 +16,7 @@ from github_security_report.config import OrgConfig, ReportConfig
 from github_security_report.models import RepoSignal
 from github_security_report.render import html as html_render
 from github_security_report.render import markdown as md_render
-from github_security_report.report import LimitFor, OrgReport
+from github_security_report.report import FooterOptions, LimitFor, OrgReport
 from github_security_report.runner import should_fail
 
 # Keep filenames within output_dir: a channel value containing "/" or ".."
@@ -117,6 +117,35 @@ def show(
     return lambda key: key not in suppressed and report_cfg.shows_category(key, output)
 
 
+def footer(report_cfg: ReportConfig) -> FooterOptions:
+    """The summary-footer options one report configuration asks for.
+
+    Not per output: what a footer names is a statement about the data, so the
+    terminal, Slack and Pages surfaces all name the same repositories.
+    """
+    return FooterOptions(
+        repo_list=report_cfg.repo_list_for,
+        excluded=report_cfg.excluded_display,
+    )
+
+
+def _config_for(
+    items: list[tuple[OrgConfig, OrgReport]], report: OrgReport
+) -> OrgConfig | None:
+    """The configuration a channel's report was built under, or ``None``.
+
+    Matched by identity rather than by name. The schema does not make
+    organisation names unique within a run, and a name-keyed lookup would
+    collapse two entries for the same org onto one configuration -- so a
+    report that opted out would be rendered under its duplicate's settings. A
+    channel holds a handful of reports, so the scan costs nothing.
+    """
+    for org_cfg, candidate in items:
+        if candidate is report:
+            return org_cfg
+    return None
+
+
 def slack_show(
     items: list[tuple[OrgConfig, OrgReport]],
     hidden: Collection[CategoryKey] = (),
@@ -139,20 +168,29 @@ def slack_show(
     def visible(org: OrgReport, key: CategoryKey) -> bool:
         if key in suppressed:
             return False
-        # Matched by identity rather than by name. The schema does not make
-        # organisation names unique within a run, and a name-keyed lookup would
-        # collapse two entries for the same org onto one configuration -- so a
-        # report that opted out would be rendered under its duplicate's toggles,
-        # which is the very leak this function exists to prevent. A channel
-        # holds a handful of reports, so the scan costs nothing.
-        for org_cfg, report in items:
-            if report is org:
-                return org_cfg.report.shows_category(key, "slack")
+        org_cfg = _config_for(items, org)
         # A report absent from the list was never configured here, so it falls
         # back to the default-visible rule the rest of the tool uses.
-        return True
+        return org_cfg is None or org_cfg.report.shows_category(key, "slack")
 
     return visible
+
+
+def slack_footer(
+    items: list[tuple[OrgConfig, OrgReport]],
+) -> Callable[[OrgReport], FooterOptions]:
+    """Footer options for a channel, resolved per organisation.
+
+    Each organisation's blocks follow its own configuration, as its visibility
+    does (see :func:`slack_show`); a report configured nowhere here gets the
+    defaults.
+    """
+
+    def resolve(org: OrgReport) -> FooterOptions:
+        org_cfg = _config_for(items, org)
+        return FooterOptions() if org_cfg is None else footer(org_cfg.report)
+
+    return resolve
 
 
 def slack_limit(
@@ -188,12 +226,17 @@ def write_org_files(
             top_n=top_n,
             show=show(report_cfg, "markdown", hidden),
             limit=limit,
+            footer=footer(report_cfg),
         ),
         encoding="utf-8",
     )
     (org_dir / "report.html").write_text(
         html_render.render_org_html(
-            org, top_n=top_n, show=show(report_cfg, "html", hidden), limit=limit
+            org,
+            top_n=top_n,
+            show=show(report_cfg, "html", hidden),
+            limit=limit,
+            footer=footer(report_cfg),
         ),
         encoding="utf-8",
     )

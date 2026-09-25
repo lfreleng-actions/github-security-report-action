@@ -255,6 +255,12 @@ class RepoGraphData:
     # without this flag a failed read silently renders as false negatives.
     unreadable: bool = False
     dependabot_alerts_enabled: bool | None = None
+    # Repository "Allow auto-merge" setting (None = indeterminate).
+    auto_merge_allowed: bool | None = None
+    # Commit date of the default branch's head: the newest code a scan could
+    # describe, and so the reference a code-scanning configuration's last scan
+    # is measured against. None for an empty repository or an unread field.
+    head_committed_at: dt.datetime | None = None
     latest_tag_at: dt.datetime | None = None
     # Publish time of the "Latest" release, for release/tag staleness.
     latest_release_at: dt.datetime | None = None

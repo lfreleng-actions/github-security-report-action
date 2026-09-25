@@ -15,6 +15,7 @@ from github_security_report import config
 from github_security_report.categories import CategoryKey
 from github_security_report.config import ConfigError
 from github_security_report.severity import Severity
+from github_security_report.summary import ExcludedDisplay, RepoList
 
 TUESDAY = dt.date(2026, 6, 16)
 WEDNESDAY = dt.date(2026, 6, 17)
@@ -144,6 +145,42 @@ class TestBuildConfig:
         }
         org = config.build_config(data).organizations[0]
         assert org.report.release_max_age_days == 90
+
+    def test_codeql_stale_days_default_and_override(self) -> None:
+        assert config.build_config(MINIMAL).report.codeql_stale_days == 30
+        data = {
+            "report": {"codeql_stale_days": 45},
+            "organizations": [
+                {"name": "o"},
+                {"name": "p", "report": {"codeql_stale_days": 14}},
+            ],
+        }
+        cfg = config.build_config(data)
+        assert cfg.organizations[0].report.codeql_stale_days == 45
+        assert cfg.organizations[1].report.codeql_stale_days == 14
+
+    def test_rejects_codeql_stale_days_below_one(self) -> None:
+        # Every push briefly outruns its own scan, so 0 would flag them all.
+        with pytest.raises(ConfigError):
+            config.build_config(
+                {"report": {"codeql_stale_days": 0}, "organizations": [{"name": "o"}]}
+            )
+
+    def test_codeql_scan_health_categories_are_not_orderable(self) -> None:
+        # They nest beneath the CodeQL signal, so a position for one would be a
+        # setting that validates and then does nothing.
+        with pytest.raises(ConfigError):
+            config.build_config(
+                {
+                    "report": {
+                        "order": {
+                            "style": "single",
+                            "sequence": ["codeql_stale_configurations"],
+                        }
+                    },
+                    "organizations": [{"name": "o"}],
+                }
+            )
 
     def test_dependabot_thresholds_default_and_override(self) -> None:
         report = config.build_config(MINIMAL).report
@@ -756,3 +793,93 @@ class TestPerCategoryTopN:
                     "organizations": [{"name": "o"}],
                 }
             )
+
+
+class TestRepoList:
+    """Which side of a boolean feature category the footers name."""
+
+    def _cfg(self, report: dict, org_report: dict | None = None) -> config.Config:
+        org: dict = {"name": "o"}
+        if org_report is not None:
+            org["report"] = org_report
+        return config.build_config({"report": report, "organizations": [org]})
+
+    def test_defaults_to_auto_everywhere(self) -> None:
+        rc = config.build_config(MINIMAL).report
+        assert rc.repo_list is RepoList.AUTO
+        assert rc.repo_list_for(CategoryKey.AUTO_MERGE) is RepoList.AUTO
+
+    def test_global_setting_applies_to_every_category(self) -> None:
+        rc = self._cfg({"repo_list": "disabled"}).report
+        assert rc.repo_list_for(CategoryKey.AUTO_MERGE) is RepoList.DISABLED
+        assert (
+            rc.repo_list_for(CategoryKey.PRIVATE_VULNERABILITY_REPORTING)
+            is RepoList.DISABLED
+        )
+
+    def test_category_setting_overrides_the_global_one(self) -> None:
+        rc = self._cfg(
+            {
+                "repo_list": "disabled",
+                "categories": {"auto_merge": {"repo_list": "enabled"}},
+            }
+        ).report
+        assert rc.repo_list_for(CategoryKey.AUTO_MERGE) is RepoList.ENABLED
+        assert (
+            rc.repo_list_for(CategoryKey.DEPENDABOT_ALERTS_ENABLED) is RepoList.DISABLED
+        )
+
+    def test_org_override_inherits_the_category_setting(self) -> None:
+        # An org that only changes the global value keeps the category's own
+        # inherited override, as every other category key does.
+        cfg = self._cfg(
+            {"categories": {"auto_merge": {"repo_list": "enabled"}}},
+            org_report={"repo_list": "disabled"},
+        )
+        rc = cfg.organizations[0].report
+        assert rc.repo_list_for(CategoryKey.AUTO_MERGE) is RepoList.ENABLED
+        assert rc.repo_list_for(CategoryKey.DEPENDABOT_ALERTS_ENABLED) is (
+            RepoList.DISABLED
+        )
+
+    def test_rejected_on_a_category_it_cannot_apply_to(self) -> None:
+        # CodeQL has no enabled list to name; accepting the key would validate
+        # and then do nothing.
+        with pytest.raises(ConfigError, match="repo_list"):
+            self._cfg({"categories": {"codeql": {"repo_list": "enabled"}}})
+
+    def test_rejects_an_unknown_value(self) -> None:
+        with pytest.raises(ConfigError):
+            self._cfg({"repo_list": "both"})
+
+
+class TestExcludedDisplay:
+    def _report(self, report: dict) -> config.ReportConfig:
+        return config.build_config(
+            {"report": report, "organizations": [{"name": "o"}]}
+        ).report
+
+    def test_defaults_to_always_show(self) -> None:
+        rc = config.build_config(MINIMAL).report
+        assert rc.excluded_display is ExcludedDisplay.ALWAYS_SHOW
+
+    @pytest.mark.parametrize("mode", list(ExcludedDisplay))
+    def test_each_mode_parses(self, mode: ExcludedDisplay) -> None:
+        assert self._report({"excluded_display": mode.value}).excluded_display is mode
+
+    def test_org_override_replaces_the_global_mode(self) -> None:
+        cfg = config.build_config(
+            {
+                "report": {"excluded_display": "always-hide"},
+                "organizations": [
+                    {"name": "a"},
+                    {"name": "b", "report": {"excluded_display": "conditional-hide"}},
+                ],
+            }
+        )
+        modes = [org.report.excluded_display for org in cfg.organizations]
+        assert modes == [ExcludedDisplay.ALWAYS_HIDE, ExcludedDisplay.CONDITIONAL_HIDE]
+
+    def test_rejects_an_unknown_mode(self) -> None:
+        with pytest.raises(ConfigError):
+            self._report({"excluded_display": "sometimes"})
