@@ -65,7 +65,9 @@ def latest_codeql_configurations(
     workflow that fails on every run read as current indefinitely. A
     configuration that has never once succeeded has no last scan at all
     (``None``), which makes it stale however recent its attempts. ``failing``
-    records whether the newest attempt errored.
+    records whether the newest attempt errored. Every analysis id in the
+    configuration is kept, newest first, which is the order GitHub requires
+    them deleted in.
     """
     grouped: dict[str, list[tuple[dt.datetime, Mapping[str, object]]]] = {}
     for analysis in analyses:
@@ -87,12 +89,19 @@ def _errored(analysis: Mapping[str, object]) -> bool:
     return isinstance(error, str) and bool(error.strip())
 
 
+def _analysis_id(analysis: Mapping[str, object]) -> int | None:
+    value = analysis.get("id")
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def _configuration(
     category: str, entries: list[tuple[dt.datetime, Mapping[str, object]]]
 ) -> CodeQLConfiguration:
     """One configuration from its analyses, newest first."""
     _newest_at, newest = entries[0]
     succeeded = [created for created, analysis in entries if not _errored(analysis)]
+    # Already newest first: the order GitHub requires them deleted in.
+    ids = [_analysis_id(analysis) for _created, analysis in entries]
     key = newest.get("analysis_key")
     return CodeQLConfiguration(
         category=category,
@@ -100,6 +109,7 @@ def _configuration(
         last_scan_at=succeeded[0] if succeeded else None,
         language=_analysis_language(newest),
         failing=_errored(newest),
+        analysis_ids=tuple(i for i in ids if i is not None),
     )
 
 

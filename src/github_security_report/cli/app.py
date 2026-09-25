@@ -267,6 +267,7 @@ def report(
 # Derived from the remediator registry rather than restated, so adding a
 # remediable category cannot leave the help text naming the previous set.
 _REMEDIABLE_HELP = ", ".join(key.value for key in remediate_mod.REMEDIABLE)
+_EXPLICIT_HELP = ", ".join(key.value for key in remediate_mod.EXPLICIT_ONLY)
 
 
 @app.command()
@@ -288,7 +289,7 @@ def remediate(
     category: list[str] | None = typer.Option(
         None,
         "--category",
-        help=f"Remediable category to act on (repeatable; default: all). One of: {_REMEDIABLE_HELP}.",
+        help=f"Remediable category to act on (repeatable; default: all except the destructive {_EXPLICIT_HELP}, which run only when named). One of: {_REMEDIABLE_HELP}.",
     ),
     token_env: str | None = typer.Option(
         None,
@@ -305,9 +306,11 @@ def remediate(
     """Enable security features on repositories that lack them.
 
     Runs the same collection the report uses, then switches on each selected
-    remediable feature wherever a repository has it confirmed off. Dry run by
-    default: pass --apply to make changes. Requires a write-capable token
-    (org admin), distinct from the read-only reporting PAT.
+    remediable feature wherever a repository has it confirmed off. Named
+    explicitly, codeql_stale_configurations also deletes orphaned CodeQL
+    configurations. Dry run by default: pass --apply to make changes. Requires
+    a write-capable token (org admin), distinct from the read-only reporting
+    PAT.
     """
     console = _console(no_color)
 
@@ -326,7 +329,7 @@ def remediate(
             markup=False,
         )
         raise typer.Exit(2)
-    categories = keys or list(remediate_mod.REMEDIABLE)
+    categories = keys or list(remediate_mod.DEFAULT_REMEDIABLE)
 
     cfg = _load_config(config_file, config_data, org, token_env, console=console)
     if cfg is None:

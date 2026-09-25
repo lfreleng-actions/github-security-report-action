@@ -5,7 +5,8 @@
 
 # ADR-0003: A `remediate` subcommand that enables missing features
 
-- **Status:** Accepted
+- **Status:** Accepted (decision 5 amended by
+  [ADR-0005](0005-codeql-configuration-cleanup.md))
 - **Date:** 2026-07-02
 - **Supersedes:** —
 - **Superseded by:** —

@@ -541,3 +541,54 @@ def test_conditional_hide_keeps_only_the_deviating_category() -> None:
     assert out.count("Excluded:") == 1
     assert "Excluded: fixture, sandbox, internal-only" in out
     assert "3 Excluded" in out
+
+
+def _cleanup(
+    outcomes: list[tuple[str, str, str, str]],
+) -> remediate.CategoryRemediation:
+    return remediate.CategoryRemediation(
+        category=category_meta(CategoryKey.CODEQL_STALE_CONFIGURATIONS),
+        outcomes=tuple(
+            remediate.RepoOutcome(name, action, note, verb)
+            for name, action, note, verb in outcomes
+        ),
+    )
+
+
+def test_render_remediation_groups_verbs_and_lists_refusals() -> None:
+    # One category can delete one configuration and re-enable another's
+    # workflow; each verb gets its own line, a refusal carries its reason, and
+    # the summary totals by verb rather than calling a deletion "enabled".
+    results = [
+        _cleanup(
+            [
+                ("a (Default, python)", "deleted", "12 analyses deleted", "delete"),
+                ("b (Advanced, python)", "re-enabled", "", "re-enable"),
+                ("c (Default, actions)", "refused", "add scanning first", "delete"),
+            ]
+        )
+    ]
+    console = Console(record=True, width=120, no_color=True)
+    terminal.render_remediation("o", results, console, apply=True)
+    out = console.export_text()
+    assert "1 deleted: a (Default, python)" in out
+    assert "1 re-enabled: b (Advanced, python)" in out
+    assert "c (Default, actions) refused: add scanning first" in out
+    assert "Summary: 1 deleted, 1 re-enabled, 0 failed, 1 refused." in out
+
+
+def test_render_remediation_dry_run_names_each_verb() -> None:
+    results = [
+        _cleanup(
+            [
+                ("a (Default, python)", "would delete", "", "delete"),
+                ("b (Advanced, python)", "would re-enable", "", "re-enable"),
+            ]
+        )
+    ]
+    console = Console(record=True, width=120, no_color=True)
+    terminal.render_remediation("o", results, console, apply=False)
+    out = console.export_text()
+    assert "1 would delete: a (Default, python)" in out
+    assert "1 would re-enable: b (Advanced, python)" in out
+    assert "1 to delete, 1 to re-enable (dry run)" in out
