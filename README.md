@@ -57,8 +57,9 @@ if you want to probe everything regardless.
 Further sections report **configuration posture** and **freshness** as plain
 tables (org mode):
 
-- **CodeQL scan health** — two tables beneath the CodeQL signal, whose "Clean"
-  says nothing about whether CodeQL is still running:
+- **CodeQL scan health** — two tables beneath **CodeQL: Results/Findings** (the
+  CodeQL alerts table), whose "Clean" says nothing about whether CodeQL is
+  still running:
   - **Stale Configurations** lists every CodeQL configuration whose last scan
     trails the default branch's newest commit by more than
     `codeql_stale_days` (default 30) — the condition GitHub's tool status page
@@ -76,7 +77,7 @@ tables (org mode):
     contains, such as `actions` for its own workflows.
 
   Both consider only repositories where CodeQL has run at least once; the rest
-  already appear in the CodeQL signal's not-enabled list. Finding a stale
+  already appear in the Results/Findings not-enabled list. Finding a stale
   configuration means reading each repository's whole CodeQL analysis history,
   since GitHub cannot filter it by configuration.
 - **Dependabot** — three tables: repositories with vulnerability **alerts not

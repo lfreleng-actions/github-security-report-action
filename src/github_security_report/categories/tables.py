@@ -25,8 +25,8 @@ TABLE_CATEGORIES: dict[CategoryKey, CategoryMeta] = {
             "the branch's newest commit by more than the configured threshold -- "
             "the condition GitHub's tool status page reports as 'Code Scanning "
             "results may be out of date'. Its alerts describe code that has "
-            "since changed, so a stale configuration can hold a CodeQL table row "
-            "'Clean' while nothing is being scanned. Setup is Default (GitHub-"
+            "since changed, so a stale configuration can hold a Results/Findings "
+            "row 'Clean' while nothing is being scanned. Setup is Default (GitHub-"
             "managed) or Advanced (a workflow in the repository), and Cause says "
             "why the configuration stopped. Orphaned means the setup that "
             "produced it no longer exists, so it will never scan again: once the "
@@ -50,7 +50,7 @@ TABLE_CATEGORIES: dict[CategoryKey, CategoryMeta] = {
             "no current configuration scans -- typically an advanced workflow "
             "whose language matrix omits one the repository contains, such as "
             "'actions' for its own workflow files. Repositories with no CodeQL "
-            "at all appear in the CodeQL table's not-enabled list instead."
+            "at all appear in the Results/Findings not-enabled list instead."
         ),
     ),
     CategoryKey.DEPENDABOT_ALERTS_ENABLED: CategoryMeta(
