@@ -5,11 +5,18 @@
 from __future__ import annotations
 
 import datetime as dt
+from types import MappingProxyType
 
 import pytest
 
 from github_security_report import remediate
 from github_security_report.categories import CategoryKey, category_meta
+from github_security_report.codeql import (
+    CodeQLConfiguration,
+    CodeQLFacts,
+    CodeQLHealth,
+    DefaultSetup,
+)
 from github_security_report.models import Repo, SignalType
 from github_security_report.report import (
     OrgReport,
@@ -97,13 +104,33 @@ class FakeClient:
     async def enable_auto_merge(self, o: str, r: str) -> tuple[bool, str]:
         return await self._do("auto_merge", o, r)
 
+    # CodeQL cleanup. ``held`` maps a category to the open alerts only it
+    # reports; a category mapped to None models an unreadable alert list.
+    held: dict[str, int | None] = {}
+
+    async def delete_codeql_analyses(
+        self, o: str, r: str, analysis_ids: tuple[int, ...]
+    ) -> tuple[bool, str]:
+        self.calls.append(("delete", o, f"{r}:{','.join(map(str, analysis_ids))}"))
+        return True, f"{len(analysis_ids)} analyses deleted"
+
+    async def enable_workflow(self, o: str, r: str, path: str) -> tuple[bool, str]:
+        self.calls.append(("workflow", o, f"{r}:{path}"))
+        return True, ""
+
+    async def codeql_alerts_held_only_by(
+        self, o: str, r: str, category: str, branch: str
+    ) -> int | None:
+        self.calls.append(("cq-alerts", o, f"{r}:{category}@{branch}"))
+        return self.held.get(category, 0)
+
 
 def _by_key(results: list[remediate.CategoryRemediation]) -> dict:
     return {r.category.key: r for r in results}
 
 
 def test_remediable_set_excludes_qualitative_categories() -> None:
-    assert remediate.REMEDIABLE == (
+    toggles = (
         CategoryKey.CODEQL,
         CategoryKey.SECRET_SCANNING,
         CategoryKey.DEPENDABOT_ALERTS_ENABLED,
@@ -111,6 +138,15 @@ def test_remediable_set_excludes_qualitative_categories() -> None:
         CategoryKey.PRIVATE_VULNERABILITY_REPORTING,
         CategoryKey.AUTO_MERGE,
     )
+    remediable, default, explicit = (
+        remediate.REMEDIABLE,
+        remediate.DEFAULT_REMEDIABLE,
+        remediate.EXPLICIT_ONLY,
+    )
+    assert remediable == (*toggles, CategoryKey.CODEQL_STALE_CONFIGURATIONS)
+    # The destructive cleanup runs only when named: never by default.
+    assert default == toggles
+    assert explicit == (CategoryKey.CODEQL_STALE_CONFIGURATIONS,)
     for excluded in (
         CategoryKey.SCORECARD,
         CategoryKey.ZIZMOR,
@@ -118,6 +154,8 @@ def test_remediable_set_excludes_qualitative_categories() -> None:
         CategoryKey.DEPENDABOT_COOLDOWN,
         CategoryKey.RELEASES,
         CategoryKey.MUTABLE_RELEASES,
+        # Coverage gaps need a workflow change, which remediate cannot make.
+        CategoryKey.CODEQL_LANGUAGE_COVERAGE,
     ):
         assert excluded not in remediate.REMEDIABLE
 
@@ -247,3 +285,147 @@ async def test_remediate_org_rejects_a_non_remediable_category() -> None:
             client, _report(), categories=[CategoryKey.SCORECARD], apply=False
         )
     assert client.calls == []
+
+
+# --------------------------------------------------------------------------- #
+# CodeQL stale-configuration cleanup
+# --------------------------------------------------------------------------- #
+_HEAD = dt.datetime(2026, 9, 24, tzinfo=dt.timezone.utc)
+_DEFAULT_KEY = "dynamic/github-code-scanning/codeql:analyze"
+_WORKFLOW_KEY = ".github/workflows/codeql.yml:analyze"
+
+
+def _cq(language: str, key: str, days_behind: int, *ids: int) -> CodeQLConfiguration:
+    prefix = "" if key == _DEFAULT_KEY else f"{key}/build-mode:none"
+    return CodeQLConfiguration(
+        category=f"{prefix}/language:{language}",
+        analysis_key=key,
+        last_scan_at=_HEAD - dt.timedelta(days=days_behind),
+        language=language,
+        analysis_ids=ids,
+    )
+
+
+def _health() -> CodeQLHealth:
+    """dependamerge before its fix, plus a workflow disabled for inactivity."""
+    dependamerge = CodeQLFacts(
+        repo=_repo("dependamerge"),
+        configurations=(
+            _cq("python", _WORKFLOW_KEY, 0, 100),
+            _cq("python", _DEFAULT_KEY, 91, 12, 11),
+            _cq("actions", _DEFAULT_KEY, 91, 10),
+        ),
+        head_committed_at=_HEAD,
+        default_setup=DefaultSetup(
+            configured=False, languages=frozenset({"actions", "python"})
+        ),
+    )
+    quiet = CodeQLFacts(
+        repo=_repo("quiet"),
+        configurations=(_cq("python", _WORKFLOW_KEY, 70, 5),),
+        head_committed_at=_HEAD,
+        default_setup=DefaultSetup(configured=False, languages=frozenset({"python"})),
+        workflow_states=MappingProxyType(
+            {".github/workflows/codeql.yml": "disabled_inactivity"}
+        ),
+    )
+    return CodeQLHealth(facts=(dependamerge, quiet), stale_days=30)
+
+
+def _cleanup_report() -> OrgReport:
+    report = _report()
+    report.codeql_health = _health()
+    return report
+
+
+async def test_default_run_never_touches_the_codeql_cleanup() -> None:
+    # Destructive work must be asked for by name: the no-argument run acts on
+    # the feature toggles only, and issues no cleanup read or write at all.
+    client = FakeClient()
+    results = await remediate.remediate_org(client, _cleanup_report(), apply=True)
+    keys = [r.category.key for r in results]
+    assert CategoryKey.CODEQL_STALE_CONFIGURATIONS not in keys
+    assert not any(
+        kind in {"delete", "workflow", "cq-alerts"} for kind, _, _ in client.calls
+    )
+
+
+async def test_cleanup_dry_run_previews_refuses_and_writes_nothing() -> None:
+    client = FakeClient()
+    (result,) = await remediate.remediate_org(
+        client,
+        _cleanup_report(),
+        categories=[CategoryKey.CODEQL_STALE_CONFIGURATIONS],
+        apply=False,
+    )
+    outcomes = [(o.name, o.action, o.note) for o in result.outcomes]
+    assert outcomes == [
+        (
+            "dependamerge (Default, actions)",
+            "refused",
+            "no current configuration scans actions; add scanning for it first",
+        ),
+        ("dependamerge (Default, python)", "would delete", ""),
+        ("quiet (Advanced, python)", "would re-enable", ""),
+    ]
+    # The alert guard is a read, so it runs in a dry run too -- but only for
+    # a deletion the plan has not already refused.
+    kinds = [(kind, detail) for kind, _, detail in client.calls]
+    assert kinds == [("cq-alerts", "dependamerge:/language:python@main")]
+
+
+async def test_cleanup_apply_deletes_newest_first_and_reenables() -> None:
+    client = FakeClient()
+    (result,) = await remediate.remediate_org(
+        client,
+        _cleanup_report(),
+        categories=[CategoryKey.CODEQL_STALE_CONFIGURATIONS],
+        apply=True,
+    )
+    assert [(o.action, o.verb) for o in result.outcomes] == [
+        ("refused", "delete"),
+        ("deleted", "delete"),
+        ("re-enabled", "re-enable"),
+    ]
+    writes = [(k, d) for k, _, d in client.calls if k != "cq-alerts"]
+    assert writes == [
+        ("delete", "dependamerge:12,11"),
+        ("workflow", "quiet:.github/workflows/codeql.yml"),
+    ]
+    # A refusal is not a failure: nothing broke, the work is simply withheld.
+    assert result.failures == 0
+
+
+@pytest.mark.parametrize(
+    ("held", "note"),
+    [
+        (2, "would close 2 open alert(s) that only it reports"),
+        (None, "open alerts could not be read; nothing deleted"),
+    ],
+)
+async def test_cleanup_refuses_to_close_open_alerts(
+    held: int | None, note: str
+) -> None:
+    client = FakeClient()
+    client.held = {"/language:python": held}
+    (result,) = await remediate.remediate_org(
+        client,
+        _cleanup_report(),
+        categories=[CategoryKey.CODEQL_STALE_CONFIGURATIONS],
+        apply=True,
+    )
+    python = next(
+        o for o in result.outcomes if "python" in o.name and "Default" in o.name
+    )
+    assert (python.action, python.note) == ("refused", note)
+    assert not any(kind == "delete" for kind, _, _ in client.calls)
+
+
+async def test_cleanup_without_collected_codeql_data_has_nothing_to_do() -> None:
+    (result,) = await remediate.remediate_org(
+        FakeClient(),
+        _report(),
+        categories=[CategoryKey.CODEQL_STALE_CONFIGURATIONS],
+        apply=True,
+    )
+    assert result.outcomes == ()

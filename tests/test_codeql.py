@@ -21,14 +21,18 @@ from github_security_report.client.codeql_parsers import (
     latest_codeql_configurations,
 )
 from github_security_report.codeql import (
+    CleanupAction,
     CodeQLConfiguration,
     CodeQLFacts,
     DefaultSetup,
     SetupType,
+    StaleCause,
     build_codeql_tables,
     build_language_coverage_table,
     build_stale_configurations_table,
     normalise_language,
+    plan_cleanup,
+    stale_cause,
 )
 from github_security_report.models import Repo
 
@@ -610,3 +614,193 @@ def test_a_transitional_setup_outranks_a_removed_workflow() -> None:
     )
     (row,) = build_stale_configurations_table([facts], stale_days=STALE_DAYS).rows
     assert row.cells[-1] == "Default setup changing state; recheck later"
+
+
+# --------------------------------------------------------------------------- #
+# Cleanup plan
+# --------------------------------------------------------------------------- #
+def _with_ids(config: CodeQLConfiguration, *ids: int) -> CodeQLConfiguration:
+    return replace(config, analysis_ids=ids)
+
+
+def test_plan_deletes_orphans_whose_language_is_still_scanned() -> None:
+    # dependamerge before its fix: python is covered by the live workflow, so
+    # its orphaned configurations may go; actions is covered by nothing, so
+    # deleting its only (stale) results is refused until scanning is added.
+    facts = _facts(
+        "dependamerge",
+        _config("python", ADVANCED_KEY, days_behind=0.01),
+        _with_ids(_config("python", RENAMED_KEY, days_behind=210), 9, 8),
+        _with_ids(_config("python", days_behind=91), 7),
+        _with_ids(_config("actions", days_behind=91), 6),
+        setup=DefaultSetup(
+            configured=False, languages=frozenset({"actions", "python"})
+        ),
+        workflows={".github/workflows/codeql.yaml": "missing"},
+    )
+    items = plan_cleanup([facts], stale_days=STALE_DAYS)
+    assert [(i.config.category, i.action, i.refusal) for i in items] == [
+        (f"{RENAMED_KEY}/build-mode:none/language:python", CleanupAction.DELETE, None),
+        (
+            "/language:actions",
+            CleanupAction.DELETE,
+            "no current configuration scans actions; add scanning for it first",
+        ),
+        ("/language:python", CleanupAction.DELETE, None),
+    ]
+    assert items[0].label == "dependamerge (Advanced, python)"
+
+
+def test_plan_deletes_a_superseded_advanced_configuration() -> None:
+    items = plan_cleanup(
+        [
+            replace(
+                _superseded(),
+                configurations=(
+                    _with_ids(_config("python", ADVANCED_KEY, days_behind=101), 3),
+                    _config("python", days_behind=1),
+                    _config("actions", days_behind=1),
+                ),
+            )
+        ],
+        stale_days=STALE_DAYS,
+    )
+    assert [(i.cause, i.action, i.refusal) for i in items] == [
+        (StaleCause.SUPERSEDED_DISABLED, CleanupAction.DELETE, None)
+    ]
+
+
+def test_plan_reenables_a_workflow_github_disabled_for_inactivity() -> None:
+    facts = _facts(
+        "quiet",
+        _with_ids(_config("python", ADVANCED_KEY, days_behind=70), 1),
+        setup=DefaultSetup(configured=False, languages=frozenset({"python"})),
+        workflows={".github/workflows/codeql.yml": "disabled_inactivity"},
+    )
+    (item,) = plan_cleanup([facts], stale_days=STALE_DAYS)
+    # Re-enabling restores the scan, so no coverage guard applies to it.
+    assert (item.action, item.refusal) == (CleanupAction.REENABLE_WORKFLOW, None)
+
+
+@pytest.mark.parametrize(
+    "state", ["active", "disabled_manually", None], ids=["idle", "manual", "unread"]
+)
+def test_plan_leaves_causes_that_need_a_person(state: str | None) -> None:
+    # A configuration that may yet resume, or whose state is unknown, is
+    # reported but never acted on.
+    facts = _facts(
+        "r",
+        _config("python", days_behind=0),
+        _with_ids(_config("python", ADVANCED_KEY, days_behind=60), 1),
+        setup=DefaultSetup(configured=False, languages=frozenset({"python"})),
+        workflows={".github/workflows/codeql.yml": state} if state else {},
+    )
+    assert plan_cleanup([facts], stale_days=STALE_DAYS) == []
+
+
+def test_plan_skips_unreadable_repositories() -> None:
+    facts = _facts("r", _with_ids(_config("python", days_behind=90), 1), head=None)
+    assert plan_cleanup([facts], stale_days=STALE_DAYS) == []
+
+
+def test_plan_refuses_a_configuration_with_no_analyses_recorded() -> None:
+    facts = _facts(
+        "r",
+        _config("python", ADVANCED_KEY, days_behind=0),
+        _config("python", days_behind=90),
+        setup=DefaultSetup(configured=False, languages=frozenset({"python"})),
+    )
+    (item,) = plan_cleanup([facts], stale_days=STALE_DAYS)
+    assert item.refusal == "no analyses recorded to delete"
+
+
+def test_orphaned_causes_are_exactly_those_that_cannot_upload_again() -> None:
+    assert {c for c in StaleCause if c.orphaned} == {
+        StaleCause.DEFAULT_SETUP_DISABLED,
+        StaleCause.LANGUAGE_REMOVED,
+        StaleCause.WORKFLOW_REMOVED,
+        StaleCause.SUPERSEDED,
+        StaleCause.SUPERSEDED_DISABLED,
+    }
+
+
+def test_latest_configurations_record_analysis_ids_newest_first() -> None:
+    # GitHub deletes a configuration's analyses newest first, so that is the
+    # order they must be kept in, whatever order the API listed them.
+    (config,) = latest_codeql_configurations(
+        [
+            {
+                "category": "/language:python",
+                "analysis_key": DEFAULT_KEY,
+                "created_at": created,
+                "id": analysis_id,
+            }
+            for analysis_id, created in (
+                (11, "2026-06-20T00:00:00Z"),
+                (33, "2026-06-24T00:00:00Z"),
+                (22, "2026-06-22T00:00:00Z"),
+            )
+        ]
+    )
+    assert config.analysis_ids == (33, 22, 11)
+
+
+def test_a_failing_configuration_is_never_planned_for_deletion() -> None:
+    # Its setup still runs; fixing the run brings the scan back, and deleting
+    # it would throw away the history of a configuration that is not dead.
+    failing = replace(_with_ids(_config("python", days_behind=90), 1), failing=True)
+    facts = _facts(
+        "r",
+        _config("python", ADVANCED_KEY, days_behind=0),
+        failing,
+        setup=DefaultSetup(configured=False, languages=frozenset({"python"})),
+    )
+    assert stale_cause(failing, facts) is StaleCause.ANALYSES_FAILING
+    assert not StaleCause.ANALYSES_FAILING.orphaned
+    assert plan_cleanup([facts], stale_days=STALE_DAYS) == []
+
+
+def test_deletion_ids_include_errored_analyses() -> None:
+    # An errored upload is still part of the configuration, so deleting the
+    # configuration must remove it too, in the same newest-first order.
+    (config,) = latest_codeql_configurations(
+        [
+            {**_entry("2026-06-01T00:00:00Z"), "id": 1},
+            {**_entry("2026-06-02T00:00:00Z", error="boom"), "id": 2},
+        ]
+    )
+    assert config.analysis_ids == (2, 1)
+    assert _scanned_on(config) == "2026-06-01"
+
+
+@pytest.mark.parametrize(
+    ("config", "setup"),
+    [
+        # Default setup mid-change: it may come back, so it is not orphaned.
+        (
+            _config("python", days_behind=60),
+            DefaultSetup(configured=False, transitional=True),
+        ),
+        # An external pipeline is beyond anything remediate can see or reach.
+        (
+            CodeQLConfiguration(
+                category="ci/codeql/language:python",
+                analysis_key="jenkins:codeql",
+                last_scan_at=HEAD - dt.timedelta(days=60),
+                language="python",
+                analysis_ids=(1,),
+            ),
+            DefaultSetup(configured=False),
+        ),
+    ],
+    ids=["transitional", "external"],
+)
+def test_plan_leaves_unsettled_and_external_configurations(
+    config: CodeQLConfiguration, setup: DefaultSetup
+) -> None:
+    facts = _facts(
+        "r", _config("python", ADVANCED_KEY, days_behind=0), config, setup=setup
+    )
+    assert plan_cleanup([facts], stale_days=STALE_DAYS) == []
+    assert not StaleCause.DEFAULT_SETUP_TRANSITIONAL.orphaned
+    assert not StaleCause.EXTERNAL_UPLOADER.orphaned

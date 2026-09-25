@@ -1494,6 +1494,51 @@ Qualitative findings (Scorecard, zizmor, open Dependabot alerts, cooldown,
 release freshness/mutability) are reported but not auto-remediated. Remediation
 is organisation-scoped (`--scope org`, the default and only supported scope).
 
+### Cleaning up stale CodeQL configurations
+
+One category is **destructive**, so it runs only when named. The no-argument
+run never includes it:
+
+```bash
+# Preview: which configurations would go, and which are refused and why.
+uvx github-security-report remediate --org lfreleng-actions \
+  --category codeql_stale_configurations
+
+# Apply.
+uvx github-security-report remediate --org lfreleng-actions \
+  --category codeql_stale_configurations --apply
+```
+
+It acts on the rows of **CodeQL: Stale Configurations**, according to their
+cause:
+
+<!-- markdownlint-disable MD013 -->
+
+| Cause | Action |
+| ----- | ------ |
+| Default setup disabled; workflow removed; superseded by default setup; language removed from default setup | **Delete** the configuration: it can never upload again |
+| Workflow disabled after inactivity | **Re-enable** the workflow, restoring the scan |
+| Analyses failing, workflow disabled by hand, active but not uploading, or state unreadable | Reported only; needs a person |
+
+<!-- markdownlint-enable MD013 -->
+
+Deleting removes a configuration's analyses, which clears GitHub's *"Code
+Scanning results may be out of date"* warning but also removes its alert
+history. A deletion is therefore **refused**, in a dry run as in an apply,
+when:
+
+- no current configuration scans its language: the stale results are then
+  the only record of it, so add scanning for the language first (the refusal
+  names it, and **CodeQL: Language Coverage** lists the gap);
+- it would close an open alert that only it reports;
+- the repository's open alerts cannot be read.
+
+Refusals are listed beside the work done and do not fail the run. Deletion is
+paced at one request a second, as GitHub asks of mutating requests, and is
+resumable: an interrupted run's next pass picks up the remaining analyses.
+The token needs the classic `repo` scope. See
+[ADR-0005](docs/adr/0005-codeql-configuration-cleanup.md) for the reasoning.
+
 ## Bulk Remediation Scripts
 
 The standalone scripts below predate the `remediate` subcommand and remain for

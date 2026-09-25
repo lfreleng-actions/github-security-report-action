@@ -11,11 +11,18 @@ Dependabot posture tables qualify Dependabot alerts, so they render beneath it.
 
 from __future__ import annotations
 
+from github_security_report.codeql.cleanup import (
+    CleanupAction,
+    CleanupItem,
+    plan_cleanup,
+)
 from github_security_report.codeql.facts import (
     CodeQLConfiguration,
     CodeQLFacts,
+    CodeQLHealth,
     DefaultSetup,
     SetupType,
+    StaleCause,
     normalise_language,
 )
 from github_security_report.codeql.tables import (
@@ -26,13 +33,18 @@ from github_security_report.codeql.tables import (
 )
 
 __all__ = [
+    "CleanupAction",
+    "CleanupItem",
     "CodeQLConfiguration",
     "CodeQLFacts",
+    "CodeQLHealth",
     "DefaultSetup",
     "SetupType",
+    "StaleCause",
     "build_codeql_tables",
     "build_language_coverage_table",
     "build_stale_configurations_table",
     "normalise_language",
+    "plan_cleanup",
     "stale_cause",
 ]

@@ -14,6 +14,11 @@ The set of remediable categories is deliberately narrower than the report. Only
 categories that are a simple on/off feature with a documented enablement
 endpoint are here; qualitative findings (Scorecard, zizmor, open alerts,
 cooldown, release freshness/mutability) are reported but not auto-remediated.
+
+One category is destructive: stale CodeQL configurations are cleaned up by
+deleting their analyses (ADR-0005). It runs only when named explicitly, never
+as part of the default set, and each target passes guards that can refuse it
+-- a refusal is reported beside the work done, not treated as a failure.
 """
 
 from __future__ import annotations
@@ -27,6 +32,7 @@ from github_security_report.categories import (
     CategoryMeta,
     category_meta,
 )
+from github_security_report.codeql import CleanupAction, CleanupItem, plan_cleanup
 from github_security_report.models import Repo, SignalType
 from github_security_report.report import OrgReport, TableSection
 
@@ -60,25 +66,50 @@ class RemediationClient(Protocol):
 
     async def enable_auto_merge(self, org: str, repo: str) -> tuple[bool, str]: ...
 
+    async def delete_codeql_analyses(
+        self, org: str, repo: str, analysis_ids: tuple[int, ...]
+    ) -> tuple[bool, str]: ...
 
-# Actions a repository outcome can carry. "would enable" is the dry-run preview;
-# "enabled" and "FAILED" are the two terminal states after an apply.
-_WOULD_ENABLE = "would enable"
-_ENABLED = "enabled"
+    async def enable_workflow(
+        self, org: str, repo: str, path: str
+    ) -> tuple[bool, str]: ...
+
+    async def codeql_alerts_held_only_by(
+        self, org: str, repo: str, category: str, branch: str
+    ) -> int | None: ...
+
+
+# Outcome states. "would <verb>" is the dry-run preview; the past participle
+# and "FAILED" are the two terminal states after an apply; "refused" is a
+# target a guard stopped, in either mode, before anything was written.
 _FAILED = "FAILED"
+_REFUSED = "refused"
+
+# The past participle of each verb a remediator acts with.
+_DONE = {"enable": "enabled", "delete": "deleted", "re-enable": "re-enabled"}
 
 
 @dataclass(frozen=True)
 class RepoOutcome:
-    """The result of (planning to) enable one feature on one repository."""
+    """The result of (planning to) remediate one target.
+
+    ``name`` is the target as the output names it: a repository, or for the
+    CodeQL cleanup a repository and configuration. ``verb`` is what was, or
+    would be, done to it.
+    """
 
     name: str
-    action: str  # "would enable" | "enabled" | "FAILED"
+    action: str  # "would <verb>" | past participle | "FAILED" | "refused"
     note: str = ""
+    verb: str = "enable"
 
     @property
     def failed(self) -> bool:
         return self.action == _FAILED
+
+    @property
+    def refused(self) -> bool:
+        return self.action == _REFUSED
 
 
 @dataclass(frozen=True)
@@ -91,6 +122,33 @@ class CategoryRemediation:
     @property
     def failures(self) -> int:
         return sum(1 for o in self.outcomes if o.failed)
+
+
+# --------------------------------------------------------------------------- #
+# Targets
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class _Target:
+    """One unit of remediation work, with anything its write needs."""
+
+    repo: Repo
+    name: str
+    verb: str = "enable"
+    # Set when the plan already knows this target must not be written.
+    refusal: str | None = None
+    # The CodeQL cleanup's planned item; None for a feature toggle.
+    cleanup: CleanupItem | None = None
+
+
+def _repo_targets(
+    offenders: Callable[[OrgReport], list[Repo]],
+) -> Callable[[OrgReport], list[_Target]]:
+    """A feature toggle's targets: one per offending repository."""
+
+    def _get(report: OrgReport) -> list[_Target]:
+        return [_Target(repo, repo.name) for repo in offenders(report)]
+
+    return _get
 
 
 # --------------------------------------------------------------------------- #
@@ -129,45 +187,116 @@ def _table_offenders(key: CategoryKey) -> Callable[[OrgReport], list[Repo]]:
 
 
 # --------------------------------------------------------------------------- #
+# CodeQL stale-configuration cleanup
+# --------------------------------------------------------------------------- #
+def _cleanup_targets(report: OrgReport) -> list[_Target]:
+    """One target per stale configuration with a safe fix, from the report."""
+    health = report.codeql_health
+    if health is None:
+        return []
+    return [
+        _Target(
+            item.repo,
+            item.label,
+            verb=item.action.value,
+            refusal=item.refusal,
+            cleanup=item,
+        )
+        for item in plan_cleanup(health.facts, stale_days=health.stale_days)
+    ]
+
+
+def _planned(target: _Target) -> CleanupItem:
+    if target.cleanup is None:  # pragma: no cover - registry wiring invariant
+        raise ValueError(f"{target.name}: no cleanup plan")
+    return target.cleanup
+
+
+async def _cleanup_precheck(
+    client: RemediationClient, org: str, target: _Target
+) -> str | None:
+    """Refuse a deletion that would close an open alert, or can't rule it out."""
+    item = _planned(target)
+    if item.action is not CleanupAction.DELETE:
+        return None
+    held = await client.codeql_alerts_held_only_by(
+        org, item.repo.name, item.config.category, item.repo.default_branch
+    )
+    if held is None:
+        return "open alerts could not be read; nothing deleted"
+    if held:
+        return f"would close {held} open alert(s) that only it reports"
+    return None
+
+
+async def _cleanup_write(
+    client: RemediationClient, org: str, target: _Target
+) -> tuple[bool, str]:
+    item = _planned(target)
+    if item.action is CleanupAction.DELETE:
+        return await client.delete_codeql_analyses(
+            org, item.repo.name, item.config.analysis_ids
+        )
+    path = item.config.workflow_path
+    if path is None:  # pragma: no cover - the planner only re-enables workflows
+        return False, "no workflow path"
+    return await client.enable_workflow(org, item.repo.name, path)
+
+
+# --------------------------------------------------------------------------- #
 # Registry
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
 class _Remediator:
     key: CategoryKey
-    offenders: Callable[[OrgReport], list[Repo]]
-    enable: Callable[[RemediationClient, str, str], Awaitable[tuple[bool, str]]]
+    targets: Callable[[OrgReport], list[_Target]]
+    write: Callable[[RemediationClient, str, _Target], Awaitable[tuple[bool, str]]]
+    # A last read before the write, in either mode: a reason to refuse the
+    # target, or None to proceed.
+    precheck: (
+        Callable[[RemediationClient, str, _Target], Awaitable[str | None]] | None
+    ) = None
+    # Destructive remediators act only when named with --category.
+    explicit_only: bool = False
 
 
 _REMEDIATORS: tuple[_Remediator, ...] = (
     _Remediator(
         CategoryKey.CODEQL,
-        _nag_offenders(SignalType.CODEQL),
-        lambda c, o, r: c.enable_codeql_default_setup(o, r),
+        _repo_targets(_nag_offenders(SignalType.CODEQL)),
+        lambda c, o, t: c.enable_codeql_default_setup(o, t.repo.name),
     ),
     _Remediator(
         CategoryKey.SECRET_SCANNING,
-        _nag_offenders(SignalType.SECRET_SCANNING),
-        lambda c, o, r: c.enable_secret_scanning(o, r),
+        _repo_targets(_nag_offenders(SignalType.SECRET_SCANNING)),
+        lambda c, o, t: c.enable_secret_scanning(o, t.repo.name),
     ),
     _Remediator(
         CategoryKey.DEPENDABOT_ALERTS_ENABLED,
-        _table_offenders(CategoryKey.DEPENDABOT_ALERTS_ENABLED),
-        lambda c, o, r: c.enable_dependabot_alerts(o, r),
+        _repo_targets(_table_offenders(CategoryKey.DEPENDABOT_ALERTS_ENABLED)),
+        lambda c, o, t: c.enable_dependabot_alerts(o, t.repo.name),
     ),
     _Remediator(
         CategoryKey.DEPENDABOT_UPDATES_ENABLED,
-        _table_offenders(CategoryKey.DEPENDABOT_UPDATES_ENABLED),
-        lambda c, o, r: c.enable_dependabot_security_updates(o, r),
+        _repo_targets(_table_offenders(CategoryKey.DEPENDABOT_UPDATES_ENABLED)),
+        lambda c, o, t: c.enable_dependabot_security_updates(o, t.repo.name),
     ),
     _Remediator(
         CategoryKey.PRIVATE_VULNERABILITY_REPORTING,
-        _table_offenders(CategoryKey.PRIVATE_VULNERABILITY_REPORTING),
-        lambda c, o, r: c.enable_private_vulnerability_reporting(o, r),
+        _repo_targets(_table_offenders(CategoryKey.PRIVATE_VULNERABILITY_REPORTING)),
+        lambda c, o, t: c.enable_private_vulnerability_reporting(o, t.repo.name),
     ),
     _Remediator(
         CategoryKey.AUTO_MERGE,
-        _table_offenders(CategoryKey.AUTO_MERGE),
-        lambda c, o, r: c.enable_auto_merge(o, r),
+        _repo_targets(_table_offenders(CategoryKey.AUTO_MERGE)),
+        lambda c, o, t: c.enable_auto_merge(o, t.repo.name),
+    ),
+    _Remediator(
+        CategoryKey.CODEQL_STALE_CONFIGURATIONS,
+        _cleanup_targets,
+        _cleanup_write,
+        precheck=_cleanup_precheck,
+        explicit_only=True,
     ),
 )
 
@@ -175,6 +304,16 @@ _BY_KEY: dict[CategoryKey, _Remediator] = {r.key: r for r in _REMEDIATORS}
 
 # The remediable category keys, in the order they are acted on and rendered.
 REMEDIABLE: tuple[CategoryKey, ...] = tuple(r.key for r in _REMEDIATORS)
+
+# What runs when no --category is given: everything but the destructive ones.
+DEFAULT_REMEDIABLE: tuple[CategoryKey, ...] = tuple(
+    r.key for r in _REMEDIATORS if not r.explicit_only
+)
+
+# The remediable keys that run only when named.
+EXPLICIT_ONLY: tuple[CategoryKey, ...] = tuple(
+    r.key for r in _REMEDIATORS if r.explicit_only
+)
 
 
 def parse_categories(values: Iterable[str]) -> tuple[list[CategoryKey], list[str]]:
@@ -204,21 +343,25 @@ async def remediate_org(
     categories: Sequence[CategoryKey] | None = None,
     apply: bool,
 ) -> list[CategoryRemediation]:
-    """Enable (or, in dry run, preview enabling) features across one org report.
+    """Remediate (or, in dry run, preview remediating) one org report.
 
-    Acts on every selected category (defaulting to all remediable categories),
-    in the canonical :data:`REMEDIABLE` order. In dry run every offender yields
-    a ``"would enable"`` outcome and no write is issued; with ``apply`` each
-    offender is written and yields ``"enabled"`` or ``"FAILED"`` with the
-    write's diagnostic note. Categories are always represented (with an empty
-    outcome list when they have no offenders) so the renderer can show that a
-    selected category had nothing to do.
+    Acts on every selected category -- by default every remediable category
+    except the explicit-only, destructive ones -- in the canonical
+    :data:`REMEDIABLE` order. In dry run every target yields a ``"would
+    <verb>"`` outcome and no write is issued; with ``apply`` each target is
+    written and yields the verb's past participle or ``"FAILED"`` with the
+    write's diagnostic note. A target the plan or its precheck refuses yields
+    ``"refused"`` with the reason, in either mode, and is never written; the
+    precheck is a read, so a dry run reports refusals exactly as an apply would.
+    Categories are always represented (with an empty outcome list when they
+    have no targets) so the renderer can show a selected category had nothing
+    to do.
 
     Raises :class:`ValueError` if ``categories`` contains a key that is not
     remediable, rather than failing later with an opaque ``KeyError``.
-    Duplicate keys are collapsed so a feature is never enabled twice in a run.
+    Duplicate keys are collapsed so nothing is remediated twice in a run.
     """
-    requested = list(categories) if categories is not None else list(REMEDIABLE)
+    requested = list(categories) if categories is not None else list(DEFAULT_REMEDIABLE)
     invalid = [key for key in requested if key not in _BY_KEY]
     if invalid:
         names = ", ".join(key.value for key in invalid)
@@ -233,14 +376,32 @@ async def remediate_org(
     results: list[CategoryRemediation] = []
     for key in sorted(selected, key=lambda k: order[k]):
         rem = _BY_KEY[key]
-        outcomes: list[RepoOutcome] = []
-        for repo in rem.offenders(report):
-            if not apply:
-                outcomes.append(RepoOutcome(repo.name, _WOULD_ENABLE))
-                continue
-            ok, note = await rem.enable(client, report.org, repo.name)
-            outcomes.append(RepoOutcome(repo.name, _ENABLED if ok else _FAILED, note))
+        outcomes = [
+            await _remediate_target(client, report.org, rem, target, apply=apply)
+            for target in rem.targets(report)
+        ]
         results.append(
             CategoryRemediation(category=category_meta(key), outcomes=tuple(outcomes))
         )
     return results
+
+
+async def _remediate_target(
+    client: RemediationClient,
+    org: str,
+    rem: _Remediator,
+    target: _Target,
+    *,
+    apply: bool,
+) -> RepoOutcome:
+    """Refuse, preview or write one target, and say which."""
+    refusal = target.refusal
+    if refusal is None and rem.precheck is not None:
+        refusal = await rem.precheck(client, org, target)
+    if refusal is not None:
+        return RepoOutcome(target.name, _REFUSED, refusal, target.verb)
+    if not apply:
+        return RepoOutcome(target.name, f"would {target.verb}", verb=target.verb)
+    ok, note = await rem.write(client, org, target)
+    action = _DONE[target.verb] if ok else _FAILED
+    return RepoOutcome(target.name, action, note, target.verb)

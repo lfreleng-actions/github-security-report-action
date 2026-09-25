@@ -107,6 +107,9 @@ async def attach_extra_tables(
     report.codeql_tables = codeql.build_codeql_tables(
         codeql_facts, stale_days=report_cfg.codeql_stale_days
     )
+    report.codeql_health = codeql.CodeQLHealth(
+        facts=tuple(codeql_facts), stale_days=report_cfg.codeql_stale_days
+    )
     # Organisation membership is collected once and reused by both author-aware
     # tables, so classifying contributions costs one query rather than a probe
     # per author. It is the token-independent basis for "outside the

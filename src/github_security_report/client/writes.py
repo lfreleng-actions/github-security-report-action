@@ -12,13 +12,23 @@ and the remediation writes.
 
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 
 from github_security_report.client.reads import ReadClient
 
+# Pause between successive deletions of one configuration's analyses. GitHub
+# asks integrations to leave at least a second between mutating requests to
+# avoid its secondary rate limits, and a configuration can hold dozens of
+# analyses. A class attribute so tests can set it to zero.
+_DELETE_PAUSE_SECONDS = 1.0
+
 
 class GitHubClient(ReadClient):
     """Thin async client over the GitHub REST + GraphQL APIs."""
+
+    delete_pause_seconds: float = _DELETE_PAUSE_SECONDS
 
     # ------------------------------------------------------------------ #
     # Remediation writes (enable a feature on one repository)
@@ -151,6 +161,61 @@ class GitHubClient(ReadClient):
             json={"allow_auto_merge": True},
         )
         ok = resp.status_code == 200
+        note = "" if ok else self._write_note(resp)
+        await resp.aclose()
+        return ok, note
+
+    # ------------------------------------------------------------------ #
+    # CodeQL configuration cleanup
+    # ------------------------------------------------------------------ #
+    async def delete_codeql_analyses(
+        self, org: str, repo: str, analysis_ids: tuple[int, ...]
+    ) -> tuple[bool, str]:
+        """Delete one configuration's analyses, newest first. ``(ok, note)``.
+
+        GitHub deletes a configuration one analysis at a time, and only its
+        newest is deletable at any moment, so ``analysis_ids`` must arrive
+        newest first. ``confirm_delete`` permits removing the last one, which
+        is the point: the configuration itself goes with it.
+
+        The delete response's ``confirm_delete_url`` is documented to chain to
+        the next analysis, but in practice returns null while older analyses
+        remain, so the ids collected with the report drive the walk instead. A
+        ``404`` means the analysis is already gone (a previous, interrupted run,
+        or the listing lagging behind a deletion) and is skipped, so a re-run
+        resumes rather than failing. The note reports how many were deleted.
+        """
+        deleted = 0
+        for index, analysis_id in enumerate(analysis_ids):
+            if index:
+                await asyncio.sleep(self.delete_pause_seconds)
+            resp = await self._request(
+                "DELETE",
+                f"{self._api_url}/repos/{org}/{repo}/code-scanning/analyses/{analysis_id}",
+                params={"confirm_delete": "true"},
+            )
+            status = resp.status_code
+            if status not in (200, 404):
+                note = self._write_note(resp)
+                await resp.aclose()
+                return False, f"stopped after {deleted} of {len(analysis_ids)}: {note}"
+            await resp.aclose()
+            deleted += status == 200
+        return True, f"{deleted} analyses deleted"
+
+    async def enable_workflow(self, org: str, repo: str, path: str) -> tuple[bool, str]:
+        """Re-enable the workflow at ``path``. Returns ``(ok, note)``.
+
+        ``PUT .../actions/workflows/{file}/enable`` answers ``204``; the
+        workflow is addressed by file name, which the API accepts in place of
+        its numeric id.
+        """
+        name = path.rsplit("/", 1)[-1]
+        resp = await self._request(
+            "PUT",
+            f"{self._api_url}/repos/{org}/{repo}/actions/workflows/{name}/enable",
+        )
+        ok = resp.status_code == 204
         note = "" if ok else self._write_note(resp)
         await resp.aclose()
         return ok, note

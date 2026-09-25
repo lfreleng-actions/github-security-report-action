@@ -341,33 +341,42 @@ def render_remediation(
     if not apply:
         console.print(
             "[bold yellow]DRY RUN[/bold yellow] — no changes made. Re-run with "
-            "[bold]--apply[/bold] to enable features.\n"
+            "[bold]--apply[/bold] to make changes.\n"
         )
 
-    planned = 0
-    changed = 0
+    planned: dict[str, int] = {}
+    changed: dict[str, int] = {}
     failed = 0
+    refused = 0
     for result in results:
         console.print(f"[bold]{result.category.title}[/bold]")
-        # Classify by run mode and each outcome's own failed flag rather than
-        # by the action string, so the renderer owns no copy of the action
-        # vocabulary defined in remediate.py.
+        # Classify by run mode and each outcome's own flags rather than by the
+        # action string, so the renderer owns no copy of the action vocabulary
+        # defined in remediate.py.
         failures = [o for o in result.outcomes if o.failed]
-        succeeded = [o for o in result.outcomes if not o.failed]
-        would = succeeded if not apply else []
-        enabled = succeeded if apply else []
+        refusals = [o for o in result.outcomes if o.refused]
+        succeeded = [o for o in result.outcomes if not (o.failed or o.refused)]
         if not result.outcomes:
             console.print("  [green]Nothing to remediate[/green]")
-        if would:
-            names = _truncated_names([o.name for o in would], top_n)
+        # One line per verb, in the order the verbs first appear: a category
+        # can both delete one configuration and re-enable another's workflow.
+        for verb in dict.fromkeys(o.verb for o in succeeded):
+            group = [o for o in succeeded if o.verb == verb]
+            names = _truncated_names([o.name for o in group], top_n)
+            if apply:
+                console.print(
+                    f"  [green]{SUMMARY_EMOJI['pass']}[/green] {len(group)} "
+                    f"{escape(group[0].action)}: {escape(names)}"
+                )
+            else:
+                console.print(
+                    f"  [yellow]→[/yellow] {len(group)} would {escape(verb)}: "
+                    f"{escape(names)}"
+                )
+        for outcome in refusals:
             console.print(
-                f"  [yellow]→[/yellow] {len(would)} would enable: {escape(names)}"
-            )
-        if enabled:
-            names = _truncated_names([o.name for o in enabled], top_n)
-            console.print(
-                f"  [green]{SUMMARY_EMOJI['pass']}[/green] {len(enabled)} enabled: "
-                f"{escape(names)}"
+                f"  [yellow]{SUMMARY_EMOJI['unknown']}[/yellow] "
+                f"{escape(outcome.name)} refused: {escape(outcome.note)}"
             )
         for outcome in failures:
             detail = f": {escape(outcome.note)}" if outcome.note else ""
@@ -375,15 +384,23 @@ def render_remediation(
                 f"  [red]{SUMMARY_EMOJI['fail']}[/red] {escape(outcome.name)} "
                 f"failed{detail}"
             )
-        planned += len(would)
-        changed += len(enabled)
+        tally = changed if apply else planned
+        for outcome in succeeded:
+            label = outcome.action if apply else outcome.verb
+            tally[label] = tally.get(label, 0) + 1
         failed += len(failures)
+        refused += len(refusals)
         console.print()
 
+    refused_note = f", {refused} refused" if refused else ""
     if apply:
-        console.print(f"[bold]Summary:[/bold] {changed} enabled, {failed} failed.")
+        done = ", ".join(f"{n} {label}" for label, n in changed.items()) or "0 changed"
+        console.print(f"[bold]Summary:[/bold] {done}, {failed} failed{refused_note}.")
     else:
+        todo = (
+            ", ".join(f"{n} to {verb}" for verb, n in planned.items()) or "no changes"
+        )
         console.print(
-            f"[bold]Summary:[/bold] {planned} to enable (dry run). Re-run with "
-            "[bold]--apply[/bold] to make changes."
+            f"[bold]Summary:[/bold] {todo} (dry run){refused_note}. "
+            "Re-run with [bold]--apply[/bold] to make changes."
         )

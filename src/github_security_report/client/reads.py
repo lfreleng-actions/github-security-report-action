@@ -356,3 +356,34 @@ class ReadClient(OrgReadClient):
         readable = resp.status_code == 200
         await resp.aclose()  # only the status matters here
         return readable
+
+    async def codeql_alerts_held_only_by(
+        self, org: str, repo: str, category: str, branch: str
+    ) -> int | None:
+        """Open CodeQL alerts that only ``category`` still reports on ``branch``.
+
+        Deleting a configuration closes the alerts it alone was keeping open,
+        so this is the check a cleanup makes before it writes. An alert counts
+        when every one of its instances on the branch belongs to ``category``.
+        ``None`` when the alerts or any alert's instances could not be read in
+        full: an unknown answer must stop a deletion, never permit one.
+        """
+        base = f"{self._api_url}/repos/{org}/{repo}/code-scanning"
+        status, alerts = await self._get_list(
+            f"{base}/alerts",
+            tool_name=CODE_SCANNING_TOOLS[SignalType.CODEQL],
+            state="open",
+        )
+        if status != 200:
+            return None
+        held = 0
+        for alert in alerts:
+            status, instances = await self._get_list(
+                f"{base}/alerts/{alert.get('number')}/instances",
+                ref=f"refs/heads/{branch}",
+            )
+            if status != 200:
+                return None
+            categories = {instance.get("category") for instance in instances}
+            held += categories == {category}
+        return held

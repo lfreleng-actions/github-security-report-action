@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import Set
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from github_security_report import scope
 from github_security_report.categories import CategoryKey
@@ -26,6 +27,11 @@ from github_security_report.models import (
 from github_security_report.ranking import rank_offenders
 from github_security_report.report.signals import SignalSection
 from github_security_report.report.tables import TableSection
+
+if TYPE_CHECKING:
+    # Annotation only: the codeql package builds its tables from this one, so a
+    # runtime import here would be circular.
+    from github_security_report.codeql.facts import CodeQLHealth
 
 SIGNAL_ORDER: tuple[SignalType, ...] = (
     SignalType.SCORECARD,
@@ -66,6 +72,10 @@ class OrgReport:
     # rendered beneath the CodeQL signal heading. Empty in repo mode / when not
     # collected.
     codeql_tables: list[TableSection] = field(default_factory=list)
+    # The facts those tables were built from, with their threshold, so
+    # remediation plans from exactly what the report showed. Not serialised:
+    # the tables carry everything a reader needs. None when not collected.
+    codeql_health: CodeQLHealth | None = None
     # The Releases / Tagging table (release and tag staleness). None only when
     # not collected (repo mode); org mode always assigns a section, which may
     # have zero rows and render its empty_note instead.

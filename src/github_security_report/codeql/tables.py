@@ -33,6 +33,7 @@ from github_security_report.codeql.facts import (
     CodeQLConfiguration,
     CodeQLFacts,
     SetupType,
+    StaleCause,
 )
 from github_security_report.report import TableRow, TableSection
 
@@ -47,59 +48,60 @@ def _setup_cell(config: CodeQLConfiguration) -> str:
     return f"{SetupType.ADVANCED.value} ({path.rsplit('/', 1)[-1]})"
 
 
-def _default_setup_cause(config: CodeQLConfiguration, facts: CodeQLFacts) -> str:
+def _default_setup_cause(config: CodeQLConfiguration, facts: CodeQLFacts) -> StaleCause:
     setup = facts.default_setup
     if setup is None:
-        return "Default setup state unreadable"
+        return StaleCause.DEFAULT_SETUP_UNREADABLE
     if setup.transitional:
-        return "Default setup changing state; recheck later"
+        return StaleCause.DEFAULT_SETUP_TRANSITIONAL
     if not setup.configured:
-        return "Default setup disabled; orphaned"
+        return StaleCause.DEFAULT_SETUP_DISABLED
     if config.language is not None and config.language not in setup.languages:
-        return "Language removed from default setup"
-    return "Default setup not uploading"
+        return StaleCause.LANGUAGE_REMOVED
+    return StaleCause.DEFAULT_SETUP_IDLE
 
 
-def _advanced_setup_cause(config: CodeQLConfiguration, facts: CodeQLFacts) -> str:
+def _advanced_setup_cause(
+    config: CodeQLConfiguration, facts: CodeQLFacts
+) -> StaleCause:
     setup = facts.default_setup
     if setup is not None and setup.transitional:
         # Default setup is mid-change: nothing about this configuration is
         # settled, so no workflow state -- not even a removed one -- may be
         # read as final. Checked first, so an unsettled migration can never
         # reach an "orphaned" cause that a cleanup would act on.
-        return "Default setup changing state; recheck later"
+        return StaleCause.DEFAULT_SETUP_TRANSITIONAL
     path = config.workflow_path
     state = facts.workflow_states.get(path) if path is not None else None
     if state in (WORKFLOW_MISSING, WORKFLOW_DELETED):
-        return "Workflow removed; orphaned"
+        return StaleCause.WORKFLOW_REMOVED
     disabled = state is not None and state.startswith("disabled")
     if setup is not None and setup.configured:
         # GitHub rejects advanced CodeQL uploads while default setup is on, so
         # this configuration cannot upload again whatever the workflow does.
-        suffix = "; workflow disabled" if disabled else ""
-        return f"Superseded by default setup{suffix}"
+        return StaleCause.SUPERSEDED_DISABLED if disabled else StaleCause.SUPERSEDED
     if path is None:
         # The analysis key names no workflow file: CodeQL ran outside GitHub
         # Actions (the CLI in another CI system, say), so there is no workflow
         # state to read and none to point the reader at.
-        return "Uploaded outside GitHub Actions; check that pipeline"
+        return StaleCause.EXTERNAL_UPLOADER
     if state == WORKFLOW_DISABLED_INACTIVITY:
-        return "Workflow disabled after inactivity"
+        return StaleCause.WORKFLOW_INACTIVE
     if disabled:
-        return "Workflow disabled"
+        return StaleCause.WORKFLOW_DISABLED
     if state == WORKFLOW_ACTIVE:
-        return "Workflow active, not uploading"
-    return "Workflow state unreadable"
+        return StaleCause.WORKFLOW_IDLE
+    return StaleCause.WORKFLOW_UNREADABLE
 
 
-def stale_cause(config: CodeQLConfiguration, facts: CodeQLFacts) -> str:
+def stale_cause(config: CodeQLConfiguration, facts: CodeQLFacts) -> StaleCause:
     """Why a stale configuration stopped scanning, as far as the API can tell.
 
     An errored newest attempt comes first: the setup still exists and still
     runs, so whatever its state, the reader's next step is its failing logs.
     """
     if config.failing:
-        return "Analyses failing; check the latest run"
+        return StaleCause.ANALYSES_FAILING
     if config.setup is SetupType.DEFAULT:
         return _default_setup_cause(config, facts)
     return _advanced_setup_cause(config, facts)
@@ -143,7 +145,7 @@ def build_stale_configurations_table(
             )
             setup = _setup_cell(config)
             language = config.language or "unknown"
-            cause = stale_cause(config, repo_facts)
+            cause = stale_cause(config, repo_facts).value
             rows.append(
                 TableRow(
                     repo=repo_facts.repo,
@@ -210,7 +212,7 @@ def build_language_coverage_table(
             for config in repo_facts.configurations
             if not config.is_stale(head, stale_days)
         ]
-        scanned = {config.language for config in current if config.language}
+        scanned = repo_facts.current_languages(stale_days)
         unscanned = sorted(setup.languages - scanned)
         if not unscanned:
             covered += 1

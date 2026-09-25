@@ -1005,6 +1005,31 @@ def test_remediate_dry_run_makes_no_writes() -> None:
     assert "would enable" in result.stdout
     for route in (codeql, secret, alerts, fixes, pvr):
         assert route.call_count == 0, result.stdout
+    # The destructive cleanup is never part of the default run.
+    assert "CodeQL: Stale Configurations" not in result.stdout
+
+
+@respx.mock
+def test_remediate_runs_the_codeql_cleanup_only_when_named() -> None:
+    # Named explicitly, the cleanup category is accepted and reported. This
+    # org has no CodeQL at all, so there is nothing to clean up -- and any
+    # delete it attempted would hit an unmocked route and fail the run.
+    _mock_offender_org()
+    result = cli.invoke(
+        app,
+        [
+            "remediate",
+            "--org",
+            "o",
+            "--category",
+            "codeql_stale_configurations",
+            "--apply",
+            "--no-color",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert "CodeQL: Stale Configurations" in result.stdout
+    assert "Nothing to remediate" in result.stdout
 
 
 @respx.mock

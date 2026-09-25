@@ -72,6 +72,66 @@ class SetupType(str, Enum):
     ADVANCED = "Advanced"
 
 
+class StaleCause(str, Enum):
+    """Why a stale configuration stopped scanning, as far as the API can tell.
+
+    The value is the label the Stale Configurations table shows. The two
+    properties are the remediation policy, kept here beside the diagnosis so
+    the table and the cleanup plan can never disagree about a configuration.
+    """
+
+    # The setup still runs, but its newest attempt errored: never deleted,
+    # since fixing the run is what brings the scan back.
+    ANALYSES_FAILING = "Analyses failing; check the latest run"
+    DEFAULT_SETUP_DISABLED = "Default setup disabled; orphaned"
+    LANGUAGE_REMOVED = "Language removed from default setup"
+    DEFAULT_SETUP_IDLE = "Default setup not uploading"
+    DEFAULT_SETUP_UNREADABLE = "Default setup state unreadable"
+    # Neither on nor off: GitHub is evaluating a change, or failed to make one.
+    DEFAULT_SETUP_TRANSITIONAL = "Default setup changing state; recheck later"
+    WORKFLOW_REMOVED = "Workflow removed; orphaned"
+    SUPERSEDED = "Superseded by default setup"
+    SUPERSEDED_DISABLED = "Superseded by default setup; workflow disabled"
+    WORKFLOW_INACTIVE = "Workflow disabled after inactivity"
+    WORKFLOW_DISABLED = "Workflow disabled"
+    WORKFLOW_IDLE = "Workflow active, not uploading"
+    WORKFLOW_UNREADABLE = "Workflow state unreadable"
+    # CodeQL ran outside GitHub Actions; remediate cannot see or reach it.
+    EXTERNAL_UPLOADER = "Uploaded outside GitHub Actions; check that pipeline"
+
+    @property
+    def orphaned(self) -> bool:
+        """Whether the configuration can never upload again as things stand.
+
+        Its setup is gone (default setup off, workflow file removed), blocked
+        (advanced uploads are rejected while default setup is on), or no
+        longer covers its language. Only these are safe to delete: every other
+        cause may yet resume, or needs a person to decide.
+        """
+        return self in _ORPHANED_CAUSES
+
+    @property
+    def reenable_workflow(self) -> bool:
+        """Whether re-enabling the workflow is the fix, rather than deleting.
+
+        GitHub disables a scheduled workflow after a spell of repository
+        inactivity; that is not a decision anybody made, and undoing it
+        restores the scan the configuration belongs to.
+        """
+        return self is StaleCause.WORKFLOW_INACTIVE
+
+
+_ORPHANED_CAUSES = frozenset(
+    {
+        StaleCause.DEFAULT_SETUP_DISABLED,
+        StaleCause.LANGUAGE_REMOVED,
+        StaleCause.WORKFLOW_REMOVED,
+        StaleCause.SUPERSEDED,
+        StaleCause.SUPERSEDED_DISABLED,
+    }
+)
+
+
 @dataclass(frozen=True)
 class CodeQLConfiguration:
     """One CodeQL configuration on the default branch, as of its latest scan."""
@@ -86,6 +146,10 @@ class CodeQLConfiguration:
     language: str | None = None
     # True when the newest attempt uploaded an error rather than results.
     failing: bool = False
+    # Every analysis in this configuration on the collected ref, newest first.
+    # GitHub deletes a configuration one analysis at a time in exactly this
+    # order, so remediation needs no second read of the history.
+    analysis_ids: tuple[int, ...] = ()
 
     @property
     def setup(self) -> SetupType:
@@ -185,3 +249,27 @@ class CodeQLFacts:
         if head is None:
             return []
         return [c for c in self.configurations if c.is_stale(head, stale_days)]
+
+    def current_languages(self, stale_days: int) -> frozenset[str]:
+        """The languages at least one non-stale configuration still scans."""
+        head = self.head_committed_at
+        if head is None:
+            return frozenset()
+        return frozenset(
+            c.language
+            for c in self.configurations
+            if c.language and not c.is_stale(head, stale_days)
+        )
+
+
+@dataclass(frozen=True)
+class CodeQLHealth:
+    """The collected CodeQL facts, with the threshold they were judged by.
+
+    Kept on the report so remediation plans from exactly the data and the
+    threshold the Stale Configurations table was built from, rather than
+    re-reading every repository's history or re-deriving the setting.
+    """
+
+    facts: tuple[CodeQLFacts, ...]
+    stale_days: int
