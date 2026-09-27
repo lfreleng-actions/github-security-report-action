@@ -44,7 +44,7 @@ jobs:
       # ephemeral GITHUB_TOKEN. Always runs from this checkout (it is a
       # self-test of the action source, not a published release).
       - name: "Running local action: ${{ github.repository }}"
-        uses: ./
+        uses: $/
         with:
           scope: "repo"
           token: "${{ github.token }}"
