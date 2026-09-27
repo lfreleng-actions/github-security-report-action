@@ -72,7 +72,7 @@ jobs:
 
       - name: "Generate report"
         id: report
-        uses: ./
+        uses: $/
         with:
           scope: "org"
           # Plain JSON in a variable, or base64 JSON in a secret (the tool

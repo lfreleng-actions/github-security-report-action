@@ -204,6 +204,11 @@ runs:
         # cooldown-gated PRs rather than a hand-edited default.
         if [ "$EVENT_NAME" = "pull_request" ] || [ "$USE_LOCAL_SOURCE" = "true" ]; then
           SOURCE="$ACTION_PATH"
+          # The runner's copy of an action has no .git, so hatch-vcs
+          # cannot read a version; supply one rather than fail the build.
+          if ! git -C "$ACTION_PATH" rev-parse --git-dir >/dev/null 2>&1; then
+            export SETUPTOOLS_SCM_PRETEND_VERSION="0.0.0"
+          fi
         elif [ -n "$TOOL_VERSION" ]; then
           SOURCE="github-security-report==${TOOL_VERSION}"
         else
