@@ -21,8 +21,10 @@ from github_security_report.cli.options import OrgPair, OrgRunOptions
 from github_security_report.cli.outputs import (
     TopNLimits,
     _safe_component,
+    footer,
     most_generous,
     show,
+    slack_footer,
     slack_limit,
     slack_show,
     write_org_files,
@@ -108,6 +110,7 @@ def slack_digest(
             # another's data into the shared channel.
             show=slack_show(items, options.hidden),
             limit=slack_limit(items, options.limits),
+            footer=slack_footer(items),
         )
         for channel, items in by_channel.items()
     ]
@@ -140,6 +143,7 @@ def summary(
                 top_n=limits.resolve(org_cfg.report, "report"),
                 show=show(org_cfg.report, "markdown", hidden),
                 limit=limits.resolver(org_cfg.report, "report"),
+                footer=footer(org_cfg.report),
             )
             for org_cfg, org_report in pairs
         ).rstrip()

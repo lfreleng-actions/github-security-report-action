@@ -253,6 +253,28 @@ class TestApplyConfiguredOrder:
         # Repo mode leaves the extra tables unset; that must not raise.
         ordering.apply_configured_order([None], self._cfg(["untriaged"]))
 
+    def test_enabled_side_of_a_feature_table_follows_the_configured_order(
+        self,
+    ) -> None:
+        # A boolean feature table can name its enabled repositories instead of
+        # its rows (`repo_list`). Both sides must take the configured order, or
+        # switching the named side would silently undo it.
+        section = TableSection(
+            category=category_meta(CategoryKey.AUTO_MERGE),
+            columns=("Repository",),
+            rows=[TableRow(repo=_repo(n), cells=()) for n in ("alpha", "bravo")],
+            pass_repos=(_repo("charlie"), _repo("delta")),
+        )
+        cfg = config.build_config(
+            {
+                "report": {"categories": {"auto_merge": {"sort": ["-repository"]}}},
+                "organizations": [{"name": "o"}],
+            }
+        ).report
+        ordering.apply_configured_order([section], cfg)
+        assert [r.repo.name for r in section.rows] == ["bravo", "alpha"]
+        assert [r.name for r in section.pass_repos] == ["delta", "charlie"]
+
 
 def _signal(
     name: str,

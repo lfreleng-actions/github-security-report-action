@@ -11,17 +11,63 @@ surfaces present the same table the same way.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import TypeVar
 
 from github_security_report.categories import CategoryKey
-from github_security_report.models import RepoSignal, SeverityCounts
+from github_security_report.models import Repo, RepoSignal, SeverityCounts
+from github_security_report.report.aggregate import OrgReport
 from github_security_report.report.tables import TableRow, TableSection
+from github_security_report.summary import ExcludedDisplay, RepoList
 
 _T = TypeVar("_T")
 
 # A per-category row limit, mirroring the ``show`` visibility predicate every
 # render surface already accepts. Returning ``None`` or ``0`` means "no limit".
 LimitFor = Callable[[CategoryKey], int | None]
+
+# Which side of a boolean feature category to name, per category.
+RepoListFor = Callable[[CategoryKey], RepoList]
+
+
+def _auto_repo_list(_key: CategoryKey) -> RepoList:
+    return RepoList.AUTO
+
+
+@dataclass(frozen=True)
+class FooterOptions:
+    """How every render surface fills a category's summary footer.
+
+    Built once per organisation from its report configuration and handed to
+    each surface, so the terminal, Slack, Markdown and HTML outputs agree on
+    what a footer names. The report model stays free of configuration: these
+    are resolved values, not the config objects that produced them.
+    """
+
+    repo_list: RepoListFor = _auto_repo_list
+    excluded: ExcludedDisplay = ExcludedDisplay.ALWAYS_SHOW
+
+    def excluded_shown(self, org: OrgReport, key: CategoryKey) -> Sequence[Repo]:
+        """The excluded repositories category ``key``'s footer should show.
+
+        Empty when the line is hidden, so the footer drops it entirely -- a
+        clean category then collapses to ``All <pass>``, which is accurate: the
+        report's "N repositories analysed" already leaves excluded repositories
+        out, so "All" describes the same set every other count does.
+        ``conditional-hide`` compares by name, so a category whose list merely
+        arrives in a different order still counts as matching the baseline.
+        """
+        own = org.excluded_for(key)
+        if self.excluded is ExcludedDisplay.ALWAYS_HIDE:
+            return ()
+        if self.excluded is ExcludedDisplay.CONDITIONAL_HIDE and {
+            repo.full_name for repo in own
+        } == {repo.full_name for repo in org.excluded_repos}:
+            return ()
+        return own
+
+
+DEFAULT_FOOTER = FooterOptions()
 
 
 def limit_resolver(top_n: int | None, limit: LimitFor | None) -> LimitFor:

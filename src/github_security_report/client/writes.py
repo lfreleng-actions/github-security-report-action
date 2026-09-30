@@ -134,3 +134,23 @@ class GitHubClient(ReadClient):
         note = "" if ok else self._write_note(resp)
         await resp.aclose()
         return ok, note
+
+    async def enable_auto_merge(self, org: str, repo: str) -> tuple[bool, str]:
+        """Allow auto-merge on a repository. Returns ``(ok, note)``.
+
+        ``PATCH /repos/{o}/{r}`` with ``allow_auto_merge`` returns the updated
+        repository (``200``); any other status is a failure whose note carries
+        the status and body. The write only offers the option -- it grants no
+        pull request a merge it could not already have had -- but an archived
+        repository rejects the patch outright, which is reported as a failure
+        rather than retried.
+        """
+        resp = await self._request(
+            "PATCH",
+            f"{self._api_url}/repos/{org}/{repo}",
+            json={"allow_auto_merge": True},
+        )
+        ok = resp.status_code == 200
+        note = "" if ok else self._write_note(resp)
+        await resp.aclose()
+        return ok, note

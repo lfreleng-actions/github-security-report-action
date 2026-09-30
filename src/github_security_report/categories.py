@@ -44,6 +44,7 @@ class CategoryKey(str, Enum):
     RELEASES = "releases"
     MUTABLE_RELEASES = "mutable_releases"
     PRIVATE_VULNERABILITY_REPORTING = "private_vulnerability_reporting"
+    AUTO_MERGE = "auto_merge"
     GITHUB_ISSUES = "github_issues"
     PULL_REQUESTS = "pull_requests"
     PULL_REQUESTS_ASSIGNED = "pull_requests_assigned"
@@ -273,6 +274,28 @@ _CATEGORIES: dict[CategoryKey, CategoryMeta] = {
             "instead of disclosing them publicly."
         ),
     ),
+    CategoryKey.AUTO_MERGE: CategoryMeta(
+        key=CategoryKey.AUTO_MERGE,
+        title="Auto-merge",
+        pass_label="Enabled",
+        fail_label="Not enabled",
+        url=(
+            "https://docs.github.com/en/pull-requests/collaborating-with-"
+            "pull-requests/incorporating-changes-from-a-pull-request/"
+            "automatically-merging-a-pull-request"
+        ),
+        description=(
+            "Repositories with the 'Allow auto-merge' setting switched off, so "
+            "a pull request cannot be queued to merge itself once its "
+            "requirements are met. The setting only offers the option: an "
+            "auto-merging pull request still waits for the required checks, "
+            "reviews and branch protections the repository already enforces, "
+            "so enabling it relaxes nothing. What it removes is the interval "
+            "between a change becoming mergeable and somebody noticing -- the "
+            "window a reviewed dependency update sits in while the "
+            "vulnerability it fixes stays unpatched."
+        ),
+    ),
     CategoryKey.GITHUB_ISSUES: CategoryMeta(
         key=CategoryKey.GITHUB_ISSUES,
         title="GitHub Issues",
@@ -364,6 +387,21 @@ NESTED_CATEGORIES: frozenset[CategoryKey] = frozenset(
         CategoryKey.DEPENDABOT_ALERTS_ENABLED,
         CategoryKey.DEPENDABOT_UPDATES_ENABLED,
         CategoryKey.DEPENDABOT_COOLDOWN,
+    }
+)
+
+# The boolean feature categories: every repository is either enabled or not, and
+# nothing else is known about it, so both sides are plain repository lists and
+# either can be the one worth naming. These render their names inline rather
+# than as a one-column table, and are the only categories the ``repo_list``
+# setting applies to -- the schema refuses it anywhere else, since a table with
+# qualitative columns has no "enabled" list to swap in.
+REPO_LIST_CATEGORIES: frozenset[CategoryKey] = frozenset(
+    {
+        CategoryKey.DEPENDABOT_ALERTS_ENABLED,
+        CategoryKey.DEPENDABOT_UPDATES_ENABLED,
+        CategoryKey.PRIVATE_VULNERABILITY_REPORTING,
+        CategoryKey.AUTO_MERGE,
     }
 )
 

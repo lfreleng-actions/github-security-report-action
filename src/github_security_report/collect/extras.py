@@ -2,12 +2,13 @@
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 """Reporting categories outside the four-state per-signal model.
 
-Dependabot configuration posture, release/tag freshness, release mutability and
-private vulnerability reporting are rendered as standalone tables rather than
-as pass/fail signals, so they are assembled here once the signal report exists.
-The Dependabot alerts enablement flag and the release/tag data are reused from
-the batched GraphQL prefetch; the security-updates and
-private-vulnerability-reporting flags are still per-repo REST calls.
+Dependabot configuration posture, release/tag freshness, release mutability,
+private vulnerability reporting and the auto-merge setting are rendered as
+standalone tables rather than as pass/fail signals, so they are assembled here
+once the signal report exists. The Dependabot alerts enablement flag, the
+auto-merge flag and the release/tag data are reused from the batched GraphQL
+prefetch; the security-updates and private-vulnerability-reporting flags are
+still per-repo REST calls.
 """
 
 from __future__ import annotations
@@ -41,14 +42,14 @@ log = logging.getLogger(__name__)
 async def _posture_for_repo(repo: Repo, ctx: OrgCollectContext) -> RepoPosture:
     """Build one repo's Dependabot posture and release/tag freshness.
 
-    The Dependabot-alerts flag and the release/tag/``dependabot.yml`` data come
-    from the batched GraphQL prefetch; the security-updates and
-    private-vulnerability-reporting flags remain per-repo REST calls, since
-    GitHub exposes no GraphQL equivalent. They are independent, so they are
-    gathered together and the two reads overlap (bounded by the client
-    semaphore); private vulnerability reporting is always probed, like every
-    other signal, with the per-category toggle governing only whether the
-    resulting table renders.
+    The Dependabot-alerts flag, the auto-merge setting and the
+    release/tag/``dependabot.yml`` data come from the batched GraphQL prefetch;
+    the security-updates and private-vulnerability-reporting flags remain
+    per-repo REST calls, since GitHub exposes no GraphQL equivalent. They are
+    independent, so they are gathered together and the two reads overlap
+    (bounded by the client semaphore); private vulnerability reporting is always
+    probed, like every other signal, with the per-category toggle governing only
+    whether the resulting table renders.
     """
     graph = ctx.graph_for(repo.name)
     security_updates, pvr = await asyncio.gather(
@@ -67,6 +68,7 @@ async def _posture_for_repo(repo: Repo, ctx: OrgCollectContext) -> RepoPosture:
         dependabot_alerts=graph.dependabot_alerts_enabled,
         security_updates=security_updates,
         private_vulnerability_reporting=pvr,
+        auto_merge=graph.auto_merge_allowed,
         cooldown_missing=cooldown_missing,
         has_dependabot_config=config_text is not None,
         latest_release_at=graph.latest_release_at,
@@ -97,6 +99,7 @@ async def attach_extra_tables(
     )
     report.mutable_releases = posture.build_mutable_releases_table(postures)
     report.private_vulnerability_reporting = posture.build_pvr_table(postures)
+    report.auto_merge = posture.build_auto_merge_table(postures)
     # Organisation membership is collected once and reused by both author-aware
     # tables, so classifying contributions costs one query rather than a probe
     # per author. It is the token-independent basis for "outside the

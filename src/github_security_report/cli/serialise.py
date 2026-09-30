@@ -120,6 +120,7 @@ def _org_to_dict(org: OrgReport, hidden: Collection[CategoryKey] = ()) -> dict:
         "releases": table(org.releases),
         "mutable_releases": table(org.mutable_releases),
         "private_vulnerability_reporting": table(org.private_vulnerability_reporting),
+        "auto_merge": table(org.auto_merge),
         "issues": table(org.issues),
         "pull_requests": table(org.pull_requests),
         "assigned_pull_requests": table(org.assigned_pull_requests),

@@ -6,8 +6,11 @@ from __future__ import annotations
 
 import datetime as dt
 
+import pytest
+
 from github_security_report import posture, report
 from github_security_report.models import ReleaseRef, Repo
+from github_security_report.report import RepoList
 
 NOW = dt.datetime(2026, 6, 18, 12, 0, tzinfo=dt.timezone.utc)
 
@@ -201,6 +204,123 @@ def test_pvr_table_all_enabled_summary() -> None:
     assert (table.fail_count, table.pass_count, table.unknown_count) == (0, 2, 0)
     lines = report.build_summary(table.summary_counts())
     assert [(line.kind, line.text) for line in lines] == [("pass", "All Enabled")]
+
+
+def test_auto_merge_table_lists_disabled_sorted() -> None:
+    postures = [
+        posture.RepoPosture(repo=_repo("zeta"), auto_merge=False),
+        posture.RepoPosture(repo=_repo("alpha"), auto_merge=False),
+        posture.RepoPosture(repo=_repo("on"), auto_merge=True),
+        posture.RepoPosture(repo=_repo("dunno"), auto_merge=None),
+    ]
+    table = posture.build_auto_merge_table(postures)
+    assert table.title == "Auto-merge"
+    assert table.columns == ("Repository",)
+    assert [r.repo.name for r in table.rows] == ["alpha", "zeta"]
+    # The indeterminate (None) repo counts towards neither pass nor fail.
+    assert (table.fail_count, table.pass_count, table.unknown_count) == (2, 1, 1)
+
+
+def test_auto_merge_table_all_enabled_summary() -> None:
+    table = posture.build_auto_merge_table(
+        [
+            posture.RepoPosture(repo=_repo("a"), auto_merge=True),
+            posture.RepoPosture(repo=_repo("b"), auto_merge=True),
+        ]
+    )
+    assert table.rows == []
+    assert (table.fail_count, table.pass_count, table.unknown_count) == (0, 2, 0)
+    lines = report.build_summary(table.summary_counts())
+    assert [(line.kind, line.text) for line in lines] == [("pass", "All Enabled")]
+
+
+def _auto_merge(enabled: int, disabled: int) -> report.TableSection:
+    """An Auto-merge table with ``enabled`` repos on and ``disabled`` off."""
+    return posture.build_auto_merge_table(
+        [
+            *(
+                posture.RepoPosture(repo=_repo(f"on{i}"), auto_merge=True)
+                for i in range(enabled)
+            ),
+            *(
+                posture.RepoPosture(repo=_repo(f"off{i}"), auto_merge=False)
+                for i in range(disabled)
+            ),
+        ]
+    )
+
+
+def _named(table: report.TableSection, repo_list: RepoList) -> dict[str, tuple]:
+    """The footer buckets that name repositories, keyed by kind."""
+    return {
+        count.kind: count.names
+        for count in table.summary_counts(repo_list=repo_list)
+        if count.names
+    }
+
+
+def test_feature_table_carries_its_enabled_repositories_sorted() -> None:
+    table = posture.build_auto_merge_table(
+        [
+            posture.RepoPosture(repo=_repo("zeta"), auto_merge=True),
+            posture.RepoPosture(repo=_repo("alpha"), auto_merge=True),
+            posture.RepoPosture(repo=_repo("off"), auto_merge=False),
+            posture.RepoPosture(repo=_repo("dunno"), auto_merge=None),
+        ]
+    )
+    # Indeterminate repositories are named on neither side.
+    assert [r.name for r in table.pass_repos] == ["alpha", "zeta"]
+    assert table.pass_count == 2
+
+
+@pytest.mark.parametrize(
+    ("enabled", "disabled", "expected"),
+    [
+        # The case that motivated the setting: a rare feature lists its few
+        # adopters rather than every holdout.
+        (3, 118, "pass"),
+        # A near-universal feature lists its few holdouts.
+        (118, 3, "fail"),
+        # A tie keeps the actionable side in view.
+        (5, 5, "fail"),
+        # Nothing is enabled: naming the empty side would print nothing where
+        # a reader wants the repositories to fix, so the offenders stay listed.
+        (0, 7, "fail"),
+        # Nothing needs fixing: the empty offender list wins, so a clean
+        # category does not enumerate every repository beneath "All Enabled".
+        (7, 0, "fail"),
+    ],
+)
+def test_auto_names_the_shorter_list(
+    enabled: int, disabled: int, expected: str
+) -> None:
+    assert _auto_merge(enabled, disabled).listed_kind(RepoList.AUTO) == expected
+
+
+def test_forced_sides_ignore_the_list_lengths() -> None:
+    table = _auto_merge(enabled=3, disabled=118)
+    assert table.listed_kind(RepoList.DISABLED) == "fail"
+    table = _auto_merge(enabled=118, disabled=3)
+    assert table.listed_kind(RepoList.ENABLED) == "pass"
+
+
+def test_the_named_side_carries_names_and_the_other_only_a_count() -> None:
+    table = _auto_merge(enabled=2, disabled=3)
+    assert _named(table, RepoList.AUTO) == {"pass": ("on0", "on1")}
+    assert _named(table, RepoList.DISABLED) == {"fail": ("off0", "off1", "off2")}
+    # Both sides stay counted whichever is named.
+    counts = {c.kind: c.count for c in table.summary_counts(repo_list=RepoList.AUTO)}
+    assert (counts["pass"], counts["fail"]) == (2, 3)
+
+
+def test_a_qualitative_table_names_neither_side() -> None:
+    # Cooldown lists ecosystems per repository; there is no "enabled" list to
+    # swap in, so the setting does not apply to it.
+    table = posture.build_cooldown_table(
+        [posture.RepoPosture(repo=_repo("a"), cooldown_missing=("pip",))]
+    )
+    assert table.listed_kind(RepoList.ENABLED) is None
+    assert _named(table, RepoList.ENABLED) == {}
 
 
 def test_cooldown_table_lists_repos_missing_cooldown() -> None:

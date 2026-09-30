@@ -144,16 +144,7 @@ def default_items(org: OrgReport) -> list[LayoutItem]:
         for section in org.sections
     ]
     items.extend(
-        LayoutItem(table)
-        for table in (
-            org.releases,
-            org.mutable_releases,
-            org.private_vulnerability_reporting,
-            org.issues,
-            org.pull_requests,
-            org.assigned_pull_requests,
-        )
-        if table is not None
+        LayoutItem(table) for table in org.standalone_tables if table is not None
     )
     return items
 

@@ -264,6 +264,11 @@ def report(
     raise typer.Exit(code)
 
 
+# Derived from the remediator registry rather than restated, so adding a
+# remediable category cannot leave the help text naming the previous set.
+_REMEDIABLE_HELP = ", ".join(key.value for key in remediate_mod.REMEDIABLE)
+
+
 @app.command()
 def remediate(
     config_file: str | None = typer.Option(
@@ -283,7 +288,7 @@ def remediate(
     category: list[str] | None = typer.Option(
         None,
         "--category",
-        help="Remediable category to act on (repeatable; default: all). One of: codeql, secret_scanning, dependabot_alerts_enabled, dependabot_updates_enabled, private_vulnerability_reporting.",
+        help=f"Remediable category to act on (repeatable; default: all). One of: {_REMEDIABLE_HELP}.",
     ),
     token_env: str | None = typer.Option(
         None,

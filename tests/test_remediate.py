@@ -58,6 +58,7 @@ def _report() -> OrgReport:
         private_vulnerability_reporting=_table(
             CategoryKey.PRIVATE_VULNERABILITY_REPORTING, ["pvr-a"]
         ),
+        auto_merge=_table(CategoryKey.AUTO_MERGE, ["am-a"]),
     )
 
 
@@ -93,6 +94,9 @@ class FakeClient:
     async def enable_secret_scanning(self, o: str, r: str) -> tuple[bool, str]:
         return await self._do("secret", o, r)
 
+    async def enable_auto_merge(self, o: str, r: str) -> tuple[bool, str]:
+        return await self._do("auto_merge", o, r)
+
 
 def _by_key(results: list[remediate.CategoryRemediation]) -> dict:
     return {r.category.key: r for r in results}
@@ -105,6 +109,7 @@ def test_remediable_set_excludes_qualitative_categories() -> None:
         CategoryKey.DEPENDABOT_ALERTS_ENABLED,
         CategoryKey.DEPENDABOT_UPDATES_ENABLED,
         CategoryKey.PRIVATE_VULNERABILITY_REPORTING,
+        CategoryKey.AUTO_MERGE,
     )
     for excluded in (
         CategoryKey.SCORECARD,
@@ -142,6 +147,7 @@ async def test_apply_enables_each_offender_via_the_right_endpoint() -> None:
         ("updates", "o", "du-a"),
         ("updates", "o", "du-b"),
         ("pvr", "o", "pvr-a"),
+        ("auto_merge", "o", "am-a"),
     }
     assert all(o.action == "enabled" for result in results for o in result.outcomes)
     assert sum(r.failures for r in results) == 0
@@ -196,6 +202,19 @@ async def test_selected_category_with_no_offenders_is_still_reported() -> None:
         apply=True,
     )
     assert len(results) == 1
+    assert results[0].outcomes == ()
+    assert client.calls == []
+
+
+async def test_uncollected_standalone_table_yields_no_offenders() -> None:
+    # Repo mode never builds the standalone posture tables, so a category whose
+    # table is absent must remediate nothing rather than fail looking for it.
+    report = _report()
+    report.auto_merge = None
+    client = FakeClient()
+    results = await remediate.remediate_org(
+        client, report, categories=[CategoryKey.AUTO_MERGE], apply=True
+    )
     assert results[0].outcomes == ()
     assert client.calls == []
 

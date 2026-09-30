@@ -58,6 +58,8 @@ class RemediationClient(Protocol):
 
     async def enable_secret_scanning(self, org: str, repo: str) -> tuple[bool, str]: ...
 
+    async def enable_auto_merge(self, org: str, repo: str) -> tuple[bool, str]: ...
+
 
 # Actions a repository outcome can carry. "would enable" is the dry-run preview;
 # "enabled" and "FAILED" are the two terminal states after an apply.
@@ -109,12 +111,9 @@ def _nag_offenders(signal: SignalType) -> Callable[[OrgReport], list[Repo]]:
 
 
 def _find_table(report: OrgReport, key: CategoryKey) -> TableSection | None:
-    """The posture table for ``key`` (Dependabot sub-tables or the PVR table)."""
-    candidates = list(report.dependabot_tables)
-    if report.private_vulnerability_reporting is not None:
-        candidates.append(report.private_vulnerability_reporting)
-    for table in candidates:
-        if table.category.key is key:
+    """The posture table for ``key``, whether nested or a section of its own."""
+    for table in (*report.dependabot_tables, *report.standalone_tables):
+        if table is not None and table.category.key is key:
             return table
     return None
 
@@ -164,6 +163,11 @@ _REMEDIATORS: tuple[_Remediator, ...] = (
         CategoryKey.PRIVATE_VULNERABILITY_REPORTING,
         _table_offenders(CategoryKey.PRIVATE_VULNERABILITY_REPORTING),
         lambda c, o, r: c.enable_private_vulnerability_reporting(o, r),
+    ),
+    _Remediator(
+        CategoryKey.AUTO_MERGE,
+        _table_offenders(CategoryKey.AUTO_MERGE),
+        lambda c, o, r: c.enable_auto_merge(o, r),
     ),
 )
 

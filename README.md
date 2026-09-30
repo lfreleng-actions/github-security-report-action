@@ -74,6 +74,20 @@ tables (org mode):
   exposes no org-wide or GraphQL equivalent) and, like every other category,
   always collected; hide it with the `private_vulnerability_reporting` render
   toggle.
+- **Auto-merge** — repositories where the **Allow auto-merge** setting is off,
+  so a pull request cannot be queued to merge itself once its requirements are
+  met. The setting only offers the option: an auto-merging pull request still
+  waits for the required checks, reviews and branch protections the repository
+  already enforces, so enabling it relaxes nothing. What it removes is the
+  interval between a change becoming mergeable and somebody noticing — the
+  window a reviewed dependency update sits in while the vulnerability it fixes
+  stays unpatched. Read from the batched GraphQL prefetch, so it costs no extra
+  request; hide it with the `auto_merge` render toggle.
+
+The four enablement categories count the repositories with and without the
+feature (plus any whose state could not be read), and by default name whichever
+known list is shorter — see
+[Enabled or disabled repository lists](#enabled-or-disabled-repository-lists).
 
 ## Operating modes
 
@@ -311,6 +325,23 @@ The per-org `exclude` list removes repositories from analysis entirely; they are
 reported as **excluded** (distinct from "not enabled"), so an intentional
 exclusion is visible rather than silently dropped.
 
+Every category reports those exclusions beneath its counts, so an
+organisation-wide list repeats under each one. `report.excluded_display`
+governs that line on every surface:
+
+| Value | Excluded line |
+| ----- | ------------- |
+| `always-show` (default) | Shown under every category |
+| `always-hide` | Never shown |
+| `conditional-hide` | Shown only for a category whose exclusions differ from the organisation's `exclude` list, and then in full |
+
+Hiding the line changes nothing else: every count is unaffected, and the report
+header's repository count already leaves excluded repositories out. So a clean
+category reads `All Clean` once no Excluded line qualifies it. Today every
+category reports the organisation's own list, so `conditional-hide` currently
+hides the same lines `always-hide` does. It differs once a category excludes
+repositories of its own. The `report.json` artifact always lists the exclusions.
+
 Archived and test repositories are excluded from analysis by default. Opt them
 back in with `report.include_archived` / `report.include_test` in the config, or
 for a single run with `--include-archived` / `--include-test`.
@@ -343,7 +374,8 @@ out of the terminal and Slack while still publishing it to the Markdown and HTML
 Pages output. The valid category keys are: `codeql`, `scorecard`, `zizmor`,
 `aislop`, `dependabot_alerts`, `secret_scanning`, `dependabot_alerts_enabled`,
 `dependabot_updates_enabled`, `dependabot_cooldown`, `releases`,
-`mutable_releases`, `private_vulnerability_reporting`, `github_issues`. Like the
+`mutable_releases`, `private_vulnerability_reporting`, `auto_merge`,
+`github_issues`. Like the
 other `report`
 settings, `categories` can be set
 globally and overridden per organisation (overrides merge key-by-key, so
@@ -409,6 +441,52 @@ Slack-style ceiling, but they still apply their own row limits — only the
 `report.json` artifact is unconditionally complete. The digest links to the
 GitHub Pages report whenever `pages_url` is set and short enough to render as a
 link.
+
+### Enabled or disabled repository lists
+
+The four boolean feature categories — `dependabot_alerts_enabled`,
+`dependabot_updates_enabled`, `private_vulnerability_reporting` and `auto_merge`
+— sort each repository into one of three buckets: enabled, not enabled, or
+**unknown** when the feature's state could not be read. The unknown bucket is
+counted but never named, and never treated as either side, so the enabled and
+not-enabled counts need not sum to the repositories analysed. Beneath the counts,
+one of the two known sides is named; `report.repo_list` chooses which, on every
+surface:
+
+| Value | Names |
+| ----- | ----- |
+| `auto` (default) | Whichever list is shorter |
+| `enabled` | The repositories with the feature on |
+| `disabled` | The repositories with the feature off |
+
+`auto` keeps a footer short whichever way an organisation leans: a feature
+nearly every repository has lists its few holdouts, and one almost none have
+lists its few adopters. Two cases resolve towards the actionable side: a tie
+names the repositories without the feature, and so does a category where
+*nothing* is enabled, since naming an empty list would print nothing where a
+reader wants the repositories to fix. Both sides are always counted, whichever is
+named.
+
+A category can override the global value:
+
+```json
+{
+  "report": {
+    "repo_list": "auto",
+    "categories": {
+      "dependabot_alerts_enabled": { "repo_list": "disabled" }
+    }
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
+
+Here Dependabot alerts always name the repositories to fix, and the other three
+feature categories name whichever side is shorter. `repo_list` applies only to
+those four categories; setting it on any other is a configuration error, since a
+table with qualitative columns has no enabled list to name. These categories
+render as a name list rather than a one-column table on every surface. The
+`report.json` artifact is unaffected.
 
 ### Per-category row ordering
 
@@ -1369,6 +1447,7 @@ enablement endpoint:
 | `dependabot_alerts_enabled` | Dependabot vulnerability alerts |
 | `dependabot_updates_enabled` | Dependabot security updates (plus alerts) |
 | `private_vulnerability_reporting` | Private vulnerability reporting |
+| `auto_merge` | The repository's "Allow auto-merge" setting |
 
 Qualitative findings (Scorecard, zizmor, open Dependabot alerts, cooldown,
 release freshness/mutability) are reported but not auto-remediated. Remediation

@@ -386,6 +386,8 @@ def _parse_repo_node(node: dict) -> RepoGraphData:
     """
     enabled_raw = node.get("hasVulnerabilityAlertsEnabled")
     enabled = bool(enabled_raw) if enabled_raw is not None else None
+    auto_merge_raw = node.get("autoMergeAllowed")
+    auto_merge = bool(auto_merge_raw) if auto_merge_raw is not None else None
     config_obj = node.get("dependabotConfig")
     config_text = config_obj.get("text") if isinstance(config_obj, dict) else None
     window = _release_refs((node.get("releases") or {}).get("nodes") or [])
@@ -404,6 +406,7 @@ def _parse_repo_node(node: dict) -> RepoGraphData:
     open_pulls, pulls = _pull_request_refs(node.get("pullRequests"))
     return RepoGraphData(
         dependabot_alerts_enabled=enabled,
+        auto_merge_allowed=auto_merge,
         latest_tag_at=_tag_committed_date(node.get("tags")),
         latest_release_at=latest.published_at if latest else None,
         latest_release=latest,

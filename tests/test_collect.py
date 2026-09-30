@@ -60,6 +60,10 @@ class FakeClient:
         self.scores = {"dependamerge": 8.2}
         self.members: set[str] = {"insider"}
         self.viewer: str = "insider"
+        # "Allow auto-merge" per repository; absent names default to enabled.
+        # Unlike the other posture flags this one rides the GraphQL prefetch,
+        # so it is set here rather than behind a per-repo helper method.
+        self.auto_merge: dict[str, bool] = {}
 
     async def list_org_repos(self, org: str) -> tuple[int, list[Repo]]:
         return 200, self.repos
@@ -144,6 +148,7 @@ class FakeClient:
             cfg_status, cfg_text = await self.dependabot_config(org, name)
             out[name] = RepoGraphData(
                 dependabot_alerts_enabled=await self.dependabot_enabled(org, name),
+                auto_merge_allowed=self.auto_merge.get(name, True),
                 latest_tag_at=await self.latest_tag_at(org, name),
                 latest_release_at=await self.latest_release_at(org, name),
                 dependabot_config=cfg_text if cfg_status == 200 else None,
@@ -503,6 +508,8 @@ class PostureClient(FakeClient):
         # Private vulnerability reporting: on for dependamerge, off for
         # git-configure-action (so the PVR table has exactly one offender).
         self._pvr = {"dependamerge": True, "git-configure-action": False}
+        # Auto-merge: same split, so the Auto-merge table has one offender too.
+        self.auto_merge = {"dependamerge": True, "git-configure-action": False}
         self._configs = {
             "dependamerge": (
                 200,
@@ -588,6 +595,14 @@ async def test_collect_org_attaches_dependabot_tables_and_releases() -> None:
     assert pvr.title == "Private Vulnerability Reporting"
     assert [r.repo.name for r in pvr.rows] == ["git-configure-action"]
     assert (pvr.fail_count, pvr.pass_count) == (1, 1)
+
+    # Auto-merge rides the batched GraphQL prefetch rather than a probe of its
+    # own, so this also confirms the flag survives that route into the table.
+    auto_merge = report.auto_merge
+    assert auto_merge is not None
+    assert auto_merge.title == "Auto-merge"
+    assert [r.repo.name for r in auto_merge.rows] == ["git-configure-action"]
+    assert (auto_merge.fail_count, auto_merge.pass_count) == (1, 1)
 
 
 async def test_collect_org_omits_the_personal_queue_without_a_person() -> None:
