@@ -13,14 +13,24 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from urllib.parse import quote
 
+from github_security_report.client.codeql_parsers import (
+    _parse_default_setup,
+    latest_codeql_configurations,
+)
 from github_security_report.client.org_reads import OrgReadClient
 from github_security_report.client.parsers import _parse_iso
 from github_security_report.client.queries import (
     _CODE_SCANNING_SIGNAL_TOOLS,
     _DEPENDABOT_ENABLED_QUERY,
 )
-from github_security_report.models import Repo
+from github_security_report.codeql.facts import (
+    WORKFLOW_MISSING,
+    CodeQLConfiguration,
+    DefaultSetup,
+)
+from github_security_report.models import CODE_SCANNING_TOOLS, Repo, SignalType
 
 log = logging.getLogger(__name__)
 
@@ -266,3 +276,87 @@ class ReadClient(OrgReadClient):
         data = resp.json()
         await resp.aclose()  # release the connection once the body is read
         return bool(data.get("enabled"))
+
+    # ------------------------------------------------------------------ #
+    # CodeQL scan health (stale configurations, language coverage)
+    # ------------------------------------------------------------------ #
+    async def codeql_configurations(
+        self, org: str, repo: str, branch: str
+    ) -> tuple[int, tuple[CodeQLConfiguration, ...]]:
+        """Every CodeQL configuration on ``branch``, as of its latest scan.
+
+        The analyses endpoint filters by tool and ref but not by category, so
+        the whole history is walked: a stale configuration's last upload is by
+        definition buried beneath the live ones' newer analyses, and stopping
+        early would miss exactly the configurations this read exists to find.
+        A later page failing returns that status with the partial result, which
+        callers must treat as unknown.
+        """
+        status, analyses = await self._get_list(
+            f"{self._api_url}/repos/{org}/{repo}/code-scanning/analyses",
+            tool_name=CODE_SCANNING_TOOLS[SignalType.CODEQL],
+            ref=f"refs/heads/{branch}",
+        )
+        return status, latest_codeql_configurations(analyses)
+
+    async def codeql_default_setup(self, org: str, repo: str) -> DefaultSetup | None:
+        """The repository's CodeQL default-setup state (None when unreadable)."""
+        resp = await self._request(
+            "GET", f"{self._api_url}/repos/{org}/{repo}/code-scanning/default-setup"
+        )
+        if resp.status_code != 200:
+            await resp.aclose()  # unread body would leak a pooled connection
+            return None
+        body = resp.json()
+        await resp.aclose()  # release the connection once the body is read
+        return _parse_default_setup(body) if isinstance(body, dict) else None
+
+    async def workflow_state(self, org: str, repo: str, path: str) -> str | None:
+        """The Actions state of the workflow at ``path`` (None when unreadable).
+
+        ``active``, ``deleted`` or one of the ``disabled_*`` states, as GitHub
+        reports them; ``missing`` when the repository demonstrably has no such
+        workflow file, which is how a renamed or removed workflow shows up.
+
+        A ``404`` alone does not establish that: GitHub answers a token that
+        cannot see a repository's Actions the same way. Since "missing" lets a
+        cleanup treat the configuration as orphaned and delete it, absence is
+        confirmed through the contents API before it is reported; anything the
+        token cannot confirm is unreadable (``None``) instead.
+        """
+        # Encoded as one path segment: a file name may hold "?" or "#".
+        name = quote(path.rsplit("/", 1)[-1], safe="")
+        resp = await self._request(
+            "GET", f"{self._api_url}/repos/{org}/{repo}/actions/workflows/{name}"
+        )
+        status = resp.status_code
+        if status != 200:
+            await resp.aclose()  # unread body would leak a pooled connection
+            if status == 404 and await self._workflow_file_absent(org, repo, path):
+                return WORKFLOW_MISSING
+            return None
+        state = resp.json().get("state")
+        await resp.aclose()  # release the connection once the body is read
+        return state if isinstance(state, str) else None
+
+    async def _workflow_file_absent(self, org: str, repo: str, path: str) -> bool:
+        """Whether the repository's contents show no file at ``path``.
+
+        The exact path is read rather than its directory listed: the contents
+        API caps a listing at 1,000 entries, and a truncated listing could
+        omit the file. Absence is proven by that path answering ``404`` in a
+        repository whose root the token can read, so the file is truly
+        missing rather than hidden. Every other answer, including the file
+        being there after all, is inconclusive and reported as not absent.
+        """
+        base = f"{self._api_url}/repos/{org}/{repo}/contents"
+        # Each segment encoded, keeping the separators, for the same reason.
+        resp = await self._request("GET", f"{base}/{quote(path, safe='/')}")
+        status = resp.status_code
+        await resp.aclose()  # only the status matters here
+        if status != 404:
+            return False
+        resp = await self._request("GET", f"{base}/")
+        readable = resp.status_code == 200
+        await resp.aclose()  # only the status matters here
+        return readable

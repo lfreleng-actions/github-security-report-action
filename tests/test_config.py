@@ -146,6 +146,42 @@ class TestBuildConfig:
         org = config.build_config(data).organizations[0]
         assert org.report.release_max_age_days == 90
 
+    def test_codeql_stale_days_default_and_override(self) -> None:
+        assert config.build_config(MINIMAL).report.codeql_stale_days == 30
+        data = {
+            "report": {"codeql_stale_days": 45},
+            "organizations": [
+                {"name": "o"},
+                {"name": "p", "report": {"codeql_stale_days": 14}},
+            ],
+        }
+        cfg = config.build_config(data)
+        assert cfg.organizations[0].report.codeql_stale_days == 45
+        assert cfg.organizations[1].report.codeql_stale_days == 14
+
+    def test_rejects_codeql_stale_days_below_one(self) -> None:
+        # Every push briefly outruns its own scan, so 0 would flag them all.
+        with pytest.raises(ConfigError):
+            config.build_config(
+                {"report": {"codeql_stale_days": 0}, "organizations": [{"name": "o"}]}
+            )
+
+    def test_codeql_scan_health_categories_are_not_orderable(self) -> None:
+        # They nest beneath the CodeQL signal, so a position for one would be a
+        # setting that validates and then does nothing.
+        with pytest.raises(ConfigError):
+            config.build_config(
+                {
+                    "report": {
+                        "order": {
+                            "style": "single",
+                            "sequence": ["codeql_stale_configurations"],
+                        }
+                    },
+                    "organizations": [{"name": "o"}],
+                }
+            )
+
     def test_dependabot_thresholds_default_and_override(self) -> None:
         report = config.build_config(MINIMAL).report
         # The defaults track GitHub's own open-pull-requests-limit, which

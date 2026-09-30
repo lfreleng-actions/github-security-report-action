@@ -335,15 +335,16 @@ def render_org(
                     top_n=limit_for(key),
                 )
             )
-        # The Dependabot configuration-posture sub-tables normally nest beneath
-        # the Dependabot signal heading as level-3 sub-sections. When the parent
-        # signal is hidden they would otherwise become orphaned ### headings
+        # A signal's sub-tables (Dependabot posture, CodeQL scan health)
+        # normally nest beneath its heading as level-3 sub-sections. When the
+        # parent signal is hidden they would otherwise become orphaned ###
+        # headings
         # under the previous ## section, so promote them to level 2 -- keeping
         # the heading structure correct and consistent with the HTML surface,
         # which likewise promotes them to top-level sections when the parent is
         # hidden.
-        for dependabot_table in item.children:
-            table(dependabot_table, level=3 if parent_visible else 2)
+        for child in item.children:
+            table(child, level=3 if parent_visible else 2)
     return "\n".join(parts).rstrip() + "\n"
 
 

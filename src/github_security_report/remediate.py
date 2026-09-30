@@ -112,7 +112,7 @@ def _nag_offenders(signal: SignalType) -> Callable[[OrgReport], list[Repo]]:
 
 def _find_table(report: OrgReport, key: CategoryKey) -> TableSection | None:
     """The posture table for ``key``, whether nested or a section of its own."""
-    for table in (*report.dependabot_tables, *report.standalone_tables):
+    for table in (*report.nested_tables, *report.standalone_tables):
         if table is not None and table.category.key is key:
             return table
     return None
