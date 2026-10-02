@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import socket
@@ -2968,3 +2969,296 @@ async def test_workflow_lookups_encode_the_file_name(client: GitHubClient) -> No
     state = await client.workflow_state("o", "r", ".github/workflows/code#ql?.yml")
     assert state == "missing"
     assert actions.called and contents.called
+
+
+# --------------------------------------------------------------------------- #
+# CodeQL configuration cleanup (writes)
+# --------------------------------------------------------------------------- #
+_ANALYSES = f"{API}/repos/o/r/code-scanning/analyses"
+
+
+@respx.mock
+async def test_delete_codeql_analyses_walks_newest_first(client: GitHubClient) -> None:
+    # Only a configuration's newest analysis is deletable at any moment, so
+    # the ids must be deleted in the order given, each with confirm_delete
+    # (the last in a set is refused without it).
+    client.mutation_interval_seconds = 0
+    routes = [
+        respx.delete(f"{_ANALYSES}/{analysis_id}").mock(
+            return_value=httpx.Response(
+                200, json={"next_analysis_url": None, "confirm_delete_url": None}
+            )
+        )
+        for analysis_id in (3, 2, 1)
+    ]
+    ok, note = await client.delete_codeql_analyses("o", "r", (3, 2, 1))
+    assert (ok, note) == (True, "3 analyses deleted")
+    assert [r.calls.last.request.url.params["confirm_delete"] for r in routes] == [
+        "true"
+    ] * 3
+    order = [str(call.request.url).split("?")[0] for call in respx.calls]
+    assert order == [f"{_ANALYSES}/{i}" for i in (3, 2, 1)]
+
+
+@respx.mock
+async def test_cleanup_mutations_are_paced_across_targets(
+    client: GitHubClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # GitHub asks for a second between mutating requests. The spacing is
+    # client-wide, so it holds across targets: the last deletion of one
+    # configuration and the first of the next, and a workflow re-enable after
+    # them, are as far apart as two deletions within one configuration.
+    clock = [100.0]
+    sent: list[float] = []
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "time", lambda: clock[0])
+
+    async def fake_sleep(seconds: float) -> None:
+        clock[0] += seconds
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    def record(request: httpx.Request) -> httpx.Response:
+        sent.append(clock[0])
+        return httpx.Response(204 if request.method == "PUT" else 200, json={})
+
+    respx.delete(url__startswith=_ANALYSES).mock(side_effect=record)
+    respx.put(url__startswith=f"{API}/repos/o/r/actions/workflows/").mock(
+        side_effect=record
+    )
+    await client.delete_codeql_analyses("o", "r", (2, 1))
+    await client.delete_codeql_analyses("o", "r", (4, 3))
+    await client.enable_workflow("o", "r", ".github/workflows/codeql.yml")
+    gaps = [later - earlier for earlier, later in zip(sent, sent[1:], strict=False)]
+    assert len(sent) == 5
+    assert all(gap >= client.mutation_interval_seconds for gap in gaps), gaps
+
+
+@respx.mock
+async def test_delete_codeql_analyses_skips_one_already_gone(
+    client: GitHubClient,
+) -> None:
+    # A 404 is an analysis an interrupted run already removed, or the listing
+    # lagging a deletion -- once reading it back confirms it: skip it, so a
+    # re-run resumes rather than failing.
+    client.mutation_interval_seconds = 0
+    respx.delete(f"{_ANALYSES}/2").mock(return_value=httpx.Response(200, json={}))
+    respx.delete(f"{_ANALYSES}/1").mock(
+        return_value=httpx.Response(404, json={"message": "No analysis found"})
+    )
+    respx.get(f"{_ANALYSES}/1").mock(return_value=httpx.Response(404))
+    assert await client.delete_codeql_analyses("o", "r", (2, 1)) == (
+        True,
+        "1 analysis deleted",
+    )
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("read_back", "reason"),
+    [
+        (
+            httpx.Response(200, json={"id": 1}),
+            "delete refused (404) though the analysis still exists",
+        ),
+        (
+            httpx.Response(403, headers={"x-ratelimit-remaining": "4999"}),
+            "could not confirm the analysis was already gone",
+        ),
+    ],
+    ids=["masked-permission", "unconfirmed"],
+)
+async def test_delete_codeql_analyses_fails_closed_on_an_unproven_404(
+    client: GitHubClient, read_back: httpx.Response, reason: str
+) -> None:
+    # GitHub answers a token that may not delete with 404, so an unverified
+    # 404 must not pass for "already gone": that would report a cleanup that
+    # never happened, with the configuration still in place.
+    client.mutation_interval_seconds = 0
+    respx.delete(f"{_ANALYSES}/1").mock(
+        return_value=httpx.Response(404, json={"message": "Not Found"})
+    )
+    respx.get(f"{_ANALYSES}/1").mock(return_value=read_back)
+    never = respx.delete(f"{_ANALYSES}/0")
+    ok, note = await client.delete_codeql_analyses("o", "r", (1, 0))
+    assert ok is False
+    assert note.startswith(f"stopped after 0 of 2: {reason}")
+    assert not never.called
+
+
+@respx.mock
+async def test_delete_codeql_analyses_stops_on_failure(client: GitHubClient) -> None:
+    client.mutation_interval_seconds = 0
+    respx.delete(f"{_ANALYSES}/3").mock(return_value=httpx.Response(200, json={}))
+    respx.delete(f"{_ANALYSES}/2").mock(
+        return_value=httpx.Response(
+            400,
+            json={"message": "Analysis specified is not deletable."},
+            headers={"x-ratelimit-remaining": "4999"},
+        )
+    )
+    never = respx.delete(f"{_ANALYSES}/1")
+    ok, note = await client.delete_codeql_analyses("o", "r", (3, 2, 1))
+    assert ok is False
+    assert note.startswith("stopped after 1 of 3: 400")
+    assert not never.called
+
+
+@respx.mock
+@pytest.mark.parametrize(("status", "ok"), [(204, True), (403, False)])
+async def test_enable_workflow(client: GitHubClient, status: int, ok: bool) -> None:
+    route = respx.put(f"{API}/repos/o/r/actions/workflows/codeql.yml/enable").mock(
+        return_value=httpx.Response(status, headers={"x-ratelimit-remaining": "4999"})
+    )
+    result, _note = await client.enable_workflow(
+        "o", "r", ".github/workflows/codeql.yml"
+    )
+    assert route.called
+    assert result is ok
+
+
+@respx.mock
+async def test_codeql_alert_holders_lists_each_alerts_categories(
+    client: GitHubClient,
+) -> None:
+    # One entry per open alert on the branch: the categories still reporting
+    # it there, which the cleanup judges its whole deletion set against.
+    stale, live = "/language:python", ".github/workflows/codeql.yml:analyze"
+    listing = respx.get(f"{API}/repos/o/r/code-scanning/alerts").mock(
+        return_value=httpx.Response(200, json=[{"number": 1}, {"number": 2}])
+    )
+    respx.get(f"{API}/repos/o/r/code-scanning/alerts/1/instances").mock(
+        return_value=httpx.Response(200, json=[{"category": stale, "state": "open"}])
+    )
+    respx.get(f"{API}/repos/o/r/code-scanning/alerts/2/instances").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"category": stale, "state": "open"},
+                {"category": live, "state": "open"},
+            ],
+        )
+    )
+    assert await client.codeql_alert_holders("o", "r", "main") == [
+        frozenset({stale}),
+        frozenset({stale, live}),
+    ]
+    # The listing is filtered to the branch, so alerts elsewhere cost nothing.
+    assert listing.calls.last.request.url.params["ref"] == "refs/heads/main"
+
+
+@respx.mock
+async def test_codeql_alert_holders_unreadable_is_none(
+    client: GitHubClient,
+) -> None:
+    # An unknown answer must stop a deletion, never permit one.
+    respx.get(f"{API}/repos/o/r/code-scanning/alerts").mock(
+        return_value=httpx.Response(403, headers={"x-ratelimit-remaining": "4999"})
+    )
+    assert await client.codeql_alert_holders("o", "r", "main") is None
+
+
+@respx.mock
+async def test_codeql_alert_holders_fails_closed_on_an_unknown_category(
+    client: GitHubClient,
+) -> None:
+    # An instance with no category could be the configuration keeping the
+    # alert open; dropping it would shrink the holder set and let a cleanup
+    # close the alert, so the whole answer is unreadable instead.
+    respx.get(f"{API}/repos/o/r/code-scanning/alerts").mock(
+        return_value=httpx.Response(200, json=[{"number": 1}])
+    )
+    respx.get(f"{API}/repos/o/r/code-scanning/alerts/1/instances").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"category": "/language:python", "state": "open"},
+                {"category": None, "state": "open"},
+            ],
+        )
+    )
+    assert await client.codeql_alert_holders("o", "r", "main") is None
+
+
+@respx.mock
+async def test_codeql_alert_holders_ignore_fixed_instances(
+    client: GitHubClient,
+) -> None:
+    # Only an open instance keeps an alert open. Counting a configuration
+    # whose instance is already fixed would make a sole open holder look
+    # shared, and let a cleanup delete it and close the alert.
+    respx.get(f"{API}/repos/o/r/code-scanning/alerts").mock(
+        return_value=httpx.Response(200, json=[{"number": 1}])
+    )
+    respx.get(f"{API}/repos/o/r/code-scanning/alerts/1/instances").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"category": "A", "state": "open"},
+                {"category": "B", "state": "fixed"},
+            ],
+        )
+    )
+    assert await client.codeql_alert_holders("o", "r", "main") == [frozenset({"A"})]
+
+
+@respx.mock
+@pytest.mark.parametrize("state", [None, "dismissed", 7])
+async def test_codeql_alert_holders_fail_closed_on_an_unknown_state(
+    client: GitHubClient, state: object
+) -> None:
+    respx.get(f"{API}/repos/o/r/code-scanning/alerts").mock(
+        return_value=httpx.Response(200, json=[{"number": 1}])
+    )
+    respx.get(f"{API}/repos/o/r/code-scanning/alerts/1/instances").mock(
+        return_value=httpx.Response(200, json=[{"category": "A", "state": state}])
+    )
+    assert await client.codeql_alert_holders("o", "r", "main") is None
+
+
+@respx.mock
+async def test_enable_workflow_encodes_the_file_name(client: GitHubClient) -> None:
+    # The re-enable must reach the same workflow the read identified, even
+    # when its file name holds a character a URL would otherwise misread.
+    route = respx.put(
+        f"{API}/repos/o/r/actions/workflows/code%23ql%3F.yml/enable"
+    ).mock(return_value=httpx.Response(204))
+    ok, _note = await client.enable_workflow("o", "r", ".github/workflows/code#ql?.yml")
+    assert ok is True
+    assert route.called
+
+
+@respx.mock
+async def test_mutation_spacing_counts_from_the_last_retry(
+    client: GitHubClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The transport retries a 5xx itself, after a backoff. The next mutation
+    # must be spaced from that late retry, not from the first attempt.
+    clock = [100.0]
+    sent: list[float] = []
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "time", lambda: clock[0])
+
+    async def fake_sleep(seconds: float) -> None:
+        clock[0] += seconds
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(transport_mod.asyncio, "sleep", fake_sleep)
+    responses = iter(
+        [
+            httpx.Response(502, headers={"x-ratelimit-remaining": "4999"}),
+            httpx.Response(200, json={}),
+            httpx.Response(200, json={}),
+        ]
+    )
+
+    def record(request: httpx.Request) -> httpx.Response:
+        sent.append(clock[0])
+        return next(responses)
+
+    respx.delete(url__startswith=_ANALYSES).mock(side_effect=record)
+    assert (await client.delete_codeql_analyses("o", "r", (2,)))[0] is True
+    assert (await client.delete_codeql_analyses("o", "r", (1,)))[0] is True
+    # sent[1] is the successful retry; the next delete waits from it.
+    assert len(sent) == 3
+    assert sent[2] - sent[1] >= client.mutation_interval_seconds

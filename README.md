@@ -363,7 +363,8 @@ organisation, as `--top-n` does.
 
 The per-org `exclude` list removes repositories from analysis entirely; they are
 reported as **excluded** (distinct from "not enabled"), so an intentional
-exclusion is visible rather than silently dropped.
+exclusion is visible rather than silently dropped. Entries match repository
+names case-insensitively, as GitHub does.
 
 Every category reports those exclusions beneath its counts, so an
 organisation-wide list repeats under each one. `report.excluded_display`
@@ -1475,7 +1476,29 @@ uvx github-security-report remediate \
 # Limit to specific categories (repeatable).
 uvx github-security-report remediate --org lfreleng-actions \
   --category codeql --category private_vulnerability_reporting --apply
+
+# Limit to specific repositories, for any category (comma-separated and/or
+# repeatable; `name` in any configured org, or `owner/name`).
+uvx github-security-report remediate --org lfreleng-actions \
+  --repos dependamerge,python-nss-ng --apply
 ```
+
+`--repos` narrows the run itself, not just its output. Everything done per
+repository (the feature probes, the batched prefetch, the CodeQL history walk
+and every write) covers only the named repositories, so a targeted run skips
+the bulk of a full one. The organisation-wide alert sweeps are the exception:
+each is a single org-bulk request, so its cost follows the organisation's open
+alert backlog rather than its repository count. It combines with
+`--category`. Every name is checked against every configured organisation
+before anything is written: a name that matches no repository (almost always
+a typo), or one that matches only repositories the configuration excludes
+(the `exclude` list, archived, fork, template or test), stops the run with
+exit code 2 and says which. A bare name excluded in one organisation but in
+scope in another runs against the in-scope one only; naming a repository never
+brings an excluded one back. A `--repos` value that names nothing also stops
+the run, rather than falling back to every repository. The run then collects
+exactly the repositories that check validated, without listing the
+organisation again, and prints `Limited to:` beneath its heading.
 
 The remediable categories are the simple on/off features with a documented
 enablement endpoint:
@@ -1492,6 +1515,59 @@ enablement endpoint:
 Qualitative findings (Scorecard, zizmor, open Dependabot alerts, cooldown,
 release freshness/mutability) are reported but not auto-remediated. Remediation
 is organisation-scoped (`--scope org`, the default and only supported scope).
+
+### Cleaning up stale CodeQL configurations
+
+One category is **destructive**, so it runs only when named. The no-argument
+run never includes it:
+
+```bash
+# Preview: which configurations would go, and which are refused and why.
+uvx github-security-report remediate --org lfreleng-actions \
+  --category codeql_stale_configurations
+
+# Apply.
+uvx github-security-report remediate --org lfreleng-actions \
+  --category codeql_stale_configurations --apply
+```
+
+It acts on the rows of **CodeQL: Stale Configurations**, according to their
+cause:
+
+<!-- markdownlint-disable MD013 -->
+
+| Cause | Action |
+| ----- | ------ |
+| Default setup disabled; workflow removed; superseded by default setup; language removed from default setup | **Delete** the configuration: it can never upload again |
+| Workflow disabled after inactivity | **Re-enable** the workflow, restoring the scan |
+| Analyses failing, default setup changing state or not uploading, uploaded outside GitHub Actions, workflow disabled by hand, active but not uploading, or state unreadable | Reported only; needs a person |
+
+<!-- markdownlint-enable MD013 -->
+
+Deleting removes a configuration's analyses, which clears GitHub's *"Code
+Scanning results may be out of date"* warning but also removes its alert
+history. A deletion is therefore **refused**, in a dry run as in an apply,
+when:
+
+- no current configuration scans its language: the stale results are then
+  the only record of it, so add scanning for the language first (the refusal
+  names it, and **CodeQL: Language Coverage** lists the gap);
+- it would help close an open alert. This is judged across **every deletion
+  planned in the repository**, not one at a time: an alert held by two stale
+  configurations would close if both went, so both are refused, although
+  neither holds it alone. An alert also reported by a live configuration
+  blocks nothing;
+- the repository's open alerts cannot be read.
+
+Refusals are listed beside the work done and do not fail the run. Deletion is
+paced at one request a second across the whole run, as GitHub asks of
+mutating requests, and is resumable: an interrupted run's next pass picks up
+the remaining analyses. GitHub answers requests it will not authorise with
+`404`, so a deletion's `404` counts as already done only once the analysis
+also reads back as gone; a token that may not delete fails instead of
+reporting a cleanup that never happened. The token needs the classic `repo`
+scope. See [ADR-0005](docs/adr/0005-codeql-configuration-cleanup.md) for the
+reasoning.
 
 ## Bulk Remediation Scripts
 

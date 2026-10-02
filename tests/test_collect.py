@@ -9,7 +9,7 @@ import logging
 
 import pytest
 
-from github_security_report import collect, layout, pulls
+from github_security_report import collect, layout, pulls, scope
 from github_security_report.categories import CategoryKey
 from github_security_report.client import GraphBatchError
 from github_security_report.codeql import CodeQLConfiguration, DefaultSetup
@@ -980,3 +980,81 @@ async def test_collect_org_skips_workflow_reads_for_an_unreadable_history() -> N
         client, OrgConfig(name="o"), ReportConfig(), generated_at=WHEN
     )
     assert client.workflow_reads == []
+
+
+# --------------------------------------------------------------------------- #
+# Named repository selection (remediate --repos)
+# --------------------------------------------------------------------------- #
+async def test_collect_org_limited_to_named_repositories_reads_only_those() -> None:
+    # A selection is collected as given, without listing the organisation
+    # again, so only the selected repository reaches the per-repository
+    # probes and the prefetch.
+    class ProbeRecordingClient(CodeQLHealthClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.probed: list[str] = []
+            self.prefetched: list[str] = []
+
+        async def codeql_configurations(
+            self, org: str, repo: str, branch: str
+        ) -> tuple[int, tuple[CodeQLConfiguration, ...]]:
+            self.probed.append(repo)
+            return await super().codeql_configurations(org, repo, branch)
+
+        async def repo_graph_batch(
+            self, org: str, names: list[str]
+        ) -> dict[str, RepoGraphData]:
+            self.prefetched.extend(names)
+            return await super().repo_graph_batch(org, names)
+
+    client = ProbeRecordingClient()
+    report = await collect.collect_org(
+        client,
+        OrgConfig(name="o"),
+        ReportConfig(),
+        generated_at=WHEN,
+        selected=[_repo("dependamerge")],
+    )
+    assert report.repo_count == 1
+    assert client.probed == ["dependamerge"]
+    assert client.prefetched == ["dependamerge"]
+
+
+async def test_a_selected_run_does_not_list_the_organisation_again() -> None:
+    # A second listing that came back incomplete could silently drop a
+    # requested repository from a run that then reported nothing to do.
+    class ListingCountingClient(FakeClient):
+        listings = 0
+
+        async def list_org_repos(self, org: str) -> tuple[int, list[Repo]]:
+            self.listings += 1
+            return 206, []  # would drop everything, were it consulted
+
+    client = ListingCountingClient()
+    report = await collect.collect_org(
+        client,
+        OrgConfig(name="o"),
+        ReportConfig(),
+        generated_at=WHEN,
+        selected=[_repo("dependamerge")],
+    )
+    assert client.listings == 0
+    assert (report.repo_count, report.partial) == (1, False)
+
+
+async def test_check_named_repos_separates_in_scope_from_excluded() -> None:
+    # A named repository the config excludes is reported with the reason, so
+    # naming it cannot bring it back into a run.
+    client = FakeClient()
+    named = await collect.check_named_repos(
+        client,
+        OrgConfig(name="o", exclude=("git-configure-action",)),
+        ReportConfig(),
+        scope.parse_repo_selection(["dependamerge,git-configure-action,a-fork"]),
+    )
+    assert [r.name for r in named.in_scope] == ["dependamerge"]
+    assert sorted((r.name, why) for r, why in named.excluded) == [
+        ("a-fork", "fork"),
+        ("git-configure-action", "explicitly excluded"),
+    ]
+    assert named.partial is False

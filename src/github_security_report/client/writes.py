@@ -12,13 +12,48 @@ and the remediation writes.
 
 from __future__ import annotations
 
+import asyncio
+from urllib.parse import quote
+
 import httpx
 
 from github_security_report.client.reads import ReadClient
 
+# Minimum spacing between cleanup mutations. GitHub asks integrations to leave
+# at least a second between mutating requests to avoid its secondary rate
+# limits, and a cleanup can issue hundreds across many configurations. A class
+# attribute so tests can set it to zero.
+_MUTATION_INTERVAL_SECONDS = 1.0
+
 
 class GitHubClient(ReadClient):
     """Thin async client over the GitHub REST + GraphQL APIs."""
+
+    mutation_interval_seconds: float = _MUTATION_INTERVAL_SECONDS
+    # Event-loop time of the last paced mutation; None before the first.
+    _last_mutation_at: float | None = None
+
+    async def _paced_mutation(
+        self, method: str, url: str, *, params: dict[str, str] | None = None
+    ) -> httpx.Response:
+        """Send one cleanup mutation, spaced from the previous one.
+
+        Client-wide rather than per call, so the spacing holds across targets:
+        the last deletion of one configuration and the first of the next are
+        as far apart as any two within one. The time is stamped when the
+        request *returns*, not when it starts: ``_request`` retries 5xx and
+        rate-limit responses itself, and a retry that lands late is still the
+        latest mutation GitHub saw, so the next must wait from it.
+        """
+        loop = asyncio.get_running_loop()
+        if self._last_mutation_at is not None:
+            wait = self._last_mutation_at + self.mutation_interval_seconds - loop.time()
+            if wait > 0:
+                await asyncio.sleep(wait)
+        try:
+            return await self._request(method, url, params=params)
+        finally:
+            self._last_mutation_at = loop.time()
 
     # ------------------------------------------------------------------ #
     # Remediation writes (enable a feature on one repository)
@@ -151,6 +186,99 @@ class GitHubClient(ReadClient):
             json={"allow_auto_merge": True},
         )
         ok = resp.status_code == 200
+        note = "" if ok else self._write_note(resp)
+        await resp.aclose()
+        return ok, note
+
+    # ------------------------------------------------------------------ #
+    # CodeQL configuration cleanup
+    # ------------------------------------------------------------------ #
+    async def delete_codeql_analyses(
+        self, org: str, repo: str, analysis_ids: tuple[int, ...]
+    ) -> tuple[bool, str]:
+        """Delete one configuration's analyses, newest first. ``(ok, note)``.
+
+        GitHub deletes a configuration one analysis at a time, and only its
+        newest is deletable at any moment, so ``analysis_ids`` must arrive
+        newest first. ``confirm_delete`` permits removing the last one, which
+        is the point: the configuration itself goes with it.
+
+        The delete response's ``confirm_delete_url`` is documented to chain to
+        the next analysis, but in practice returns null while older analyses
+        remain, so the ids collected with the report drive the walk instead.
+
+        A ``404`` may mean the analysis is already gone (a previous,
+        interrupted run, or the listing lagging behind a deletion), but GitHub
+        also answers a token that may not delete with ``404``. So the analysis
+        is read back with the same token, which listed it moments ago: gone
+        there too means skip it, so a re-run resumes; still readable means the
+        delete was refused, and the walk stops with a failure rather than
+        reporting a cleanup that never happened. The note reports how many
+        were deleted.
+        """
+        deleted = 0
+        for analysis_id in analysis_ids:
+            resp = await self._paced_mutation(
+                "DELETE",
+                f"{self._api_url}/repos/{org}/{repo}/code-scanning/analyses/{analysis_id}",
+                params={"confirm_delete": "true"},
+            )
+            status = resp.status_code
+            stopped = f"stopped after {deleted} of {len(analysis_ids)}"
+            if status not in (200, 404):
+                note = self._write_note(resp)
+                await resp.aclose()
+                return False, f"{stopped}: {note}"
+            await resp.aclose()
+            if status == 404:
+                gone = await self._analysis_gone(org, repo, analysis_id)
+                if gone is not True:
+                    reason = (
+                        "delete refused (404) though the analysis still exists; "
+                        "check the token can delete code scanning analyses"
+                        if gone is False
+                        else "could not confirm the analysis was already gone"
+                    )
+                    return False, f"{stopped}: {reason}"
+            deleted += status == 200
+        noun = "analysis" if deleted == 1 else "analyses"
+        return True, f"{deleted} {noun} deleted"
+
+    async def _analysis_gone(
+        self, org: str, repo: str, analysis_id: int
+    ) -> bool | None:
+        """Whether an analysis no longer exists: True gone, False present.
+
+        ``None`` when the read itself fails otherwise, which a caller must not
+        mistake for either answer.
+        """
+        resp = await self._request(
+            "GET",
+            f"{self._api_url}/repos/{org}/{repo}/code-scanning/analyses/{analysis_id}",
+        )
+        status = resp.status_code
+        await resp.aclose()  # only the status matters here
+        if status == 404:
+            return True
+        if status == 200:
+            return False
+        return None
+
+    async def enable_workflow(self, org: str, repo: str, path: str) -> tuple[bool, str]:
+        """Re-enable the workflow at ``path``. Returns ``(ok, note)``.
+
+        ``PUT .../actions/workflows/{file}/enable`` answers ``204``; the
+        workflow is addressed by file name, which the API accepts in place of
+        its numeric id.
+        """
+        # Encoded as one path segment, as the read is: a "?" or "#" in the
+        # file name would otherwise end the URL path early.
+        name = quote(path.rsplit("/", 1)[-1], safe="")
+        resp = await self._paced_mutation(
+            "PUT",
+            f"{self._api_url}/repos/{org}/{repo}/actions/workflows/{name}/enable",
+        )
+        ok = resp.status_code == 204
         note = "" if ok else self._write_note(resp)
         await resp.aclose()
         return ok, note
