@@ -7,11 +7,9 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import Mapping
 
-import pytest
-
 from github_security_report import issues
 from github_security_report.categories import CategoryKey
-from github_security_report.config import DEFAULT_ISSUE_LABELS
+from github_security_report.config import DEFAULT_ISSUE_LABELS, ReportConfig
 from github_security_report.models import AuthorRef, IssueRef, Repo, RepoGraphData
 from github_security_report.report import (
     CELL_BAD,
@@ -22,6 +20,7 @@ from github_security_report.report import (
 )
 
 WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.timezone.utc)
+_DEFAULTS = ReportConfig()
 
 
 def _repo(name: str) -> Repo:
@@ -62,12 +61,16 @@ def _build(
     names: list[str],
     label_columns: Mapping[str, tuple[str, ...]] = DEFAULT_ISSUE_LABELS,
     members: frozenset[str] | None = frozenset(),
+    age_warn_days: int = _DEFAULTS.issue_age_warn_days,
+    age_error_days: int = _DEFAULTS.issue_age_error_days,
 ) -> TableSection:
     return issues.build_issues_table(
         graph,
         [_repo(n) for n in names],
         generated_at=WHEN,
         label_columns=label_columns,
+        age_warn_days=age_warn_days,
+        age_error_days=age_error_days,
         members=members,
     )
 
@@ -478,7 +481,46 @@ class TestBuildIssuesTable:
         assert table.category.key is CategoryKey.GITHUB_ISSUES
 
 
-@pytest.mark.xfail(strict=True, reason="issue colours not implemented yet")
+class TestAgeLevel:
+    @staticmethod
+    def _level(age: int | None) -> str | None:
+        """Emphasis under the shipped 30/60-day defaults."""
+        level: str | None = issues.age_level(
+            age,
+            warn_days=_DEFAULTS.issue_age_warn_days,
+            error_days=_DEFAULTS.issue_age_error_days,
+        )
+        return level
+
+    def test_the_defaults_are_thirty_and_sixty_days(self) -> None:
+        assert _DEFAULTS.issue_age_warn_days == 30
+        assert _DEFAULTS.issue_age_error_days == 60
+
+    def test_young_backlog_is_good(self) -> None:
+        assert self._level(0) == CELL_GOOD
+        # Both thresholds read "older than", so the boundary day is still green.
+        assert self._level(30) == CELL_GOOD
+
+    def test_ageing_backlog_warns(self) -> None:
+        assert self._level(31) == CELL_WARN
+        assert self._level(60) == CELL_WARN
+
+    def test_stale_backlog_is_bad(self) -> None:
+        assert self._level(61) == CELL_BAD
+        assert self._level(400) == CELL_BAD
+
+    def test_unknown_age_is_never_coloured(self) -> None:
+        assert self._level(None) is None
+
+    def test_zero_thresholds_disable_each_level(self) -> None:
+        # 0 means "off", as for the automation thresholds, rather than "every
+        # age exceeds zero, so colour everything".
+        assert issues.age_level(99, warn_days=0, error_days=0) is None
+        assert issues.age_level(99, warn_days=30, error_days=0) == CELL_WARN
+        assert issues.age_level(99, warn_days=0, error_days=60) == CELL_BAD
+        assert issues.age_level(45, warn_days=0, error_days=60) == CELL_GOOD
+
+
 class TestCellLevels:
     @staticmethod
     def _levels(table: TableSection, row: int = 0) -> dict[str, str | None]:
@@ -538,6 +580,11 @@ class TestCellLevels:
         assert _oldest(10) == CELL_GOOD
         assert _oldest(45) == CELL_WARN
         assert _oldest(90) == CELL_BAD
+
+    def test_oldest_uses_the_configured_thresholds(self) -> None:
+        graph = _graph(a=RepoGraphData(open_issues=1, issues=(_issue(1, age_days=45),)))
+        table = _build(graph, ["a"], age_warn_days=50, age_error_days=100)
+        assert self._levels(table)[issues.OLDEST_COLUMN] == CELL_GOOD
 
     def test_unknown_oldest_is_not_coloured(self) -> None:
         # Alongside a dated row, so the plain cell is the unknown age's doing.

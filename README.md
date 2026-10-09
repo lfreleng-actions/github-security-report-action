@@ -301,6 +301,8 @@ environment-variable name, never embedded.
     "repo_min_age_days": 28,
     "release_max_age_days": 60,
     "codeql_stale_days": 30,
+    "issue_age_warn_days": 30,
+    "issue_age_error_days": 60,
     "graph_batch": 10,
     "order": { "style": "auto" }
   },
@@ -792,6 +794,38 @@ classic PAT's `repo` scope already covers it. Without it GitHub serves the query
 with HTTP 200 and this one field null, so affected repositories are reported as
 `❓ Unknown` rather than counted as having no open issues — an unreadable backlog
 is never presented as a clean one.
+
+#### Issue colours and age thresholds
+
+On the terminal the counts are coloured so the table reads at a glance: `Bug`
+and `Untriaged` **red**, `Docs` **green**. As in the Pull Requests table, only
+**non-zero** counts are coloured, so the eye lands on the rows with something
+in them. The colours follow the column **name** (case-insensitively), so they
+apply to a custom `issue_labels` that keeps a `Bug` or `Docs` column and simply
+do not appear for one that renames them.
+
+`Oldest` is coloured against two age thresholds, in days:
+
+```json
+{
+  "report": {
+    "issue_age_warn_days": 30,
+    "issue_age_error_days": 60
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
+
+- **Green** while the oldest open issue is at most `issue_age_warn_days`
+  (default `30`) old.
+- **Yellow** once it is older than `issue_age_warn_days`.
+- **Red** once it is older than `issue_age_error_days` (default `60`).
+
+An `unknown` age is never coloured. Either threshold may be set to `0` to
+switch that level off; with both off the column is left uncoloured.
+`issue_age_error_days` must be **strictly greater** than `issue_age_warn_days`
+(or `0`), otherwise the yellow level could never be reached, so it is rejected
+at load. Both are settable per organisation.
 
 ### Pull Requests
 

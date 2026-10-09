@@ -178,6 +178,12 @@ class ReportConfig:
     # Error (red) at or above this many: GitHub's default open-pull-requests
     # limit, at which no further updates arrive for that ecosystem.
     dependabot_error_threshold: int = 5
+    # Age thresholds, in days, colouring the GitHub Issues table's Oldest
+    # column: green at or below the warn threshold, yellow once the oldest open
+    # issue is older than it, red once it is older than the error threshold.
+    # 0 switches that level off.
+    issue_age_warn_days: int = 30
+    issue_age_error_days: int = 60
     # Organisation feature gating for the workflow-driven signals (Scorecard,
     # zizmor, aislop): when true, each is collected only after a cheap check
     # finds organisation support (an org ruleset requiring the workflow,

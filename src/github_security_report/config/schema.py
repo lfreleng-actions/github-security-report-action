@@ -147,6 +147,12 @@ CONFIG_SCHEMA: dict = {
                 # ecosystem while Auto counts every automation author.
                 "dependabot_warn_threshold": {"type": "integer", "minimum": 0},
                 "dependabot_error_threshold": {"type": "integer", "minimum": 0},
+                # Oldest-issue age thresholds colouring the GitHub Issues
+                # table's Oldest column: yellow once the oldest open issue is
+                # older than the first, red once older than the second
+                # (0 switches that level off).
+                "issue_age_warn_days": {"type": "integer", "minimum": 0},
+                "issue_age_error_days": {"type": "integer", "minimum": 0},
                 # Organisation feature gating: when true (the default) the
                 # workflow-driven signals (Scorecard, zizmor, aislop) are
                 # probed only after a cheap support check (org ruleset,

@@ -260,7 +260,27 @@ class TestBuildConfig:
         with pytest.raises(ConfigError, match="dependabot_error_threshold"):
             config.build_config(data)
 
-    @pytest.mark.xfail(strict=True, reason="issue colours not implemented yet")
+    def test_issue_age_thresholds_default_and_override(self) -> None:
+        report = config.build_config(MINIMAL).report
+        assert report.issue_age_warn_days == 30
+        assert report.issue_age_error_days == 60
+        data = {
+            "report": {"issue_age_warn_days": 14, "issue_age_error_days": 90},
+            "organizations": [
+                {"name": "o"},
+                {"name": "p", "report": {"issue_age_warn_days": 45}},
+            ],
+        }
+        orgs = config.build_config(data).organizations
+        assert (
+            orgs[0].report.issue_age_warn_days,
+            orgs[0].report.issue_age_error_days,
+        ) == (14, 90)
+        assert (
+            orgs[1].report.issue_age_warn_days,
+            orgs[1].report.issue_age_error_days,
+        ) == (45, 90)
+
     @pytest.mark.parametrize("error", [30, 20])
     def test_issue_age_error_not_above_warn_is_rejected(self, error: int) -> None:
         data = {
@@ -272,7 +292,6 @@ class TestBuildConfig:
         ):
             config.build_config(data)
 
-    @pytest.mark.xfail(strict=True, reason="issue colours not implemented yet")
     def test_a_disabled_issue_age_error_level_is_not_an_inversion(self) -> None:
         # 0 switches the error level off, so a warning-only configuration must
         # load rather than tripping the ordering check.
@@ -282,7 +301,6 @@ class TestBuildConfig:
         }
         config.build_config(data)
 
-    @pytest.mark.xfail(strict=True, reason="issue colours not implemented yet")
     def test_rejects_negative_issue_age_thresholds(self) -> None:
         data = {
             "report": {"issue_age_warn_days": -1},

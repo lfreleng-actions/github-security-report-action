@@ -167,6 +167,8 @@ def _report_from(data: dict, base: ReportConfig) -> ReportConfig:
                 "codeql_stale_days",
                 "dependabot_warn_threshold",
                 "dependabot_error_threshold",
+                "issue_age_warn_days",
+                "issue_age_error_days",
                 "gating",
                 "graph_batch",
             }
@@ -195,24 +197,33 @@ def _report_from(data: dict, base: ReportConfig) -> ReportConfig:
         result = replace(
             result, excluded_display=ExcludedDisplay(data["excluded_display"])
         )
-    if (
-        result.dependabot_error_threshold
-        and result.dependabot_error_threshold <= result.dependabot_warn_threshold
-    ):
-        # The error level is checked first and inclusively (``>= error``), so a
-        # warning threshold at or above it can never be reached: every value
-        # that would warn has already errored. Rejecting beats silently
-        # ignoring one of the two knobs the operator deliberately set. A zero
-        # error threshold is exempt -- that is the documented way to turn the
-        # error level off, leaving a warning-only configuration.
-        raise ConfigError(
-            "report.dependabot_error_threshold "
-            f"({result.dependabot_error_threshold}) must be greater than "
-            "report.dependabot_warn_threshold "
-            f"({result.dependabot_warn_threshold}), or 0 to disable the error "
-            "level; otherwise the warning level can never be reached"
-        )
+    _require_reachable_warning(
+        result, "dependabot_warn_threshold", "dependabot_error_threshold"
+    )
+    _require_reachable_warning(result, "issue_age_warn_days", "issue_age_error_days")
     return result
+
+
+def _require_reachable_warning(
+    report: ReportConfig, warn_name: str, error_name: str
+) -> None:
+    """Reject an error threshold that leaves its warning level unreachable.
+
+    The error level is checked first, so a warning threshold at or above it
+    can never be reached: every value that would warn has already errored.
+    Rejecting beats silently ignoring one of the two knobs the operator
+    deliberately set. A zero error threshold is exempt -- that is the
+    documented way to turn the error level off, leaving a warning-only
+    configuration.
+    """
+    warn = getattr(report, warn_name)
+    error = getattr(report, error_name)
+    if error and error <= warn:
+        raise ConfigError(
+            f"report.{error_name} ({error}) must be greater than "
+            f"report.{warn_name} ({warn}), or 0 to disable the error level; "
+            "otherwise the warning level can never be reached"
+        )
 
 
 def _categories_from(
