@@ -260,6 +260,37 @@ class TestBuildConfig:
         with pytest.raises(ConfigError, match="dependabot_error_threshold"):
             config.build_config(data)
 
+    @pytest.mark.xfail(strict=True, reason="issue colours not implemented yet")
+    @pytest.mark.parametrize("error", [30, 20])
+    def test_issue_age_error_not_above_warn_is_rejected(self, error: int) -> None:
+        data = {
+            "report": {"issue_age_warn_days": 30, "issue_age_error_days": error},
+            "organizations": [{"name": "o"}],
+        }
+        with pytest.raises(
+            ConfigError, match=r"report\.issue_age_error_days \(\d+\) must be greater"
+        ):
+            config.build_config(data)
+
+    @pytest.mark.xfail(strict=True, reason="issue colours not implemented yet")
+    def test_a_disabled_issue_age_error_level_is_not_an_inversion(self) -> None:
+        # 0 switches the error level off, so a warning-only configuration must
+        # load rather than tripping the ordering check.
+        data = {
+            "report": {"issue_age_warn_days": 30, "issue_age_error_days": 0},
+            "organizations": [{"name": "o"}],
+        }
+        config.build_config(data)
+
+    @pytest.mark.xfail(strict=True, reason="issue colours not implemented yet")
+    def test_rejects_negative_issue_age_thresholds(self) -> None:
+        data = {
+            "report": {"issue_age_warn_days": -1},
+            "organizations": [{"name": "o"}],
+        }
+        with pytest.raises(ConfigError, match="less than the minimum"):
+            config.build_config(data)
+
     def test_releases_exclude_parsed(self) -> None:
         data = {
             "organizations": [

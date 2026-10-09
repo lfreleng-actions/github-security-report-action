@@ -7,11 +7,19 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import Mapping
 
+import pytest
+
 from github_security_report import issues
 from github_security_report.categories import CategoryKey
 from github_security_report.config import DEFAULT_ISSUE_LABELS
 from github_security_report.models import AuthorRef, IssueRef, Repo, RepoGraphData
-from github_security_report.report import TableSection, table_column_totals
+from github_security_report.report import (
+    CELL_BAD,
+    CELL_GOOD,
+    CELL_WARN,
+    TableSection,
+    table_column_totals,
+)
 
 WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.timezone.utc)
 
@@ -66,7 +74,8 @@ def _build(
 
 def _ext_cell(table: TableSection) -> str:
     """The Ext cell of the first row (cells omit the leading repository)."""
-    return table.rows[0].cells[table.columns.index(issues.EXTERNAL_COLUMN) - 1]
+    cell: str = table.rows[0].cells[table.columns.index(issues.EXTERNAL_COLUMN) - 1]
+    return cell
 
 
 class TestClassifyIssue:
@@ -467,3 +476,77 @@ class TestBuildIssuesTable:
         # Every column except the repository (0) and the trailing age is summed.
         assert table.sum_columns == frozenset(range(1, len(table.columns) - 1))
         assert table.category.key is CategoryKey.GITHUB_ISSUES
+
+
+@pytest.mark.xfail(strict=True, reason="issue colours not implemented yet")
+class TestCellLevels:
+    @staticmethod
+    def _levels(table: TableSection, row: int = 0) -> dict[str, str | None]:
+        """One row's emphasis keyed by column (repository excluded)."""
+        cells = table.rows[row]
+        return {
+            column: cells.level(index) for index, column in enumerate(table.columns[1:])
+        }
+
+    def test_bug_and_untriaged_are_bad_docs_good(self) -> None:
+        graph = _graph(
+            a=RepoGraphData(
+                open_issues=4,
+                issues=(
+                    _issue(1, "bug"),
+                    _issue(2, "enhancement"),
+                    _issue(3, "docs"),
+                    _issue(4),
+                ),
+            )
+        )
+        levels = self._levels(_build(graph, ["a"]))
+        assert levels["Bug"] == CELL_BAD
+        assert levels["Docs"] == CELL_GOOD
+        assert levels[issues.UNTRIAGED_COLUMN] == CELL_BAD
+        assert levels["Feature"] is None
+        assert levels[issues.TOTAL_COLUMN] is None
+        assert levels[issues.EXTERNAL_COLUMN] is None
+
+    def test_only_non_zero_counts_are_emphasised(self) -> None:
+        # A column of red zeros trains the reader to ignore the colour.
+        graph = _graph(a=RepoGraphData(open_issues=1, issues=(_issue(1, "bug"),)))
+        levels = self._levels(_build(graph, ["a"]))
+        assert levels["Bug"] == CELL_BAD
+        assert levels["Docs"] is None
+        assert levels[issues.UNTRIAGED_COLUMN] is None
+
+    def test_column_emphasis_follows_the_header_case_insensitively(self) -> None:
+        table = _build(
+            _graph(
+                a=RepoGraphData(open_issues=2, issues=(_issue(1, "x"), _issue(2, "y")))
+            ),
+            ["a"],
+            label_columns={"BUG": ("x",), "Regression": ("y",)},
+        )
+        levels = self._levels(table)
+        assert levels["BUG"] == CELL_BAD
+        assert levels["Regression"] is None
+
+    def test_oldest_is_coloured_by_the_default_thresholds(self) -> None:
+        def _oldest(age: int) -> str | None:
+            graph = _graph(
+                a=RepoGraphData(open_issues=1, issues=(_issue(1, age_days=age),))
+            )
+            return self._levels(_build(graph, ["a"]))[issues.OLDEST_COLUMN]
+
+        assert _oldest(10) == CELL_GOOD
+        assert _oldest(45) == CELL_WARN
+        assert _oldest(90) == CELL_BAD
+
+    def test_unknown_oldest_is_not_coloured(self) -> None:
+        # Alongside a dated row, so the plain cell is the unknown age's doing.
+        graph = _graph(
+            a=RepoGraphData(open_issues=1, issues=(_issue(1, age_days=5),)),
+            b=RepoGraphData(
+                open_issues=1, issues=(IssueRef(number=1, title="t", labels=()),)
+            ),
+        )
+        table = _build(graph, ["a", "b"])
+        assert self._levels(table, 0)[issues.OLDEST_COLUMN] == CELL_GOOD
+        assert self._levels(table, 1)[issues.OLDEST_COLUMN] is None
