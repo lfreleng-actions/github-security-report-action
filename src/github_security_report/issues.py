@@ -33,7 +33,13 @@ from collections.abc import Mapping, Set
 from github_security_report.authors import is_external_author
 from github_security_report.categories import CategoryKey, category_meta
 from github_security_report.models import IssueRef, Repo, RepoGraphData
-from github_security_report.report import TableRow, TableSection
+from github_security_report.report import (
+    CELL_BAD,
+    CELL_GOOD,
+    CELL_WARN,
+    TableRow,
+    TableSection,
+)
 
 # Columns appended after the configured label classes. ``Other`` is "labelled,
 # but not as anything we were asked about"; ``Untriaged`` is "not labelled at
@@ -67,6 +73,17 @@ TRUNCATED_MARKER = "+"
 # Stands in for an age GitHub did not give us a usable creation date for. Kept
 # distinct from an absent backlog: the repository has open issues either way.
 UNKNOWN_AGE = "unknown"
+
+# Emphasis for the count columns, keyed case-insensitively by header so it
+# follows ``Bug`` and ``Docs`` into an ``issue_labels`` that keeps those names,
+# and simply does not apply to one that renames them. Untriaged is the triage
+# gap the table exists to surface, and Bug the class most likely to hurt a
+# user, so both are red; documentation work is a healthy backlog, so green.
+_COLUMN_LEVELS: Mapping[str, str] = {
+    "bug": CELL_BAD,
+    "docs": CELL_GOOD,
+    UNTRIAGED_COLUMN.casefold(): CELL_BAD,
+}
 
 
 def classify_issue(
@@ -160,6 +177,43 @@ def _oldest_cell(age: int | None, truncated: bool) -> str:
     return f"{text} {TRUNCATED_MARKER}" if truncated else text
 
 
+def age_level(age: int | None, *, warn_days: int, error_days: int) -> str | None:
+    """Emphasis for an oldest open issue that is ``age`` days old.
+
+    Both thresholds read "older than": warning once the age exceeds
+    ``warn_days``, error once it exceeds ``error_days``, and good at or below
+    every active threshold. Either may be ``0`` to turn that level off, matching
+    the ``0 = no limit`` idiom used elsewhere; with both off the column is left
+    plain rather than painted uniformly green. An unknown age has nothing to
+    measure, so it is never coloured.
+    """
+    if age is None or not (warn_days or error_days):
+        return None
+    if error_days and age > error_days:
+        return CELL_BAD
+    if warn_days and age > warn_days:
+        return CELL_WARN
+    return CELL_GOOD
+
+
+def _cell_levels(
+    columns: tuple[str, ...],
+    counts: Mapping[str, int],
+    age: str | None,
+) -> tuple[str | None, ...]:
+    """Semantic emphasis for one row's cells, parallel to its columns.
+
+    Only *non-zero* counts are emphasised, as in the Pull Requests table: a
+    column of red zeros trains the reader to ignore the colour. Total and Ext
+    carry none -- Total sums classes that disagree about what good looks like.
+    """
+    counted = (
+        _COLUMN_LEVELS.get(column.casefold()) if counts[column] else None
+        for column in columns
+    )
+    return (*counted, None, None, age)
+
+
 def _describe(base: str, age_cells: list[str], members: Set[str] | None) -> str:
     """Extend the category description with the caveats the table earned.
 
@@ -198,6 +252,8 @@ def build_issues_table(
     *,
     generated_at: dt.datetime,
     label_columns: Mapping[str, tuple[str, ...]],
+    age_warn_days: int,
+    age_error_days: int,
     members: Set[str] | None = frozenset(),
 ) -> TableSection:
     """The GitHub Issues table, largest backlog first.
@@ -209,7 +265,8 @@ def build_issues_table(
     with equal backlogs surface the less-triaged one first.
 
     ``members`` is the organisation's membership, used to count the issues
-    raised from outside it (see :mod:`authors`).
+    raised from outside it (see :mod:`authors`). ``age_warn_days`` and
+    ``age_error_days`` colour the Oldest column (see :func:`age_level`).
     """
     columns = (*label_columns, OTHER_COLUMN, UNTRIAGED_COLUMN)
     rows: list[tuple[int, int, str, TableRow]] = []
@@ -266,7 +323,20 @@ def build_issues_table(
                 data.open_issues,
                 counts[UNTRIAGED_COLUMN],
                 repo.name,
-                TableRow(repo=repo, cells=cells, sort_values=sort_values),
+                TableRow(
+                    repo=repo,
+                    cells=cells,
+                    sort_values=sort_values,
+                    cell_levels=_cell_levels(
+                        columns,
+                        counts,
+                        age_level(
+                            oldest,
+                            warn_days=age_warn_days,
+                            error_days=age_error_days,
+                        ),
+                    ),
+                ),
             )
         )
     # Negated numerics so the whole sort runs ascending, keeping the name

@@ -129,6 +129,8 @@ async def attach_extra_tables(
         in_scope,
         generated_at=report.generated_at,
         label_columns=report_cfg.issue_labels,
+        age_warn_days=report_cfg.issue_age_warn_days,
+        age_error_days=report_cfg.issue_age_error_days,
         members=members,
     )
     report.pull_requests = build_pull_requests_table(
