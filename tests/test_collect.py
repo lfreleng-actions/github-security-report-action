@@ -13,6 +13,7 @@ from github_security_report import collect, layout, pulls, scope
 from github_security_report.categories import CategoryKey
 from github_security_report.client import GraphBatchError
 from github_security_report.codeql import CodeQLConfiguration, DefaultSetup
+from github_security_report.collect.graph import collect_graph
 from github_security_report.config import OrgConfig, ReportConfig
 from github_security_report.models import Repo, RepoGraphData, RepoState, SignalType
 from github_security_report.report import OrgReport, SignalSection
@@ -732,9 +733,7 @@ class BatchLimitedClient(FakeClient):
 async def _collect_graph(
     client: BatchLimitedClient, *, batch_size: int
 ) -> dict[str, RepoGraphData]:
-    return await collect.org._collect_graph(
-        client, "o", client.repos, batch_size=batch_size
-    )
+    return await collect_graph(client, "o", client.repos, batch_size=batch_size)
 
 
 async def test_graph_batch_size_comes_from_the_report_config() -> None:
@@ -763,7 +762,9 @@ async def test_graph_batch_halves_on_a_server_error_and_stays_halved(
     # property of the collection rather than of the one batch that happened to
     # hit it first.
     client = BatchLimitedClient(23, limit=5)
-    with caplog.at_level(logging.WARNING, logger="github_security_report.collect.org"):
+    with caplog.at_level(
+        logging.WARNING, logger="github_security_report.collect.graph"
+    ):
         graph = await _collect_graph(client, batch_size=10)
     assert client.batches == [10, 5, 5, 5, 5, 3]
     assert sorted(graph) == sorted(repo.name for repo in client.repos)
@@ -831,7 +832,9 @@ async def test_graph_batch_log_names_the_reason_the_client_gave(
     client = BatchLimitedClient(
         4, limit=2, status=200, reason="resource limits exceeded"
     )
-    with caplog.at_level(logging.WARNING, logger="github_security_report.collect.org"):
+    with caplog.at_level(
+        logging.WARNING, logger="github_security_report.collect.graph"
+    ):
         await _collect_graph(client, batch_size=4)
     assert "failed (resource limits exceeded)" in caplog.records[0].getMessage()
 
