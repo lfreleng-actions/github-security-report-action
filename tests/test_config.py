@@ -13,6 +13,7 @@ import pytest
 
 from github_security_report import config
 from github_security_report.categories import CategoryKey
+from github_security_report.client import API_DEFAULT_CONCURRENCY
 from github_security_report.config import ConfigError
 from github_security_report.severity import Severity
 from github_security_report.summary import ExcludedDisplay, RepoList
@@ -352,6 +353,37 @@ class TestBuildConfig:
             config.build_config(
                 {"report": {"graph_batch": 0}, "organizations": [{"name": "o"}]}
             )
+
+    def test_concurrency_default_and_override(self) -> None:
+        # Client concurrency defaults to 9; a global or per-org report block
+        # can raise or lower it.
+        assert config.build_config(MINIMAL).report.concurrency == 9
+        # The client's own default (used outside a report run) is the same.
+        assert API_DEFAULT_CONCURRENCY == 9
+        data = {
+            "report": {"concurrency": 12},
+            "organizations": [
+                {"name": "o", "report": {"concurrency": 4}},
+                {"name": "p"},
+            ],
+        }
+        cfg = config.build_config(data)
+        assert cfg.organizations[0].report.concurrency == 4
+        assert cfg.organizations[1].report.concurrency == 12
+
+    def test_concurrency_is_bounded(self) -> None:
+        # 1 to 32: a typo must not ask GitHub for more parallelism than its
+        # secondary rate limits will accept.
+        def build(value: int) -> config.Config:
+            return config.build_config(
+                {"report": {"concurrency": value}, "organizations": [{"name": "o"}]}
+            )
+
+        assert build(1).report.concurrency == 1
+        assert build(32).report.concurrency == 32
+        for value in (0, 33):
+            with pytest.raises(ConfigError):
+                build(value)
 
     def test_default_ruleset_workflows_include_aislop(self) -> None:
         # The built-in ruleset keyword map covers both workflow-gated scanners.

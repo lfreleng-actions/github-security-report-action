@@ -22,8 +22,10 @@ from github_security_report.client.accounting import RequestStats, _RequestTally
 from github_security_report.client.endpoints import (
     API_BACKOFF_FACTOR,
     API_BACKOFF_INITIAL_SECONDS,
+    API_DEFAULT_CONCURRENCY,
     API_MAX_RETRIES,
     API_MAX_TOTAL_WAIT_SECONDS,
+    EXTERNAL_CONCURRENCY,
     GITHUB_API,
     GRAPHQL_API,
     SCORECARD_API,
@@ -90,7 +92,7 @@ class Transport:
         api_url: str = GITHUB_API,
         graphql_url: str = GRAPHQL_API,
         scorecard_url: str = SCORECARD_API,
-        concurrency: int = 6,
+        concurrency: int = API_DEFAULT_CONCURRENCY,
         max_retries: int = API_MAX_RETRIES,
         timeout: float = 30.0,
     ) -> None:
@@ -99,6 +101,7 @@ class Transport:
         self._scorecard_url = scorecard_url.rstrip("/")
         self._max_retries = max_retries
         self._sem = asyncio.Semaphore(concurrency)
+        self._ext_sem = asyncio.Semaphore(EXTERNAL_CONCURRENCY)
         self._tally = _RequestTally()
         self._client = httpx.AsyncClient(
             timeout=timeout,
@@ -184,13 +187,16 @@ class Transport:
         """
         http = client or self._client
         is_external = http is self._ext_client
+        # Third-party reads queue on their own semaphore, so a slow external
+        # API cannot hold the slots GitHub requests are waiting for.
+        sem = self._ext_sem if is_external else self._sem
         # Resolved once: an optional read reports its retries at DEBUG so it
         # cannot nag about a signal whose failure the caller already swallows.
         level = logging.DEBUG if quiet else logging.WARNING
         budget = _RetryBudget(self._max_retries)
         while True:
             try:
-                async with self._sem:
+                async with sem:
                     resp = await http.request(method, url, **kwargs)  # type: ignore[arg-type]
             except httpx.HTTPError as exc:
                 # Transport failure: the endpoint could not be reached at all

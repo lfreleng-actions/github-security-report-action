@@ -26,6 +26,11 @@ REPORT_OUTPUTS = ("cli", "slack", "markdown", "html")
 # highest. ``informational`` is the new sub-low rung.
 SEVERITY_NAMES = ("informational", "low", "medium", "high", "critical")
 
+# Upper bound on ``report.concurrency``. GitHub's documented secondary limit is
+# 100 concurrent requests across REST and GraphQL; this sits far below it, so a
+# typo cannot ask GitHub for parallelism it will refuse.
+CONCURRENCY_MAX = 32
+
 WEEKDAYS = (
     "monday",
     "tuesday",
@@ -168,6 +173,12 @@ CONFIG_SCHEMA: dict = {
                 # a batch that fails any of those ways is halved
                 # automatically, so this sets the starting size.
                 "graph_batch": {"type": "integer", "minimum": 1},
+                # Concurrent GitHub API requests per organisation's client.
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": CONCURRENCY_MAX,
+                },
                 # Which side of each boolean feature category is named beneath
                 # its counts: the shorter list (auto), or always the enabled or
                 # the disabled repositories. Overridable per category.

@@ -3265,7 +3265,7 @@ async def test_mutation_spacing_counts_from_the_last_retry(
 
 
 # --------------------------------------------------------------------------- #
-# Request accounting
+# Request accounting and the external semaphore
 # --------------------------------------------------------------------------- #
 def _rate_headers(resource: str, used: int, reset: int = 1_700_000_000) -> dict:
     return {
@@ -3346,3 +3346,28 @@ def test_stats_summary_reads_as_one_line() -> None:
         "1402 requests (0 retries), 822 core points, 64 graphql points, "
         "unknown search points, 41.3 MiB received, 102.5 s"
     )
+
+
+@respx.mock
+async def test_external_reads_do_not_hold_github_slots() -> None:
+    # A slow third-party endpoint must not delay a GitHub request, even when
+    # the GitHub semaphore has a single slot.
+    release = asyncio.Event()
+
+    async def slow_scorecard(request: httpx.Request) -> httpx.Response:
+        await release.wait()
+        return httpx.Response(404)
+
+    respx.get(url__startswith=f"{SCORECARD}/projects/").mock(side_effect=slow_scorecard)
+    respx.get(f"{API}/repos/o/a").mock(return_value=httpx.Response(200, json={}))
+    async with GitHubClient("t", concurrency=1) as client:
+        external = asyncio.ensure_future(client.scorecard_score("o", "a"))
+        await asyncio.sleep(0)
+        try:
+            resp = await asyncio.wait_for(
+                client._request("GET", f"{API}/repos/o/a"), timeout=1
+            )
+            assert resp.status_code == 200
+        finally:
+            release.set()
+            await external

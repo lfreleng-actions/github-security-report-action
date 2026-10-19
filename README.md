@@ -304,6 +304,7 @@ environment-variable name, never embedded.
     "issue_age_warn_days": 30,
     "issue_age_error_days": 60,
     "graph_batch": 10,
+    "concurrency": 9,
     "order": { "style": "auto" }
   },
   "organizations": [
@@ -1344,6 +1345,60 @@ a larger value buys nothing except a longer first failure.
 > predating the flag will reject a set one with `No such option`, so set
 > `GSR_GRAPH_BATCH` only once the pinned release supports it.
 
+### Client concurrency
+
+Each organisation's run holds at most `report.concurrency` requests to the
+GitHub API open at once (default `9`; minimum `1`, maximum `32`), globally or
+per organisation. Reads from the external Scorecard API queue on a separate
+limit of four, so a slow third-party endpoint never holds a slot that a
+GitHub request is waiting for.
+
+The value can be set three ways, in this order of precedence:
+
+1. `--concurrency N` on the command line (the action's `concurrency` input).
+2. A **repository or organisation variable** passed to that input. The
+   bundled `reporting.yaml` passes `vars.GSR_CONCURRENCY`, so the value can be
+   adjusted from repository settings without a workflow edit or a release.
+3. `report.concurrency` in the configuration; otherwise the built-in `9`.
+
+`9` is a deliberate halfway point. GitHub documents its secondary rate limits
+as no more than 100 concurrent requests across REST and GraphQL, and no more
+than 900 points per minute for REST endpoints; this project has hit those
+limits before, so the default stays well clear of them. Measured against
+`lfreleng-actions` (143 repositories, about 1,400 requests; one run each in
+the same hour, so read ±10–15 % as GitHub latency noise), before the GraphQL
+prefetch ran concurrently:
+
+<!-- markdownlint-disable MD013 -->
+
+| Concurrency | Wall | Throughput | Mean time per request | Average slots busy | GitHub pushback |
+| ----------- | ---: | ---------: | --------------------: | -----------------: | --------------- |
+| 6 (former default) | 102.5 s | 13.7 req/s | 0.283 s | 3.9 / 6 | none |
+| 12 | 75.9 s | 18.5 req/s | 0.286 s | 5.3 / 12 | none |
+
+<!-- markdownlint-enable MD013 -->
+
+Raise it once a run shows no pushback; lower it if GitHub starts answering
+with secondary rate-limit `403`/`429` responses. To measure a change, run the
+CLI with `--verbose`: when each organisation's collection finishes it logs
+one line of what the run cost, for example
+
+<!-- markdownlint-disable MD013 -->
+
+```text
+GitHub API for lfreleng-actions: 1402 requests (0 retries), 822 core points, 64 graphql points, 41.3 MiB received, 102.5 s
+```
+
+<!-- markdownlint-enable MD013 -->
+
+The points come from GitHub's own `x-ratelimit-*` response headers (the
+spread between the lowest and highest reading for each resource), and read
+`unknown` when the rate-limit window reset during the run. Nothing of this
+line reaches the rendered report or the step summary.
+
+> As with `graph_batch`, an empty input is not passed to the tool, so set
+> `GSR_CONCURRENCY` only once the pinned release supports `--concurrency`.
+
 ### Pass/fail severity cutoff
 
 The severity-ranked signals (CodeQL, Scorecard, Zizmor, aislop, Dependabot
@@ -1422,6 +1477,7 @@ and the Slack **bot token** is consumed by the workflow, not the CLI.
 | `force_notify` | No | `false` | Post to Slack regardless of `report_day` |
 | `hide` | No | `""` | Category keys to suppress on every output (space- or comma-separated). Overrides config, and is one-way: it cannot re-enable a disabled category |
 | `graph_batch` | No | `""` | Repositories per batched GraphQL prefetch query (minimum `1`; default: config, else `10`). Pass a repository or organisation variable such as `${{ vars.GSR_GRAPH_BATCH }}` to adjust it from settings. A batch that still fails is halved automatically, so this sets the starting size (see [GraphQL prefetch batch size](#graphql-prefetch-batch-size)) |
+| `concurrency` | No | `""` | Concurrent GitHub API requests per organisation (`1` to `32`; default: config, else `9`). Pass a repository or organisation variable such as `${{ vars.GSR_CONCURRENCY }}` to adjust it from settings (see [Client concurrency](#client-concurrency)) |
 | `tool_version` | No | `""` | Published PyPI version to install. Empty (the default) uses the Dependabot-managed pin in `.github/runtime-pin/requirements.txt`; set a specific version to override. Ignored on pull requests or when `use_local_source` is `true` (both run from source) |
 | `use_local_source` | No | `false` | Run from the checked-out source instead of PyPI (for testing unreleased code from any event) |
 

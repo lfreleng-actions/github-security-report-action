@@ -140,7 +140,7 @@ async def _collect_reports(
             )
             return None
         effective_cfg, report_cfg = overrides.apply(org_cfg)
-        async with GitHubClient(token) as client:
+        async with GitHubClient(token, concurrency=report_cfg.concurrency) as client:
             pairs.append(
                 (
                     org_cfg,
@@ -210,7 +210,7 @@ async def _run_repo(
     if not token:
         console.print(f"[red]No token in ${token_env}[/red]")
         return 2
-    async with GitHubClient(token) as client:
+    async with GitHubClient(token, concurrency=cfg.concurrency) as client:
         repo, signals = await collect.collect_repo(
             client, owner, repo_name, ruleset_workflows=cfg.ruleset_workflows
         )

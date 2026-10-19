@@ -15,6 +15,7 @@ from typing import ClassVar
 import httpx
 import pytest
 import respx
+import yaml
 from rich.console import Console
 from typer.testing import CliRunner
 
@@ -1524,3 +1525,108 @@ def test_verbose_org_run_logs_the_request_accounting_once_per_org(
         f"GitHub API for {org}: 3 requests (0 retries), 0.0 MiB received, 1.5 s"
         for org in ("o", "p")
     ]
+
+
+# --------------------------------------------------------------------------- #
+# Client concurrency
+# --------------------------------------------------------------------------- #
+_CONCURRENCY_CONFIG = json.dumps(
+    {
+        "report": {"concurrency": 5},
+        "organizations": [{"name": "o"}, {"name": "p", "report": {"concurrency": 7}}],
+    }
+)
+
+
+def _concurrency(built: list[dict[str, object]]) -> list[object]:
+    return [kwargs.get("concurrency") for kwargs in built]
+
+
+def test_concurrency_reaches_each_org_client_from_config(
+    recording_client: list[dict[str, object]],
+) -> None:
+    result = cli.invoke(
+        app, ["report", "--config-data", _CONCURRENCY_CONFIG, "--no-color"]
+    )
+    assert result.exit_code == 0, result.stdout
+    assert _concurrency(recording_client) == [5, 7]
+
+
+def test_concurrency_flag_wins_over_config(
+    recording_client: list[dict[str, object]],
+) -> None:
+    result = cli.invoke(
+        app,
+        ["report", "--config-data", _CONCURRENCY_CONFIG, "--no-color"]
+        + ["--concurrency", "12"],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert _concurrency(recording_client) == [12, 12]
+
+
+def test_concurrency_defaults_to_nine(
+    recording_client: list[dict[str, object]],
+) -> None:
+    result = cli.invoke(app, ["report", "--org", "o", "--no-color"])
+    assert result.exit_code == 0, result.stdout
+    assert _concurrency(recording_client) == [9]
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("0", "--concurrency must be 1 or greater"),
+        ("-1", "--concurrency must be 1 or greater"),
+        ("33", "--concurrency must be 32 or less"),
+    ],
+)
+def test_concurrency_out_of_range_rejected(value: str, message: str) -> None:
+    # The same bounds as the config schema, so a flag cannot ask GitHub for
+    # more parallelism than a configuration file could.
+    result = cli.invoke(
+        app, ["report", "--org", "o", f"--concurrency={value}", "--no-color"]
+    )
+    assert result.exit_code == 2
+    assert message in result.stdout
+
+
+def test_concurrency_flag_is_org_mode_only() -> None:
+    result = cli.invoke(
+        app,
+        ["report", "--repo", "o/r", "--scope", "repo", "--no-color"]
+        + ["--concurrency", "4"],
+    )
+    assert result.exit_code == 2, result.stdout
+    assert "--concurrency" in result.stdout
+    assert "organisation mode only" in result.stdout
+
+
+def test_concurrency_moves_in_either_direction() -> None:
+    # An operational lever, like the batch size: it may raise or lower the
+    # configured value.
+    org = OrgConfig(name="o", report=ReportConfig(concurrency=9))
+    _, lowered = ReportOverrides(concurrency=4).apply(org)
+    _, raised = ReportOverrides(concurrency=16).apply(org)
+    _, untouched = ReportOverrides().apply(org)
+    assert lowered.concurrency == 4
+    assert raised.concurrency == 16
+    assert untouched.concurrency == 9
+
+
+def test_action_passes_the_concurrency_input_to_the_flag() -> None:
+    # Empty by default, so a pinned release predating the flag is not handed
+    # one; passed through only when set. The bundled workflow feeds it from a
+    # repository variable, beside GSR_GRAPH_BATCH.
+    root = Path(__file__).resolve().parents[1]
+    action = yaml.safe_load((root / "action.yaml").read_text())
+    assert action["inputs"]["concurrency"]["default"] == ""
+    step = next(
+        s for s in action["runs"]["steps"] if "INPUT_GRAPH_BATCH" in s.get("env", {})
+    )
+    assert step["env"]["INPUT_CONCURRENCY"] == "${{ inputs.concurrency }}"
+    assert (
+        '[ -n "$INPUT_CONCURRENCY" ] && args+=(--concurrency "$INPUT_CONCURRENCY")'
+        in step["run"]
+    )
+    workflow = (root / ".github" / "workflows" / "reporting.yaml").read_text()
+    assert 'concurrency: "${{ vars.GSR_CONCURRENCY }}"' in workflow

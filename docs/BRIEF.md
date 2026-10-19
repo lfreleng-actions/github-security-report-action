@@ -442,10 +442,11 @@ Four presentation surfaces from one canonical dataset:
   Dependabot. Batch size is `report.graph_batch` (default 10), bounded by
   GitHub's per-query execution limit rather than by node cost, and halves
   adaptively when a query fails on size.
-- **`httpx` with bounded async concurrency** (configurable, conservative
-  default ~4–8) + **exponential backoff honoring `Retry-After`, secondary
-  rate-limit and server-error (5xx)** signals; respect `x-ratelimit-remaining`;
-  surface budget in logs. Borrow `project-reporting-tool`'s `concurrency/`
+- **`httpx` with bounded async concurrency** (`report.concurrency`,
+  default 9; the external Scorecard API has a separate limit of 4) +
+  **exponential backoff honoring `Retry-After`, secondary rate-limit and
+  server-error (5xx)** signals; respect `x-ratelimit-remaining`; surface
+  budget in logs. Borrow `project-reporting-tool`'s `concurrency/`
   shape.
 
 ## 14. Distribution, CI and release

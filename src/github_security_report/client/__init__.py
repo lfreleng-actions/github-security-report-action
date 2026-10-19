@@ -28,6 +28,7 @@ from github_security_report.client.endpoints import (
     _SCORECARD_DEFAULT,
     API_BACKOFF_FACTOR,
     API_BACKOFF_INITIAL_SECONDS,
+    API_DEFAULT_CONCURRENCY,
     API_DIAGNOSTIC_DNS_TIMEOUT_SECONDS,
     API_MAX_RETRIES,
     API_MAX_TOTAL_WAIT_SECONDS,
@@ -65,6 +66,7 @@ from github_security_report.client.writes import GitHubClient
 __all__ = [
     "API_BACKOFF_FACTOR",
     "API_BACKOFF_INITIAL_SECONDS",
+    "API_DEFAULT_CONCURRENCY",
     "API_DIAGNOSTIC_DNS_TIMEOUT_SECONDS",
     "API_MAX_RETRIES",
     "API_MAX_TOTAL_WAIT_SECONDS",
