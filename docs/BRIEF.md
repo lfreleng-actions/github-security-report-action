@@ -98,9 +98,10 @@ GraphQL query may do (roughly ten seconds of execution), and reports a breach
 as a 502/504 gateway timeout from the edge, as a 200 with no `data`, or as a
 200 whose `errors` say the resource limits were exceeded with the unresolved
 fields nulled, so a batch can fail purely because of how many repositories it
-carries. A batch that fails any of those ways is re-issued at half the size,
-and the smaller size is kept for the rest of that organisation's collection;
-only a single-repository query that still fails, or a failure a smaller query
+carries. Up to four batch queries run at once. A batch that fails any of
+those ways is re-issued at half the size, and every batch issued after the
+failure is seen uses the smaller size for the rest of that organisation's
+collection; only a single-repository query that still fails, or a failure a smaller query
 could not fix (403, exhausted rate limit, a 500/503 outage), aborts. The
 starting size is `report.graph_batch` (default `10`, `--graph-batch`). A
 transport failure to the third-party Scorecard endpoint still degrades that

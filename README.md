@@ -1301,16 +1301,25 @@ size is bounded by *latency*, not by rate-limit cost: 25 repositories measured
 at ~9 s against `lfreleng-actions` and failed intermittently; 10 measured at
 ~3.5 s.
 
+Up to four of these queries run at once. Each takes a few seconds on GitHub's
+side, so a prefetch issued one query at a time left most of the client's
+concurrency idle; against `lfreleng-actions` it took about 50 s of a 100 s run.
+
 `report.graph_batch` (default `10`; minimum `1`) sets the starting batch size,
 globally or per organisation. It is a lever for a slow day rather than a hard
 limit: a batch that still fails on size after the transport's own retries is
-re-issued at **half** the size, and the smaller size is kept for the rest of
-that organisation's collection (each organisation in a multi-org run starts
-from its own configured size, since organisations differ in how much data a
-repository carries). Only a single-repository query GitHub still cannot
-answer, or a failure that a smaller query could not fix (a `403`, an
-exhausted rate limit, or a `500`/`503` outage rather than a `502`/`504`
-timeout), aborts the run with exit code `3`.
+re-issued at **half** the size, and every batch issued after that failure is
+seen uses the smaller size for the rest of that organisation's collection
+(each organisation in a multi-org run starts from its own configured size,
+since organisations differ in how much data a repository carries). The
+learned size only shrinks. Because queries overlap, the batches already in
+flight when the first failure arrives were issued at the old size, so on a
+slow day up to four oversized batches, rather than one, may fail before the
+smaller size takes effect; that bounded cost buys the overlap. Only a
+single-repository query GitHub still cannot answer, or a failure that a
+smaller query could not fix (a `403`, an exhausted rate limit, or a
+`500`/`503` outage rather than a `502`/`504` timeout), aborts the run with
+exit code `3`, and the queries still in flight are cancelled first.
 
 The value can be set three ways, in this order of precedence:
 
