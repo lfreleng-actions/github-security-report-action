@@ -5,10 +5,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import ClassVar
 
 import httpx
 import pytest
@@ -28,6 +30,7 @@ from github_security_report.cli.outputs import (
     slack_limit,
     slack_show,
 )
+from github_security_report.client import RequestStats
 from github_security_report.config import (
     CategoryToggle,
     Config,
@@ -1465,3 +1468,59 @@ async def test_an_incomplete_listing_stops_a_narrowed_run() -> None:
     )
     assert touched is None
     assert "the repository listing for b was incomplete" in console.export_text()
+
+
+# --------------------------------------------------------------------------- #
+# Request accounting
+# --------------------------------------------------------------------------- #
+class _RecordingClient:
+    """Stand-in for ``GitHubClient`` that records how it was constructed."""
+
+    built: ClassVar[list[dict[str, object]]] = []
+
+    def __init__(self, token: str, **kwargs: object) -> None:
+        type(self).built.append(kwargs)
+
+    async def __aenter__(self) -> _RecordingClient:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    @property
+    def stats(self) -> RequestStats:
+        return RequestStats(requests=3, by_status={200: 3}, elapsed=1.5)
+
+
+@pytest.fixture
+def recording_client(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    """Run org mode against :class:`_RecordingClient` and an empty collection."""
+    from github_security_report import collect
+    from github_security_report.cli import modes
+
+    async def fake_collect(
+        _client: object, org_cfg: OrgConfig, *_args: object, **_kwargs: object
+    ) -> OrgReport:
+        return build_org_report(org_cfg.name, [], repo_count=0)
+
+    built: list[dict[str, object]] = []
+    monkeypatch.setattr(_RecordingClient, "built", built)
+    monkeypatch.setattr(modes, "GitHubClient", _RecordingClient)
+    monkeypatch.setattr(collect, "collect_org", fake_collect)
+    return built
+
+
+def test_verbose_org_run_logs_the_request_accounting_once_per_org(
+    recording_client: list[dict[str, object]], caplog: pytest.LogCaptureFixture
+) -> None:
+    config_data = json.dumps({"organizations": [{"name": "o"}, {"name": "p"}]})
+    with caplog.at_level(logging.INFO, logger="github_security_report.cli.modes"):
+        result = cli.invoke(
+            app, ["--verbose", "report", "--config-data", config_data, "--no-color"]
+        )
+    assert result.exit_code == 0, result.stdout
+    lines = [r.getMessage() for r in caplog.records if "GitHub API for" in r.message]
+    assert lines == [
+        f"GitHub API for {org}: 3 requests (0 retries), 0.0 MiB received, 1.5 s"
+        for org in ("o", "p")
+    ]

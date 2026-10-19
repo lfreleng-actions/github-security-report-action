@@ -3262,3 +3262,87 @@ async def test_mutation_spacing_counts_from_the_last_retry(
     # sent[1] is the successful retry; the next delete waits from it.
     assert len(sent) == 3
     assert sent[2] - sent[1] >= client.mutation_interval_seconds
+
+
+# --------------------------------------------------------------------------- #
+# Request accounting
+# --------------------------------------------------------------------------- #
+def _rate_headers(resource: str, used: int, reset: int = 1_700_000_000) -> dict:
+    return {
+        "x-ratelimit-resource": resource,
+        "x-ratelimit-used": str(used),
+        "x-ratelimit-remaining": str(5000 - used),
+        "x-ratelimit-reset": str(reset),
+    }
+
+
+@respx.mock
+async def test_stats_count_requests_bytes_retries_and_points(
+    client: GitHubClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(transport_mod.asyncio, "sleep", _no_sleep)
+    respx.get(f"{API}/repos/o/a").mock(
+        return_value=httpx.Response(
+            200, content=b"x" * 100, headers=_rate_headers("core", 10)
+        )
+    )
+    respx.get(f"{API}/repos/o/b").mock(
+        side_effect=[
+            httpx.Response(502, headers=_rate_headers("core", 11)),
+            httpx.Response(200, content=b"y" * 50, headers=_rate_headers("core", 13)),
+        ]
+    )
+    respx.post(f"{API}/graphql").mock(
+        side_effect=[
+            httpx.Response(200, content=b"{}", headers=_rate_headers("graphql", 5)),
+            httpx.Response(200, content=b"{}", headers=_rate_headers("graphql", 9)),
+        ]
+    )
+    respx.get(f"{SCORECARD}/projects/github.com/o/a").mock(
+        return_value=httpx.Response(200, content=b'{"score": 7.0}')
+    )
+    for path in ("repos/o/a", "repos/o/b"):
+        (await client._request("GET", f"{API}/{path}")).raise_for_status()
+    for _ in range(2):
+        await client._request("POST", f"{API}/graphql", json={"query": "q"})
+    await client.scorecard_score("o", "a")
+
+    stats = client.stats
+    assert stats.requests == 6
+    assert dict(stats.by_status) == {200: 5, 502: 1}
+    assert stats.retries == 1
+    assert stats.bytes_received == 100 + 50 + 2 + 2 + len(b'{"score": 7.0}')
+    # The Scorecard endpoint sends no rate-limit headers, so it has no entry.
+    assert dict(stats.points) == {"core": 3, "graphql": 4}
+
+
+@respx.mock
+async def test_stats_report_a_reset_window_as_unknown(client: GitHubClient) -> None:
+    # A delta across two windows would be meaningless (and could be negative).
+    respx.get(f"{API}/repos/o/a").mock(
+        side_effect=[
+            httpx.Response(200, headers=_rate_headers("core", 4000, reset=100)),
+            httpx.Response(200, headers=_rate_headers("core", 2, reset=200)),
+        ]
+    )
+    await client._request("GET", f"{API}/repos/o/a")
+    await client._request("GET", f"{API}/repos/o/a")
+    assert dict(client.stats.points) == {"core": None}
+
+
+def test_stats_summary_reads_as_one_line() -> None:
+    from github_security_report.client import RequestStats
+
+    stats = RequestStats(
+        requests=1402,
+        by_status={200: 1402},
+        transport_retries=0,
+        degraded_retries=0,
+        bytes_received=int(41.3 * 1024 * 1024),
+        points={"graphql": 64, "core": 822, "search": None},
+        elapsed=102.5,
+    )
+    assert stats.summary() == (
+        "1402 requests (0 retries), 822 core points, 64 graphql points, "
+        "unknown search points, 41.3 MiB received, 102.5 s"
+    )

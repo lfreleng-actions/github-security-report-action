@@ -125,7 +125,12 @@ async def _collect_reports(
     now: dt.datetime,
     overrides: ReportOverrides,
 ) -> list[OrgPair] | None:
-    """Collect every configured org's report, or None if a token is missing."""
+    """Collect every configured org's report, or None if a token is missing.
+
+    Once each organisation's client closes, what its requests cost is logged
+    at INFO: visible with ``--verbose``, which is how a run is measured, and
+    silent otherwise. Nothing of it reaches the rendered report.
+    """
     pairs: list[OrgPair] = []
     for org_cfg in cfg.organizations:
         token = config.resolve_token(org_cfg)
@@ -144,6 +149,7 @@ async def _collect_reports(
                     ),
                 )
             )
+        log.info("GitHub API for %s: %s", org_cfg.name, client.stats.summary())
     return pairs
 
 

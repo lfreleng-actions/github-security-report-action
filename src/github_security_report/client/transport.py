@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from typing import TypeVar
 
 import httpx
 
+from github_security_report.client.accounting import RequestStats, _RequestTally
 from github_security_report.client.endpoints import (
     API_BACKOFF_FACTOR,
     API_BACKOFF_INITIAL_SECONDS,
@@ -97,6 +99,7 @@ class Transport:
         self._scorecard_url = scorecard_url.rstrip("/")
         self._max_retries = max_retries
         self._sem = asyncio.Semaphore(concurrency)
+        self._tally = _RequestTally()
         self._client = httpx.AsyncClient(
             timeout=timeout,
             headers={
@@ -121,6 +124,17 @@ class Transport:
     async def aclose(self) -> None:
         await self._client.aclose()
         await self._ext_client.aclose()
+        if self._tally.finished is None:
+            self._tally.finished = time.monotonic()
+
+    @property
+    def stats(self) -> RequestStats:
+        """What this client's requests have cost so far (see RequestStats).
+
+        Elapsed time runs from construction until :meth:`aclose`, so reading
+        it after the client closes gives the whole run.
+        """
+        return self._tally.snapshot()
 
     # ------------------------------------------------------------------ #
     # Low-level request with backoff
@@ -191,8 +205,10 @@ class Transport:
                         is_external=is_external,
                     )
                 self._log_transport_retry(url, exc, delay, budget.attempt, level)
+                self._tally.transport_retries += 1
                 await budget.sleep(delay)
                 continue
+            self._tally.record(resp)
             if resp.status_code == 401 and not is_external:
                 # Credentials rejected: fail fast on the very first request
                 # rather than letting a hundred more rejections accumulate into
@@ -215,6 +231,7 @@ class Transport:
             # The discarded response must be closed; we are retrying and will
             # not read its body, so leaving it open would leak a pool connection.
             await resp.aclose()
+            self._tally.degraded_retries += 1
             await budget.sleep(plan.delay)
 
     def _plan_degraded_retry(self, resp: httpx.Response, attempt: int) -> _RetryPlan:

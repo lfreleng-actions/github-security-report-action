@@ -11,10 +11,10 @@ See ``docs/BRIEF.md`` sections 9, 13 and ``docs/phase0-findings.md``.
 The implementation is split across ``endpoints`` (environment-resolved API URLs
 and the shared retry/backoff policy), ``queries`` (GraphQL documents),
 ``parsers`` (pure header/node parsing), ``transport`` (connection lifecycle and
-the retrying request primitives), ``failures`` (the errors a request that
-cannot succeed ends in), ``alerts`` (the org-bulk sweeps and the two-pass
-secret-scanning read), ``org_reads`` (the remaining reads issued once per
-organisation), ``reads`` (the per-repository reads) and ``writes`` (the
+the retrying request primitives), ``accounting`` (what a run's requests
+cost), ``failures`` (the errors a request that cannot succeed ends in),
+``alerts`` (the org-bulk sweeps and the two-pass secret-scanning read),
+``org_reads`` (the remaining reads issued once per organisation), ``reads`` (the per-repository reads) and ``writes`` (the
 remediation writes plus the public :class:`GitHubClient`). This module
 re-exports the public surface, so importing from
 ``github_security_report.client`` is unchanged.
@@ -22,6 +22,7 @@ re-exports the public surface, so importing from
 
 from __future__ import annotations
 
+from github_security_report.client.accounting import RequestStats
 from github_security_report.client.alerts import AlertReads
 from github_security_report.client.endpoints import (
     _SCORECARD_DEFAULT,
@@ -78,6 +79,7 @@ __all__ = [
     "NetworkError",
     "OrgReadClient",
     "ReadClient",
+    "RequestStats",
     "Transport",
     "_CODE_SCANNING_SIGNAL_TOOLS",
     "_DEPENDABOT_ENABLED_QUERY",
