@@ -3262,3 +3262,243 @@ async def test_mutation_spacing_counts_from_the_last_retry(
     # sent[1] is the successful retry; the next delete waits from it.
     assert len(sent) == 3
     assert sent[2] - sent[1] >= client.mutation_interval_seconds
+
+
+# --------------------------------------------------------------------------- #
+# Request accounting and the external semaphore
+# --------------------------------------------------------------------------- #
+def _rate_headers(resource: str, used: int, reset: int = 1_700_000_000) -> dict:
+    return {
+        "x-ratelimit-resource": resource,
+        "x-ratelimit-used": str(used),
+        "x-ratelimit-remaining": str(5000 - used),
+        "x-ratelimit-reset": str(reset),
+    }
+
+
+@respx.mock
+async def test_stats_count_requests_bytes_retries_and_points(
+    client: GitHubClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(transport_mod.asyncio, "sleep", _no_sleep)
+    respx.get(f"{API}/repos/o/a").mock(
+        return_value=httpx.Response(
+            200, content=b"x" * 100, headers=_rate_headers("core", 10)
+        )
+    )
+    respx.get(f"{API}/repos/o/b").mock(
+        side_effect=[
+            httpx.ReadTimeout("slow"),
+            httpx.Response(502, headers=_rate_headers("core", 11)),
+            httpx.Response(200, content=b"y" * 50, headers=_rate_headers("core", 13)),
+        ]
+    )
+    respx.post(f"{API}/graphql").mock(
+        side_effect=[
+            httpx.Response(200, content=b"{}", headers=_rate_headers("graphql", 5)),
+            httpx.Response(200, content=b"{}", headers=_rate_headers("graphql", 9)),
+        ]
+    )
+    respx.get(f"{SCORECARD}/projects/github.com/o/a").mock(
+        return_value=httpx.Response(200, content=b'{"score": 7.0}')
+    )
+    for path in ("repos/o/a", "repos/o/b"):
+        (await client._request("GET", f"{API}/{path}")).raise_for_status()
+    for _ in range(2):
+        await client._request("POST", f"{API}/graphql", json={"query": "q"})
+    await client.scorecard_score("o", "a")
+
+    stats = client.stats
+    # Seven attempts left the client; the read timeout was one of them and
+    # produced no response, so it counts as a request but not as a status.
+    assert stats.requests == 7
+    assert stats.responses == 6
+    assert dict(stats.by_status) == {200: 5, 502: 1}
+    assert stats.transport_retries == 1
+    assert stats.degraded_retries == 1
+    assert stats.retries == 2
+    assert stats.bytes_received == 100 + 50 + 2 + 2 + len(b'{"score": 7.0}')
+    # The Scorecard endpoint sends no rate-limit headers, so it has no entry.
+    assert dict(stats.points) == {"core": 3, "graphql": 4}
+
+
+@respx.mock
+async def test_stats_count_attempts_that_were_never_answered(
+    client: GitHubClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An external read whose every attempt fails at the transport degrades to
+    # a synthetic 503 that GitHub never sent. The attempts were still made,
+    # so they are requests; the synthetic answer is not a response received.
+    monkeypatch.setattr(transport_mod.asyncio, "sleep", _no_sleep)
+    respx.get(f"{SCORECARD}/projects/github.com/o/a").mock(
+        side_effect=httpx.ConnectError("unreachable")
+    )
+    status, score = await client.scorecard_score("o", "a")
+    assert (status, score) == (503, None)
+    stats = client.stats
+    assert stats.requests == API_MAX_RETRIES + 1
+    assert stats.responses == 0
+    assert stats.transport_retries == API_MAX_RETRIES
+    assert dict(stats.points) == {}
+
+
+@respx.mock
+async def test_stats_sum_points_across_a_resource_s_buckets(
+    client: GitHubClient,
+) -> None:
+    # GitHub meters one token across more than one bucket per resource, each
+    # with its own reset time and counter, and answers alike requests from
+    # either. The spread is taken per bucket and summed: 4000 -> 4003 in one
+    # and 2 -> 5 in the other is six points, not an "unknown" window reset.
+    # The readings arrive out of order within a bucket, as concurrent
+    # requests can, so the spread must not assume ascending arrival.
+    respx.get(f"{API}/repos/o/a").mock(
+        side_effect=[
+            httpx.Response(200, headers=_rate_headers("core", 4001, reset=100)),
+            httpx.Response(200, headers=_rate_headers("core", 2, reset=200)),
+            httpx.Response(200, headers=_rate_headers("core", 4003, reset=100)),
+            httpx.Response(200, headers=_rate_headers("core", 4000, reset=100)),
+            httpx.Response(200, headers=_rate_headers("core", 5, reset=200)),
+        ]
+    )
+    for _ in range(5):
+        await client._request("GET", f"{API}/repos/o/a")
+    assert dict(client.stats.points) == {"core": 6}
+
+
+@pytest.mark.parametrize(
+    ("first_answer", "kind"),
+    [
+        (httpx.ReadTimeout("slow"), "transport"),
+        (httpx.Response(502), "degraded"),
+    ],
+    ids=["transport", "degraded"],
+)
+@respx.mock
+async def test_stats_do_not_count_a_retry_cancelled_during_backoff(
+    first_answer: httpx.Response | Exception, kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A sibling prefetch batch aborting the run cancels requests that are
+    # sleeping out their backoff. The retry they were waiting to make was
+    # never issued, so it is not a retry -- nor a request. Only the one
+    # attempt that was made is counted.
+    parked = asyncio.Event()
+
+    async def sleep_forever(_delay: float) -> None:
+        parked.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(transport_mod.asyncio, "sleep", sleep_forever)
+    route = respx.get(f"{API}/repos/o/a").mock(side_effect=[first_answer])
+    async with GitHubClient("test-token", concurrency=4) as client:
+        task = asyncio.create_task(client._request("GET", f"{API}/repos/o/a"))
+        await parked.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        stats = client.stats
+    assert route.call_count == 1
+    assert stats.requests == 1
+    assert stats.retries == 0
+    assert getattr(stats, f"{kind}_retries") == 0
+
+
+@pytest.mark.parametrize(
+    ("first_answer", "kind"),
+    [
+        (httpx.ReadTimeout("slow"), "transport"),
+        (httpx.Response(502), "degraded"),
+    ],
+    ids=["transport", "degraded"],
+)
+@respx.mock
+async def test_stats_do_not_count_a_retry_cancelled_awaiting_a_slot(
+    first_answer: httpx.Response | Exception, kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The same, one step later: the backoff has elapsed but the only semaphore
+    # slot is held, and the cancellation lands while the retry waits for it.
+    # The backoff stub is what hands the slot to another request, so the retry
+    # is deterministically queued behind it when the cancellation arrives.
+    occupied = asyncio.Event()
+    release = asyncio.Event()
+    holder: asyncio.Task[httpx.Response] | None = None
+
+    async def hold_slot(_request: httpx.Request) -> httpx.Response:
+        occupied.set()
+        await release.wait()
+        return httpx.Response(200)
+
+    respx.get(f"{API}/repos/o/hold").mock(side_effect=hold_slot)
+    route = respx.get(f"{API}/repos/o/a").mock(side_effect=[first_answer])
+    # The patch below replaces the module-wide ``asyncio.sleep``; the test's
+    # own yields must keep using the real one.
+    yield_to_loop = asyncio.sleep
+    async with GitHubClient("test-token", concurrency=1) as client:
+
+        async def take_slot_during_backoff(_delay: float) -> None:
+            nonlocal holder
+            holder = asyncio.create_task(client._request("GET", f"{API}/repos/o/hold"))
+            await occupied.wait()
+
+        monkeypatch.setattr(transport_mod.asyncio, "sleep", take_slot_during_backoff)
+        failing = asyncio.create_task(client._request("GET", f"{API}/repos/o/a"))
+        await occupied.wait()
+        for _ in range(3):  # let the retry reach the semaphore and block there
+            await yield_to_loop(0)
+        failing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await failing
+        release.set()
+        assert holder is not None
+        await holder
+        stats = client.stats
+    assert route.call_count == 1
+    # Two requests were issued: the failed attempt and the slot-holder. The
+    # retry that was waiting for the slot was never issued, so it is not a
+    # retry and not a request.
+    assert stats.requests == 2
+    assert stats.retries == 0
+    assert getattr(stats, f"{kind}_retries") == 0
+
+
+def test_stats_summary_reads_as_one_line() -> None:
+    from github_security_report.client import RequestStats
+
+    stats = RequestStats(
+        requests=1402,
+        by_status={200: 1402},
+        transport_retries=0,
+        degraded_retries=0,
+        bytes_received=int(41.3 * 1024 * 1024),
+        points={"graphql": 64, "core": 822},
+        elapsed=102.5,
+    )
+    assert stats.summary() == (
+        "1402 requests (0 retries), 822 core points, 64 graphql points, "
+        "41.3 MiB received, 102.5 s"
+    )
+
+
+@respx.mock
+async def test_external_reads_do_not_hold_github_slots() -> None:
+    # A slow third-party endpoint must not delay a GitHub request, even when
+    # the GitHub semaphore has a single slot.
+    release = asyncio.Event()
+
+    async def slow_scorecard(request: httpx.Request) -> httpx.Response:
+        await release.wait()
+        return httpx.Response(404)
+
+    respx.get(url__startswith=f"{SCORECARD}/projects/").mock(side_effect=slow_scorecard)
+    respx.get(f"{API}/repos/o/a").mock(return_value=httpx.Response(200, json={}))
+    async with GitHubClient("t", concurrency=1) as client:
+        external = asyncio.ensure_future(client.scorecard_score("o", "a"))
+        await asyncio.sleep(0)
+        try:
+            resp = await asyncio.wait_for(
+                client._request("GET", f"{API}/repos/o/a"), timeout=1
+            )
+            assert resp.status_code == 200
+        finally:
+            release.set()
+            await external

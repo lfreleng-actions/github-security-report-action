@@ -97,6 +97,17 @@ inputs:
     description: "Repositories per batched GraphQL prefetch query (minimum 1; default: config, else 10). Pass a repository or organisation variable such as vars.GSR_GRAPH_BATCH to adjust it from settings. A batch that still fails is halved automatically, so this sets the starting size"
     required: false
     default: ""
+  concurrency:
+    # Deliberately empty by default, for the same reason as `graph_batch`: a
+    # non-empty default would be passed to whichever published version the
+    # runtime pin installs, and fails with "No such option" on any release
+    # predating the flag. A workflow that wants it adjustable from repository
+    # settings passes a variable here (e.g. vars.GSR_CONCURRENCY); the `vars`
+    # context is not available inside a composite action, so the fallback
+    # cannot live in this file.
+    description: "Concurrent GitHub API requests per organisation (1-32; default: config, else 9). Pass a repository or organisation variable such as vars.GSR_CONCURRENCY to adjust it from settings"
+    required: false
+    default: ""
   tool_version:
     description: "Published PyPI version to run; ignored on pull_request or when use_local_source is true (both run from the checked-out source). Empty (the default) uses the Dependabot-managed pin in .github/runtime-pin/requirements.txt"
     required: false
@@ -156,6 +167,7 @@ runs:
         INPUT_FORCE_NOTIFY: ${{ inputs.force_notify }}
         INPUT_HIDE: ${{ inputs.hide }}
         INPUT_GRAPH_BATCH: ${{ inputs.graph_batch }}
+        INPUT_CONCURRENCY: ${{ inputs.concurrency }}
         TOOL_VERSION: ${{ inputs.tool_version }}
         USE_LOCAL_SOURCE: ${{ inputs.use_local_source }}
         EVENT_NAME: ${{ github.event_name }}
@@ -247,6 +259,7 @@ runs:
         [ -n "$INPUT_FAIL_THRESHOLD" ] && args+=(--fail-threshold "$INPUT_FAIL_THRESHOLD")
         [ "$INPUT_FORCE_NOTIFY" = "true" ] && args+=(--force-notify)
         [ -n "$INPUT_GRAPH_BATCH" ] && args+=(--graph-batch "$INPUT_GRAPH_BATCH")
+        [ -n "$INPUT_CONCURRENCY" ] && args+=(--concurrency "$INPUT_CONCURRENCY")
         # One --hide per category. Commas become spaces so either separator
         # works in a workflow, and the unquoted expansion is deliberate word
         # splitting; empty fields collapse, so a trailing separator cannot

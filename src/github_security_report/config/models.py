@@ -204,6 +204,13 @@ class ReportConfig:
     # rather than a hard limit -- but a larger value buys nothing except a
     # longer first failure.
     graph_batch: int = 10
+    # Concurrent GitHub API requests per organisation's client. 9 is a
+    # deliberate halfway point: 12 measured safe against lfreleng-actions,
+    # but the project has hit GitHub's secondary rate limits before, so it
+    # can be raised from configuration or repository settings without a
+    # release. The schema caps it at CONCURRENCY_MAX. Kept equal to
+    # client.endpoints.API_DEFAULT_CONCURRENCY.
+    concurrency: int = 9
     # Which side of each boolean feature category (Dependabot alerts/updates
     # enabled, private vulnerability reporting, auto-merge) is named beneath its
     # counts, on every surface. ``auto`` names the shorter list; a category's

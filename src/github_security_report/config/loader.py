@@ -171,6 +171,7 @@ def _report_from(data: dict, base: ReportConfig) -> ReportConfig:
                 "issue_age_error_days",
                 "gating",
                 "graph_batch",
+                "concurrency",
             }
         },
     )

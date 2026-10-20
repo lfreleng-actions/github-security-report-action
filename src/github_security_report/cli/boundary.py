@@ -41,15 +41,21 @@ def check_non_negative(console: Console, name: str, value: int | None) -> None:
         raise typer.Exit(2)
 
 
-def check_positive(console: Console, name: str, value: int | None) -> None:
+def check_positive(
+    console: Console, name: str, value: int | None, *, maximum: int | None = None
+) -> None:
     """Reject a zero or negative override where 0 has no meaning.
 
     For a batch size, unlike a row limit, there is no "unlimited" reading of
     0 -- a query carrying no repositories is not a query -- so the floor is 1,
-    matching the config schema's minimum for the same control.
+    matching the config schema's minimum for the same control. ``maximum``,
+    when given, mirrors the schema's ceiling for the same control.
     """
     if value is not None and value < 1:
         console.print(f"[red]{name} must be 1 or greater[/red]")
+        raise typer.Exit(2)
+    if value is not None and maximum is not None and value > maximum:
+        console.print(f"[red]{name} must be {maximum} or less[/red]")
         raise typer.Exit(2)
 
 

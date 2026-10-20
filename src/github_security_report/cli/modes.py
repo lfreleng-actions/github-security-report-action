@@ -125,7 +125,16 @@ async def _collect_reports(
     now: dt.datetime,
     overrides: ReportOverrides,
 ) -> list[OrgPair] | None:
-    """Collect every configured org's report, or None if a token is missing."""
+    """Collect every configured org's report, or None if a token is missing.
+
+    Once each organisation's client closes, what its requests cost is logged
+    at INFO: visible with ``--verbose``, which is how a run is measured, and
+    silent otherwise. Nothing of it reaches the rendered report. It is logged
+    whether or not the collection finished: a run that aborts on a rate limit,
+    an outage or a rejected token is exactly the run whose request, retry and
+    timing figures are wanted, so the exit path logs them before the error
+    propagates.
+    """
     pairs: list[OrgPair] = []
     for org_cfg in cfg.organizations:
         token = config.resolve_token(org_cfg)
@@ -135,15 +144,21 @@ async def _collect_reports(
             )
             return None
         effective_cfg, report_cfg = overrides.apply(org_cfg)
-        async with GitHubClient(token) as client:
-            pairs.append(
-                (
-                    org_cfg,
-                    await collect.collect_org(
-                        client, effective_cfg, report_cfg, generated_at=now
-                    ),
+        client = GitHubClient(token, concurrency=report_cfg.concurrency)
+        try:
+            async with client:
+                pairs.append(
+                    (
+                        org_cfg,
+                        await collect.collect_org(
+                            client, effective_cfg, report_cfg, generated_at=now
+                        ),
+                    )
                 )
-            )
+        finally:
+            # After the context has closed the client, so the elapsed time
+            # covers the whole run; the error, if any, carries on from here.
+            log.info("GitHub API for %s: %s", org_cfg.name, client.stats.summary())
     return pairs
 
 
@@ -204,7 +219,7 @@ async def _run_repo(
     if not token:
         console.print(f"[red]No token in ${token_env}[/red]")
         return 2
-    async with GitHubClient(token) as client:
+    async with GitHubClient(token, concurrency=cfg.concurrency) as client:
         repo, signals = await collect.collect_repo(
             client, owner, repo_name, ruleset_workflows=cfg.ruleset_workflows
         )

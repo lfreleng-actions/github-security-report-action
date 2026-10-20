@@ -11,9 +11,10 @@ See ``docs/BRIEF.md`` sections 9, 13 and ``docs/phase0-findings.md``.
 The implementation is split across ``endpoints`` (environment-resolved API URLs
 and the shared retry/backoff policy), ``queries`` (GraphQL documents),
 ``parsers`` (pure header/node parsing), ``transport`` (connection lifecycle and
-the retrying request primitives), ``alerts`` (the org-bulk sweeps and the
-two-pass secret-scanning read), ``org_reads`` (the remaining reads issued once
-per organisation), ``reads`` (the per-repository reads) and ``writes`` (the
+the retrying request primitives), ``accounting`` (what a run's requests
+cost), ``failures`` (the errors a request that cannot succeed ends in),
+``alerts`` (the org-bulk sweeps and the two-pass secret-scanning read),
+``org_reads`` (the remaining reads issued once per organisation), ``reads`` (the per-repository reads) and ``writes`` (the
 remediation writes plus the public :class:`GitHubClient`). This module
 re-exports the public surface, so importing from
 ``github_security_report.client`` is unchanged.
@@ -21,11 +22,13 @@ re-exports the public surface, so importing from
 
 from __future__ import annotations
 
+from github_security_report.client.accounting import RequestStats
 from github_security_report.client.alerts import AlertReads
 from github_security_report.client.endpoints import (
     _SCORECARD_DEFAULT,
     API_BACKOFF_FACTOR,
     API_BACKOFF_INITIAL_SECONDS,
+    API_DEFAULT_CONCURRENCY,
     API_DIAGNOSTIC_DNS_TIMEOUT_SECONDS,
     API_MAX_RETRIES,
     API_MAX_TOTAL_WAIT_SECONDS,
@@ -40,6 +43,7 @@ from github_security_report.client.errors import (
     GraphBatchError,
     NetworkError,
 )
+from github_security_report.client.failures import _endpoint_diagnostics
 from github_security_report.client.org_reads import OrgReadClient
 from github_security_report.client.parsers import (
     _last_published,
@@ -56,15 +60,13 @@ from github_security_report.client.queries import (
     _REPO_GRAPH_FRAGMENT,
 )
 from github_security_report.client.reads import ReadClient
-from github_security_report.client.transport import (
-    Transport,
-    _endpoint_diagnostics,
-)
+from github_security_report.client.transport import Transport
 from github_security_report.client.writes import GitHubClient
 
 __all__ = [
     "API_BACKOFF_FACTOR",
     "API_BACKOFF_INITIAL_SECONDS",
+    "API_DEFAULT_CONCURRENCY",
     "API_DIAGNOSTIC_DNS_TIMEOUT_SECONDS",
     "API_MAX_RETRIES",
     "API_MAX_TOTAL_WAIT_SECONDS",
@@ -79,6 +81,7 @@ __all__ = [
     "NetworkError",
     "OrgReadClient",
     "ReadClient",
+    "RequestStats",
     "Transport",
     "_CODE_SCANNING_SIGNAL_TOOLS",
     "_DEPENDABOT_ENABLED_QUERY",

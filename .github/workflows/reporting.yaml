@@ -96,6 +96,9 @@ jobs:
           # when set, so a pinned release predating the flag is unaffected
           # until the variable exists.
           graph_batch: "${{ vars.GSR_GRAPH_BATCH }}"
+          # Concurrent GitHub API requests per organisation. Unset leaves the
+          # tool's default (9); passed only when set, like graph_batch.
+          concurrency: "${{ vars.GSR_CONCURRENCY }}"
           force_notify: "${{ inputs.force_notify || 'false' }}"
           use_local_source: "${{ inputs.use_local_source || 'false' }}"
 

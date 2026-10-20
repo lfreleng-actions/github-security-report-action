@@ -27,6 +27,7 @@ from github_security_report.cli.modes import (
 )
 from github_security_report.cli.options import OrgRunOptions, ReportOverrides
 from github_security_report.cli.outputs import TopNLimits
+from github_security_report.config import CONCURRENCY_MAX
 from github_security_report.scope import RepoSelectionError, parse_repo_selection
 
 app = typer.Typer(
@@ -172,6 +173,11 @@ def report(
         "--graph-batch",
         help="Repositories per batched GraphQL prefetch query (minimum 1; default: config, else 10). GitHub bounds how long one query may run, so a batch that still fails is halved automatically; this sets the starting size.",
     ),
+    concurrency: int | None = typer.Option(
+        None,
+        "--concurrency",
+        help=f"Concurrent GitHub API requests per organisation (1-{CONCURRENCY_MAX}; default: config, else 9). Raise it to shorten a run, lower it if GitHub's secondary rate limits push back.",
+    ),
     no_color: bool = typer.Option(False, "--no-color", help="Disable coloured output."),
 ) -> None:
     """Generate a security and quality report."""
@@ -188,6 +194,9 @@ def report(
     boundary.check_non_negative(console, "--repo-min-age-days", repo_min_age_days)
     boundary.check_non_negative(console, "--release-max-age-days", release_max_age_days)
     boundary.check_positive(console, "--graph-batch", graph_batch)
+    boundary.check_positive(
+        console, "--concurrency", concurrency, maximum=CONCURRENCY_MAX
+    )
     hidden = boundary.resolve_hidden(console, hide)
 
     cfg = _load_config(config_file, config_data, org, token_env, console=console)
@@ -218,6 +227,7 @@ def report(
                 include_archived=True if include_archived else None,
                 include_test=True if include_test else None,
                 graph_batch=graph_batch,
+                concurrency=concurrency,
             ),
             hidden=hidden,
         )
@@ -245,6 +255,7 @@ def report(
                     ("--include-archived", include_archived),
                     ("--include-test", include_test),
                     ("--graph-batch", graph_batch is not None),
+                    ("--concurrency", concurrency is not None),
                 )
                 if supplied
             ],

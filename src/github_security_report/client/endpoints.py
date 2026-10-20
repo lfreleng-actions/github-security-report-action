@@ -88,3 +88,11 @@ API_MAX_TOTAL_WAIT_SECONDS = 60.0
 # resolution does not complete within this window the address is reported as
 # ``ip=unresolved (timed out)``.
 API_DIAGNOSTIC_DNS_TIMEOUT_SECONDS = 2.0
+
+# Concurrent requests to the GitHub API per client, unless the caller passes
+# its own (a report run passes ``report.concurrency``, which defaults to the
+# same value; see the README's "Client concurrency" section for why 9).
+API_DEFAULT_CONCURRENCY = 9
+# Concurrent requests to the external Scorecard API per client. It has a
+# semaphore of its own so third-party latency never holds a GitHub slot.
+EXTERNAL_CONCURRENCY = 4

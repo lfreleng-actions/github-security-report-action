@@ -51,6 +51,7 @@ from github_security_report.config.order import (
 )
 from github_security_report.config.schema import (
     _TOKEN_PREFIXES,
+    CONCURRENCY_MAX,
     CONFIG_SCHEMA,
     REPORT_OUTPUTS,
     SEVERITY_NAMES,
@@ -59,6 +60,7 @@ from github_security_report.config.schema import (
 )
 
 __all__ = [
+    "CONCURRENCY_MAX",
     "CONFIG_SCHEMA",
     "DEFAULT_BAU",
     "DEFAULT_CONFIG_DIR",

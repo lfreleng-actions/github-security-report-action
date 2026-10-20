@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
 
@@ -13,6 +14,10 @@ from github_security_report import collect, layout, pulls, scope
 from github_security_report.categories import CategoryKey
 from github_security_report.client import GraphBatchError
 from github_security_report.codeql import CodeQLConfiguration, DefaultSetup
+from github_security_report.collect.graph import (
+    GRAPH_PREFETCH_IN_FLIGHT,
+    collect_graph,
+)
 from github_security_report.config import OrgConfig, ReportConfig
 from github_security_report.models import Repo, RepoGraphData, RepoState, SignalType
 from github_security_report.report import OrgReport, SignalSection
@@ -693,9 +698,13 @@ class BatchLimitedClient(FakeClient):
     query carrying too many aliased repositories fails as a whole (a 502 from
     the edge, after the transport's own retries) while the same repositories
     read fine in smaller batches. ``batches`` records the size of every query
-    issued, in order, so a test can see the batching policy rather than only
-    its outcome. ``splittable`` is what the client would have decided from the
-    response; it defaults to the size-failure reading.
+    issued, so a test can see the batching policy rather than only its
+    outcome; ``read`` records every repository a query returned. ``events``
+    interleaves each query (``("query", size)``) with each size the collector
+    learned from a failure (``("learned", size)``, fed by :func:`_learning`),
+    so a test can check what was issued *after* a failure was observed.
+    ``splittable`` is what the client would have decided from the response;
+    it defaults to the size-failure reading.
     """
 
     def __init__(
@@ -714,11 +723,14 @@ class BatchLimitedClient(FakeClient):
         self.splittable = splittable
         self.reason = reason
         self.batches: list[int] = []
+        self.read: list[str] = []
+        self.events: list[tuple[str, int]] = []
 
     async def repo_graph_batch(
         self, org: str, names: list[str]
     ) -> dict[str, RepoGraphData]:
         self.batches.append(len(names))
+        self.events.append(("query", len(names)))
         if len(names) > self.limit:
             raise GraphBatchError(
                 f"GraphQL prefetch for {org} failed with HTTP {self.status}",
@@ -726,15 +738,60 @@ class BatchLimitedClient(FakeClient):
                 splittable=self.splittable,
                 reason=self.reason,
             )
+        self.read.extend(names)
         return await super().repo_graph_batch(org, names)
+
+
+class _Learned(logging.Handler):
+    """Feeds each size the prefetch learned from a failure into ``events``."""
+
+    def __init__(self, events: list[tuple[str, int]]) -> None:
+        super().__init__(logging.WARNING)
+        self.events = events
+
+    def emit(self, record: logging.LogRecord) -> None:
+        assert isinstance(record.args, tuple)
+        learned = record.args[-1]
+        assert isinstance(learned, int)
+        self.events.append(("learned", learned))
 
 
 async def _collect_graph(
     client: BatchLimitedClient, *, batch_size: int
 ) -> dict[str, RepoGraphData]:
-    return await collect.org._collect_graph(
-        client, "o", client.repos, batch_size=batch_size
-    )
+    return await collect_graph(client, "o", client.repos, batch_size=batch_size)
+
+
+async def _learning(
+    client: BatchLimitedClient, *, batch_size: int
+) -> dict[str, RepoGraphData]:
+    """Run the prefetch with every learned batch size recorded in ``events``."""
+    logger = logging.getLogger("github_security_report.collect.graph")
+    handler = _Learned(client.events)
+    logger.addHandler(handler)
+    try:
+        return await _collect_graph(client, batch_size=batch_size)
+    finally:
+        logger.removeHandler(handler)
+
+
+def _assert_policy(client: BatchLimitedClient, graph: dict[str, RepoGraphData]) -> None:
+    """The halving policy, whatever order the concurrent queries ran in.
+
+    Every repository is read exactly once and lands in the result in scope
+    order; the learned size only ever shrinks; and once a failure has been
+    observed, no query is issued above the size it taught.
+    """
+    names = [repo.name for repo in client.repos]
+    assert sorted(client.read) == sorted(names)
+    assert list(graph) == names
+    learned = float("inf")
+    for kind, size in client.events:
+        if kind == "learned":
+            assert size <= learned
+            learned = size
+        else:
+            assert size <= learned
 
 
 async def test_graph_batch_size_comes_from_the_report_config() -> None:
@@ -742,7 +799,7 @@ async def test_graph_batch_size_comes_from_the_report_config() -> None:
     await collect.collect_org(
         client, OrgConfig(name="o"), ReportConfig(graph_batch=4), generated_at=WHEN
     )
-    assert client.batches == [4, 4, 2]
+    assert sorted(client.batches) == [2, 4, 4]
 
 
 def test_graph_batch_module_constant_still_importable() -> None:
@@ -757,30 +814,47 @@ def test_graph_batch_module_constant_still_importable() -> None:
 async def test_graph_batch_halves_on_a_server_error_and_stays_halved(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    # GitHub can finish a query of 5 repositories but not 10. The first batch
-    # fails and is re-queued at half the size; the rest of this organisation's
-    # collection also uses the smaller size, since a slow day at GitHub is a
-    # property of the collection rather than of the one batch that happened to
-    # hit it first.
+    # GitHub can finish a query of 5 repositories but not 10. The two batches
+    # of 10 in flight together both fail and are re-queued at half the size;
+    # the rest of this organisation's collection also uses the smaller size,
+    # since a slow day at GitHub is a property of the collection rather than
+    # of the one batch that happened to hit it first.
     client = BatchLimitedClient(23, limit=5)
-    with caplog.at_level(logging.WARNING, logger="github_security_report.collect.org"):
-        graph = await _collect_graph(client, batch_size=10)
-    assert client.batches == [10, 5, 5, 5, 5, 3]
-    assert sorted(graph) == sorted(repo.name for repo in client.repos)
+    with caplog.at_level(
+        logging.WARNING, logger="github_security_report.collect.graph"
+    ):
+        graph = await _learning(client, batch_size=10)
+    assert sorted(client.batches) == [3, 5, 5, 5, 5, 10, 10]
+    _assert_policy(client, graph)
     assert not any(data.unreadable for data in graph.values())
     messages = [r.getMessage() for r in caplog.records]
-    assert len(messages) == 1
-    assert "HTTP 502" in messages[0]
-    assert "batch of 10" in messages[0] and "batches of 5" in messages[0]
+    assert len(messages) == 2
+    for message in messages:
+        assert "HTTP 502" in message
+        assert "batch of 10" in message and "batches of 5" in message
 
 
 async def test_graph_batch_halves_repeatedly_down_to_one() -> None:
-    # Only single-repository queries succeed: 8 -> 4 -> 2 -> 1, then every
-    # repository is read one at a time rather than the run aborting.
+    # Only single-repository queries succeed: 6 -> 3 -> 1, then every
+    # repository is read one at a time rather than the run aborting. The
+    # second batch of 3 was already in flight when the first failed, which is
+    # the bounded cost of running the queries concurrently.
     client = BatchLimitedClient(6, limit=1)
-    graph = await _collect_graph(client, batch_size=8)
-    assert client.batches == [6, 3, 1, 1, 1, 1, 1, 1]
-    assert len(graph) == 6
+    graph = await _learning(client, batch_size=8)
+    assert sorted(client.batches) == [1, 1, 1, 1, 1, 1, 3, 3, 6]
+    _assert_policy(client, graph)
+
+
+async def test_graph_batch_learned_size_never_grows_back() -> None:
+    # Failures observed close together teach different sizes (8, 8, then 4
+    # from the shorter tail batch); the smaller one wins and nothing larger
+    # is issued once it has been learned.
+    client = BatchLimitedClient(40, limit=3)
+    graph = await _learning(client, batch_size=16)
+    _assert_policy(client, graph)
+    learned = [size for kind, size in client.events if kind == "learned"]
+    assert learned[:3] == [8, 8, 4]
+    assert learned[-1] == 2
 
 
 async def test_graph_batch_of_one_that_still_fails_aborts() -> None:
@@ -790,7 +864,7 @@ async def test_graph_batch_of_one_that_still_fails_aborts() -> None:
     with pytest.raises(GraphBatchError) as excinfo:
         await _collect_graph(client, batch_size=2)
     assert excinfo.value.status == 502
-    assert client.batches == [2, 1]
+    assert sorted(client.batches) == [1, 2]
 
 
 @pytest.mark.parametrize(
@@ -801,16 +875,16 @@ async def test_graph_batch_does_not_split_on_a_non_size_failure(
 ) -> None:
     # A permission error or an exhausted rate limit would fail identically at
     # any batch size, so splitting would only multiply the requests: the error
-    # propagates from the first batch untouched. The client marks these as
-    # not splittable, whatever HTTP status they arrived with -- a GraphQL rate
-    # limit is an HTTP 200.
+    # propagates from the first failure untouched, and nothing is re-issued.
+    # The client marks these as not splittable, whatever HTTP status they
+    # arrived with -- a GraphQL rate limit is an HTTP 200.
     client = BatchLimitedClient(
         6, limit=1, status=status, splittable=False, reason=reason
     )
     with pytest.raises(GraphBatchError) as excinfo:
         await _collect_graph(client, batch_size=3)
     assert excinfo.value.status == status
-    assert client.batches == [3]
+    assert client.batches == [3, 3]
 
 
 async def test_graph_batch_splits_on_a_200_without_data() -> None:
@@ -818,9 +892,9 @@ async def test_graph_batch_splits_on_a_200_without_data() -> None:
     # object, which the client surfaces with status 200: that is a size
     # failure too and must be split rather than aborted.
     client = BatchLimitedClient(4, limit=2, status=200)
-    graph = await _collect_graph(client, batch_size=4)
-    assert client.batches == [4, 2, 2]
-    assert len(graph) == 4
+    graph = await _learning(client, batch_size=4)
+    assert sorted(client.batches) == [2, 2, 4]
+    _assert_policy(client, graph)
 
 
 async def test_graph_batch_log_names_the_reason_the_client_gave(
@@ -831,7 +905,9 @@ async def test_graph_batch_log_names_the_reason_the_client_gave(
     client = BatchLimitedClient(
         4, limit=2, status=200, reason="resource limits exceeded"
     )
-    with caplog.at_level(logging.WARNING, logger="github_security_report.collect.org"):
+    with caplog.at_level(
+        logging.WARNING, logger="github_security_report.collect.graph"
+    ):
         await _collect_graph(client, batch_size=4)
     assert "failed (resource limits exceeded)" in caplog.records[0].getMessage()
 
@@ -843,6 +919,68 @@ async def test_graph_batch_treats_a_zero_size_as_one() -> None:
     graph = await _collect_graph(client, batch_size=0)
     assert client.batches == [1, 1]
     assert len(graph) == 2
+
+
+class GatedBatchClient(BatchLimitedClient):
+    """A prefetch whose queries stay open until the test lets them finish.
+
+    Records how many queries were in flight at once, and which were cancelled,
+    so a test can see the concurrency bound and the abort behaviour rather
+    than only the final result. ``fail_on`` names repositories whose batch
+    fails at once, without waiting, with a non-splittable error.
+    """
+
+    def __init__(
+        self, repo_count: int, *, fail_on: frozenset[str] = frozenset()
+    ) -> None:
+        super().__init__(repo_count, limit=repo_count)
+        self.fail_on = fail_on
+        self.release = asyncio.Event()
+        self.in_flight = 0
+        self.peak = 0
+        self.cancelled = 0
+
+    async def repo_graph_batch(
+        self, org: str, names: list[str]
+    ) -> dict[str, RepoGraphData]:
+        if self.fail_on.intersection(names):
+            raise GraphBatchError("forbidden", status=403, splittable=False)
+        self.in_flight += 1
+        self.peak = max(self.peak, self.in_flight)
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.cancelled += 1
+            raise
+        finally:
+            self.in_flight -= 1
+        return await super().repo_graph_batch(org, names)
+
+
+async def test_graph_prefetch_keeps_a_bounded_number_of_queries_in_flight() -> None:
+    client = GatedBatchClient(100)
+    task = asyncio.ensure_future(_collect_graph(client, batch_size=10))
+    try:
+        for _ in range(10):
+            await asyncio.sleep(0)
+        peak = client.peak
+    finally:
+        client.release.set()
+        graph = await asyncio.wait_for(task, timeout=1)
+    assert peak == GRAPH_PREFETCH_IN_FLIGHT
+    _assert_policy(client, graph)
+
+
+async def test_graph_prefetch_abort_cancels_the_queries_still_in_flight() -> None:
+    # The second batch fails in a way no smaller query could fix. The run
+    # aborts, and the sibling queries still waiting on GitHub are cancelled
+    # rather than left running past the error.
+    client = GatedBatchClient(40, fail_on=frozenset({"repo-12"}))
+    with pytest.raises(GraphBatchError):
+        await asyncio.wait_for(_collect_graph(client, batch_size=10), timeout=1)
+    assert client.cancelled == GRAPH_PREFETCH_IN_FLIGHT - 1
+    assert client.in_flight == 0
+    assert client.read == []
 
 
 # --------------------------------------------------------------------------- #

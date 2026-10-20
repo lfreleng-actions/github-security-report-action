@@ -5,14 +5,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import ClassVar
 
 import httpx
 import pytest
 import respx
+import yaml
 from rich.console import Console
 from typer.testing import CliRunner
 
@@ -28,6 +31,7 @@ from github_security_report.cli.outputs import (
     slack_limit,
     slack_show,
 )
+from github_security_report.client import RequestStats
 from github_security_report.config import (
     CategoryToggle,
     Config,
@@ -1465,3 +1469,192 @@ async def test_an_incomplete_listing_stops_a_narrowed_run() -> None:
     )
     assert touched is None
     assert "the repository listing for b was incomplete" in console.export_text()
+
+
+# --------------------------------------------------------------------------- #
+# Request accounting
+# --------------------------------------------------------------------------- #
+class _RecordingClient:
+    """Stand-in for ``GitHubClient`` that records how it was constructed."""
+
+    built: ClassVar[list[dict[str, object]]] = []
+
+    def __init__(self, token: str, **kwargs: object) -> None:
+        type(self).built.append(kwargs)
+
+    async def __aenter__(self) -> _RecordingClient:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    @property
+    def stats(self) -> RequestStats:
+        return RequestStats(requests=3, by_status={200: 3}, elapsed=1.5)
+
+
+@pytest.fixture
+def recording_client(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    """Run org mode against :class:`_RecordingClient` and an empty collection."""
+    from github_security_report import collect
+    from github_security_report.cli import modes
+
+    async def fake_collect(
+        _client: object, org_cfg: OrgConfig, *_args: object, **_kwargs: object
+    ) -> OrgReport:
+        return build_org_report(org_cfg.name, [], repo_count=0)
+
+    built: list[dict[str, object]] = []
+    monkeypatch.setattr(_RecordingClient, "built", built)
+    monkeypatch.setattr(modes, "GitHubClient", _RecordingClient)
+    monkeypatch.setattr(collect, "collect_org", fake_collect)
+    return built
+
+
+def test_verbose_org_run_logs_the_request_accounting_once_per_org(
+    recording_client: list[dict[str, object]], caplog: pytest.LogCaptureFixture
+) -> None:
+    config_data = json.dumps({"organizations": [{"name": "o"}, {"name": "p"}]})
+    with caplog.at_level(logging.INFO, logger="github_security_report.cli.modes"):
+        result = cli.invoke(
+            app, ["--verbose", "report", "--config-data", config_data, "--no-color"]
+        )
+    assert result.exit_code == 0, result.stdout
+    lines = [r.getMessage() for r in caplog.records if "GitHub API for" in r.message]
+    assert lines == [
+        f"GitHub API for {org}: 3 requests (0 retries), 0.0 MiB received, 1.5 s"
+        for org in ("o", "p")
+    ]
+
+
+def test_verbose_org_run_logs_the_request_accounting_when_collection_aborts(
+    recording_client: list[dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A run that aborts -- here on a rejected token, exit code 4 -- is exactly
+    # the run whose request, retry and timing figures are wanted, so the line
+    # is logged on the way out, once, before the abort is reported.
+    from github_security_report import collect
+    from github_security_report.client import AuthError
+
+    async def failing_collect(*_args: object, **_kwargs: object) -> OrgReport:
+        raise AuthError("GitHub rejected the credentials (HTTP 401)")
+
+    monkeypatch.setattr(collect, "collect_org", failing_collect)
+    config_data = json.dumps({"organizations": [{"name": "o"}, {"name": "p"}]})
+    with caplog.at_level(logging.INFO, logger="github_security_report.cli.modes"):
+        result = cli.invoke(
+            app, ["--verbose", "report", "--config-data", config_data, "--no-color"]
+        )
+    assert result.exit_code == 4, result.stdout
+    lines = [r.getMessage() for r in caplog.records if "GitHub API for" in r.message]
+    # Only the first organisation was reached before the abort.
+    assert lines == [
+        "GitHub API for o: 3 requests (0 retries), 0.0 MiB received, 1.5 s"
+    ]
+
+
+# --------------------------------------------------------------------------- #
+# Client concurrency
+# --------------------------------------------------------------------------- #
+_CONCURRENCY_CONFIG = json.dumps(
+    {
+        "report": {"concurrency": 5},
+        "organizations": [{"name": "o"}, {"name": "p", "report": {"concurrency": 7}}],
+    }
+)
+
+
+def _concurrency(built: list[dict[str, object]]) -> list[object]:
+    return [kwargs.get("concurrency") for kwargs in built]
+
+
+def test_concurrency_reaches_each_org_client_from_config(
+    recording_client: list[dict[str, object]],
+) -> None:
+    result = cli.invoke(
+        app, ["report", "--config-data", _CONCURRENCY_CONFIG, "--no-color"]
+    )
+    assert result.exit_code == 0, result.stdout
+    assert _concurrency(recording_client) == [5, 7]
+
+
+def test_concurrency_flag_wins_over_config(
+    recording_client: list[dict[str, object]],
+) -> None:
+    result = cli.invoke(
+        app,
+        ["report", "--config-data", _CONCURRENCY_CONFIG, "--no-color"]
+        + ["--concurrency", "12"],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert _concurrency(recording_client) == [12, 12]
+
+
+def test_concurrency_defaults_to_nine(
+    recording_client: list[dict[str, object]],
+) -> None:
+    result = cli.invoke(app, ["report", "--org", "o", "--no-color"])
+    assert result.exit_code == 0, result.stdout
+    assert _concurrency(recording_client) == [9]
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("0", "--concurrency must be 1 or greater"),
+        ("-1", "--concurrency must be 1 or greater"),
+        ("33", "--concurrency must be 32 or less"),
+    ],
+)
+def test_concurrency_out_of_range_rejected(value: str, message: str) -> None:
+    # The same bounds as the config schema, so a flag cannot ask GitHub for
+    # more parallelism than a configuration file could.
+    result = cli.invoke(
+        app, ["report", "--org", "o", f"--concurrency={value}", "--no-color"]
+    )
+    assert result.exit_code == 2
+    assert message in result.stdout
+
+
+def test_concurrency_flag_is_org_mode_only() -> None:
+    result = cli.invoke(
+        app,
+        ["report", "--repo", "o/r", "--scope", "repo", "--no-color"]
+        + ["--concurrency", "4"],
+    )
+    assert result.exit_code == 2, result.stdout
+    assert "--concurrency" in result.stdout
+    assert "organisation mode only" in result.stdout
+
+
+def test_concurrency_moves_in_either_direction() -> None:
+    # An operational lever, like the batch size: it may raise or lower the
+    # configured value.
+    org = OrgConfig(name="o", report=ReportConfig(concurrency=9))
+    _, lowered = ReportOverrides(concurrency=4).apply(org)
+    _, raised = ReportOverrides(concurrency=16).apply(org)
+    _, untouched = ReportOverrides().apply(org)
+    assert lowered.concurrency == 4
+    assert raised.concurrency == 16
+    assert untouched.concurrency == 9
+
+
+def test_action_passes_the_concurrency_input_to_the_flag() -> None:
+    # Empty by default, so a pinned release predating the flag is not handed
+    # one; passed through only when set. The bundled workflow feeds it from a
+    # repository variable, beside GSR_GRAPH_BATCH.
+    root = Path(__file__).resolve().parents[1]
+    action = yaml.safe_load((root / "action.yaml").read_text())
+    assert action["inputs"]["concurrency"]["default"] == ""
+    step = next(
+        s for s in action["runs"]["steps"] if "INPUT_GRAPH_BATCH" in s.get("env", {})
+    )
+    assert step["env"]["INPUT_CONCURRENCY"] == "${{ inputs.concurrency }}"
+    assert (
+        '[ -n "$INPUT_CONCURRENCY" ] && args+=(--concurrency "$INPUT_CONCURRENCY")'
+        in step["run"]
+    )
+    workflow = (root / ".github" / "workflows" / "reporting.yaml").read_text()
+    assert 'concurrency: "${{ vars.GSR_CONCURRENCY }}"' in workflow

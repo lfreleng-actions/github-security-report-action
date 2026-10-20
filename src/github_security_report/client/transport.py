@@ -12,119 +12,37 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import socket
+import time
 from dataclasses import dataclass
 from typing import TypeVar
 
 import httpx
 
+from github_security_report.client.accounting import (
+    RequestStats,
+    RetryKind,
+    _RequestTally,
+)
 from github_security_report.client.endpoints import (
     API_BACKOFF_FACTOR,
     API_BACKOFF_INITIAL_SECONDS,
-    API_DIAGNOSTIC_DNS_TIMEOUT_SECONDS,
+    API_DEFAULT_CONCURRENCY,
     API_MAX_RETRIES,
     API_MAX_TOTAL_WAIT_SECONDS,
+    EXTERNAL_CONCURRENCY,
     GITHUB_API,
     GRAPHQL_API,
     SCORECARD_API,
 )
-from github_security_report.client.errors import AuthError, NetworkError
+from github_security_report.client.failures import (
+    _auth_error,
+    _transport_failure_result,
+)
 from github_security_report.client.parsers import _next_page_url, _parse_retry_after
 
 log = logging.getLogger(__name__)
 
 _TransportT = TypeVar("_TransportT", bound="Transport")
-
-
-async def _endpoint_diagnostics(url: str) -> str:
-    """A ``host=... ip=... port=...`` line describing a failed endpoint.
-
-    Best-effort and never raises: it re-resolves the URL's host so an operator
-    can tell a DNS failure (no address) from a host that resolves but will not
-    connect. Appended to the network-error message on its own dedicated line.
-
-    The lookup runs on the event loop's resolver under a short timeout
-    (``API_DIAGNOSTIC_DNS_TIMEOUT_SECONDS``) rather than calling the blocking
-    ``socket.getaddrinfo`` directly: this routine fires exactly when the network
-    is already failing (often DNS itself), so a synchronous resolve could stall
-    the event loop and delay the abort. If resolution does not complete promptly
-    the address falls back to ``unresolved (...)``.
-    """
-    try:
-        parsed = httpx.URL(url)
-        host = parsed.host or "?"
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    except Exception:  # pragma: no cover - defensive URL parsing
-        return f"host=? ip=? port=? ({url})"
-    loop = asyncio.get_running_loop()
-    try:
-        infos = await asyncio.wait_for(
-            loop.getaddrinfo(host, port, type=socket.SOCK_STREAM),
-            timeout=API_DIAGNOSTIC_DNS_TIMEOUT_SECONDS,
-        )
-        ips = sorted({str(info[4][0]) for info in infos})
-        addr = ", ".join(ips) if ips else "no addresses"
-    except asyncio.TimeoutError:
-        addr = "unresolved (timed out)"
-    except OSError as exc:
-        detail = exc.strerror or str(exc) or "resolution failed"
-        addr = f"unresolved ({detail})"
-    return f"host={host} ip={addr} port={port}"
-
-
-def _auth_error(method: str, url: str) -> AuthError:
-    """The :class:`AuthError` for credentials GitHub rejected on ``url``.
-
-    Built on the very first 401 rather than retried or degraded, for the
-    reasons :class:`AuthError` gives. The message names the remedy, because
-    the operator's next action is to check the token, not to retry.
-    """
-    return AuthError(
-        "Authentication error: GitHub rejected the credentials "
-        "(HTTP 401); aborting because every subsequent read would "
-        "fail the same way and the report would render as "
-        "'no data' or 'all clean' rather than as a failure.\n  "
-        f"endpoint={method} {url}\n  "
-        "Check that the token is set, has not expired, and has not "
-        "been revoked or rotated."
-    )
-
-
-async def _transport_failure_result(
-    exc: httpx.HTTPError,
-    method: str,
-    url: str,
-    *,
-    attempt: int,
-    is_external: bool,
-) -> httpx.Response:
-    """Resolve a transport failure that outlived the whole retry budget.
-
-    A third-party (Scorecard) endpoint degrades to an indeterminate 503 so one
-    flaky external API never aborts the GitHub report. The GitHub API instead
-    raises :class:`NetworkError`: a report built without live data is actively
-    misleading, so the run aborts, carrying a diagnostics line that names the
-    endpoint that could not be reached.
-    """
-    if is_external:
-        log.warning(
-            "external request to %s failed after %d attempt(s): "
-            "%s; signal degraded to unknown",
-            url,
-            attempt + 1,
-            exc,
-        )
-        return httpx.Response(503, request=httpx.Request(method, url))
-    diagnostics = await _endpoint_diagnostics(url)
-    raise NetworkError(
-        "Network error: the GitHub API is unreachable after "
-        f"{attempt + 1} attempt(s) within "
-        f"{API_MAX_TOTAL_WAIT_SECONDS:.0f}s; aborting because a "
-        "security report cannot be produced without live API "
-        "data.\n  "
-        f"endpoint={method} {url} {diagnostics} "
-        f"cause={exc!s}"
-    ) from exc
 
 
 class _RetryBudget:
@@ -178,7 +96,7 @@ class Transport:
         api_url: str = GITHUB_API,
         graphql_url: str = GRAPHQL_API,
         scorecard_url: str = SCORECARD_API,
-        concurrency: int = 6,
+        concurrency: int = API_DEFAULT_CONCURRENCY,
         max_retries: int = API_MAX_RETRIES,
         timeout: float = 30.0,
     ) -> None:
@@ -187,6 +105,8 @@ class Transport:
         self._scorecard_url = scorecard_url.rstrip("/")
         self._max_retries = max_retries
         self._sem = asyncio.Semaphore(concurrency)
+        self._ext_sem = asyncio.Semaphore(EXTERNAL_CONCURRENCY)
+        self._tally = _RequestTally()
         self._client = httpx.AsyncClient(
             timeout=timeout,
             headers={
@@ -211,6 +131,17 @@ class Transport:
     async def aclose(self) -> None:
         await self._client.aclose()
         await self._ext_client.aclose()
+        if self._tally.finished is None:
+            self._tally.finished = time.monotonic()
+
+    @property
+    def stats(self) -> RequestStats:
+        """What this client's requests have cost so far (see RequestStats).
+
+        Elapsed time runs from construction until :meth:`aclose`, so reading
+        it after the client closes gives the whole run.
+        """
+        return self._tally.snapshot()
 
     # ------------------------------------------------------------------ #
     # Low-level request with backoff
@@ -260,13 +191,24 @@ class Transport:
         """
         http = client or self._client
         is_external = http is self._ext_client
+        # Third-party reads queue on their own semaphore, so a slow external
+        # API cannot hold the slots GitHub requests are waiting for.
+        sem = self._ext_sem if is_external else self._sem
         # Resolved once: an optional read reports its retries at DEBUG so it
         # cannot nag about a signal whose failure the caller already swallows.
         level = logging.DEBUG if quiet else logging.WARNING
         budget = _RetryBudget(self._max_retries)
+        # What the next attempt retries, if anything. Counted when that attempt
+        # is issued rather than when the backoff begins, so a request cancelled
+        # during its backoff (a sibling prefetch batch aborting the run) does
+        # not count a retry that never happened.
+        retry_of: RetryKind | None = None
         while True:
             try:
-                async with self._sem:
+                async with sem:
+                    # Counted before the request leaves, so an attempt that
+                    # never gets an answer is still a request that was made.
+                    self._tally.attempt(retry_of=retry_of)
                     resp = await http.request(method, url, **kwargs)  # type: ignore[arg-type]
             except httpx.HTTPError as exc:
                 # Transport failure: the endpoint could not be reached at all
@@ -281,8 +223,10 @@ class Transport:
                         is_external=is_external,
                     )
                 self._log_transport_retry(url, exc, delay, budget.attempt, level)
+                retry_of = "transport"
                 await budget.sleep(delay)
                 continue
+            self._tally.record(resp)
             if resp.status_code == 401 and not is_external:
                 # Credentials rejected: fail fast on the very first request
                 # rather than letting a hundred more rejections accumulate into
@@ -305,6 +249,7 @@ class Transport:
             # The discarded response must be closed; we are retrying and will
             # not read its body, so leaving it open would leak a pool connection.
             await resp.aclose()
+            retry_of = "degraded"
             await budget.sleep(plan.delay)
 
     def _plan_degraded_retry(self, resp: httpx.Response, attempt: int) -> _RetryPlan:

@@ -304,6 +304,7 @@ environment-variable name, never embedded.
     "issue_age_warn_days": 30,
     "issue_age_error_days": 60,
     "graph_batch": 10,
+    "concurrency": 9,
     "order": { "style": "auto" }
   },
   "organizations": [
@@ -1301,16 +1302,25 @@ size is bounded by *latency*, not by rate-limit cost: 25 repositories measured
 at ~9 s against `lfreleng-actions` and failed intermittently; 10 measured at
 ~3.5 s.
 
+Up to four of these queries run at once. Each takes a few seconds on GitHub's
+side, so a prefetch issued one query at a time left most of the client's
+concurrency idle; against `lfreleng-actions` it took about 50 s of a 100 s run.
+
 `report.graph_batch` (default `10`; minimum `1`) sets the starting batch size,
 globally or per organisation. It is a lever for a slow day rather than a hard
 limit: a batch that still fails on size after the transport's own retries is
-re-issued at **half** the size, and the smaller size is kept for the rest of
-that organisation's collection (each organisation in a multi-org run starts
-from its own configured size, since organisations differ in how much data a
-repository carries). Only a single-repository query GitHub still cannot
-answer, or a failure that a smaller query could not fix (a `403`, an
-exhausted rate limit, or a `500`/`503` outage rather than a `502`/`504`
-timeout), aborts the run with exit code `3`.
+re-issued at **half** the size, and every batch issued after that failure is
+seen uses the smaller size for the rest of that organisation's collection
+(each organisation in a multi-org run starts from its own configured size,
+since organisations differ in how much data a repository carries). The
+learned size only shrinks. Because queries overlap, the batches already in
+flight when the first failure arrives were issued at the old size, so on a
+slow day up to four oversized batches, rather than one, may fail before the
+smaller size takes effect; that bounded cost buys the overlap. Only a
+single-repository query GitHub still cannot answer, or a failure that a
+smaller query could not fix (a `403`, an exhausted rate limit, or a
+`500`/`503` outage rather than a `502`/`504` timeout), aborts the run with
+exit code `3`, and the queries still in flight are cancelled first.
 
 The value can be set three ways, in this order of precedence:
 
@@ -1334,6 +1344,65 @@ a larger value buys nothing except a longer first failure.
 > the tool, so an unset variable cannot break a run; but a pinned tool version
 > predating the flag will reject a set one with `No such option`, so set
 > `GSR_GRAPH_BATCH` only once the pinned release supports it.
+
+### Client concurrency
+
+Each organisation's run holds at most `report.concurrency` requests to the
+GitHub API open at once (default `9`; minimum `1`, maximum `32`), globally or
+per organisation. Reads from the external Scorecard API queue on a separate
+limit of four, so a slow third-party endpoint never holds a slot that a
+GitHub request is waiting for.
+
+The value can be set three ways, in this order of precedence:
+
+1. `--concurrency N` on the command line (the action's `concurrency` input).
+2. A **repository or organisation variable** passed to that input. The
+   bundled `reporting.yaml` passes `vars.GSR_CONCURRENCY`, so the value can be
+   adjusted from repository settings without a workflow edit or a release.
+3. `report.concurrency` in the configuration; otherwise the built-in `9`.
+
+`9` is a deliberate halfway point. GitHub documents its secondary rate limits
+as no more than 100 concurrent requests across REST and GraphQL, and no more
+than 900 points per minute for REST endpoints; this project has hit those
+limits before, so the default stays well clear of them. Measured against
+`lfreleng-actions` (143 repositories, about 1,400 requests; one run each in
+the same hour, so read ±10–15 % as GitHub latency noise), before the GraphQL
+prefetch ran concurrently:
+
+<!-- markdownlint-disable MD013 -->
+
+| Concurrency | Wall | Throughput | Mean time per request | Average slots busy | GitHub pushback |
+| ----------- | ---: | ---------: | --------------------: | -----------------: | --------------- |
+| 6 (former default) | 102.5 s | 13.7 req/s | 0.283 s | 3.9 / 6 | none |
+| 12 | 75.9 s | 18.5 req/s | 0.286 s | 5.3 / 12 | none |
+
+<!-- markdownlint-enable MD013 -->
+
+Raise it once a run shows no pushback; lower it if GitHub starts answering
+with secondary rate-limit `403`/`429` responses. To measure a change, run the
+CLI with `--verbose`: when each organisation's collection finishes it logs
+one line of what the run cost, for example
+
+<!-- markdownlint-disable MD013 -->
+
+```text
+GitHub API for lfreleng-actions: 1402 requests (0 retries), 822 core points, 64 graphql points, 41.3 MiB received, 102.5 s
+```
+
+<!-- markdownlint-enable MD013 -->
+
+The request count is every request the tool issued, including retries and
+attempts that never got an answer. The points come from GitHub's own
+`x-ratelimit-*` response headers rather than from counting: GitHub meters a
+token across more than one bucket per resource (alike requests seconds apart
+can carry different `x-ratelimit-reset` values with independent counters), so
+each bucket's spread between its lowest and highest reading is summed per
+resource. The lowest reading already includes that request's own cost, so the
+figure is short by the first request of each bucket — a measurement aid, not a
+bill. Nothing of this line reaches the rendered report or the step summary.
+
+> As with `graph_batch`, an empty input is not passed to the tool, so set
+> `GSR_CONCURRENCY` only once the pinned release supports `--concurrency`.
 
 ### Pass/fail severity cutoff
 
@@ -1413,6 +1482,7 @@ and the Slack **bot token** is consumed by the workflow, not the CLI.
 | `force_notify` | No | `false` | Post to Slack regardless of `report_day` |
 | `hide` | No | `""` | Category keys to suppress on every output (space- or comma-separated). Overrides config, and is one-way: it cannot re-enable a disabled category |
 | `graph_batch` | No | `""` | Repositories per batched GraphQL prefetch query (minimum `1`; default: config, else `10`). Pass a repository or organisation variable such as `${{ vars.GSR_GRAPH_BATCH }}` to adjust it from settings. A batch that still fails is halved automatically, so this sets the starting size (see [GraphQL prefetch batch size](#graphql-prefetch-batch-size)) |
+| `concurrency` | No | `""` | Concurrent GitHub API requests per organisation (`1` to `32`; default: config, else `9`). Pass a repository or organisation variable such as `${{ vars.GSR_CONCURRENCY }}` to adjust it from settings (see [Client concurrency](#client-concurrency)) |
 | `tool_version` | No | `""` | Published PyPI version to install. Empty (the default) uses the Dependabot-managed pin in `.github/runtime-pin/requirements.txt`; set a specific version to override. Ignored on pull requests or when `use_local_source` is `true` (both run from source) |
 | `use_local_source` | No | `false` | Run from the checked-out source instead of PyPI (for testing unreleased code from any event) |
 
