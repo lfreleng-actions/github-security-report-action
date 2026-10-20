@@ -129,7 +129,11 @@ async def _collect_reports(
 
     Once each organisation's client closes, what its requests cost is logged
     at INFO: visible with ``--verbose``, which is how a run is measured, and
-    silent otherwise. Nothing of it reaches the rendered report.
+    silent otherwise. Nothing of it reaches the rendered report. It is logged
+    whether or not the collection finished: a run that aborts on a rate limit,
+    an outage or a rejected token is exactly the run whose request, retry and
+    timing figures are wanted, so the exit path logs them before the error
+    propagates.
     """
     pairs: list[OrgPair] = []
     for org_cfg in cfg.organizations:
@@ -140,16 +144,21 @@ async def _collect_reports(
             )
             return None
         effective_cfg, report_cfg = overrides.apply(org_cfg)
-        async with GitHubClient(token, concurrency=report_cfg.concurrency) as client:
-            pairs.append(
-                (
-                    org_cfg,
-                    await collect.collect_org(
-                        client, effective_cfg, report_cfg, generated_at=now
-                    ),
+        client = GitHubClient(token, concurrency=report_cfg.concurrency)
+        try:
+            async with client:
+                pairs.append(
+                    (
+                        org_cfg,
+                        await collect.collect_org(
+                            client, effective_cfg, report_cfg, generated_at=now
+                        ),
+                    )
                 )
-            )
-        log.info("GitHub API for %s: %s", org_cfg.name, client.stats.summary())
+        finally:
+            # After the context has closed the client, so the elapsed time
+            # covers the whole run; the error, if any, carries on from here.
+            log.info("GitHub API for %s: %s", org_cfg.name, client.stats.summary())
     return pairs
 
 

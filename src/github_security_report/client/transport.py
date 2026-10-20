@@ -18,7 +18,11 @@ from typing import TypeVar
 
 import httpx
 
-from github_security_report.client.accounting import RequestStats, _RequestTally
+from github_security_report.client.accounting import (
+    RequestStats,
+    RetryKind,
+    _RequestTally,
+)
 from github_security_report.client.endpoints import (
     API_BACKOFF_FACTOR,
     API_BACKOFF_INITIAL_SECONDS,
@@ -194,9 +198,17 @@ class Transport:
         # cannot nag about a signal whose failure the caller already swallows.
         level = logging.DEBUG if quiet else logging.WARNING
         budget = _RetryBudget(self._max_retries)
+        # What the next attempt retries, if anything. Counted when that attempt
+        # is issued rather than when the backoff begins, so a request cancelled
+        # during its backoff (a sibling prefetch batch aborting the run) does
+        # not count a retry that never happened.
+        retry_of: RetryKind | None = None
         while True:
             try:
                 async with sem:
+                    # Counted before the request leaves, so an attempt that
+                    # never gets an answer is still a request that was made.
+                    self._tally.attempt(retry_of=retry_of)
                     resp = await http.request(method, url, **kwargs)  # type: ignore[arg-type]
             except httpx.HTTPError as exc:
                 # Transport failure: the endpoint could not be reached at all
@@ -211,7 +223,7 @@ class Transport:
                         is_external=is_external,
                     )
                 self._log_transport_retry(url, exc, delay, budget.attempt, level)
-                self._tally.transport_retries += 1
+                retry_of = "transport"
                 await budget.sleep(delay)
                 continue
             self._tally.record(resp)
@@ -237,7 +249,7 @@ class Transport:
             # The discarded response must be closed; we are retrying and will
             # not read its body, so leaving it open would leak a pool connection.
             await resp.aclose()
-            self._tally.degraded_retries += 1
+            retry_of = "degraded"
             await budget.sleep(plan.delay)
 
     def _plan_degraded_retry(self, resp: httpx.Response, attempt: int) -> _RetryPlan:

@@ -1391,10 +1391,15 @@ GitHub API for lfreleng-actions: 1402 requests (0 retries), 822 core points, 64 
 
 <!-- markdownlint-enable MD013 -->
 
-The points come from GitHub's own `x-ratelimit-*` response headers (the
-spread between the lowest and highest reading for each resource), and read
-`unknown` when the rate-limit window reset during the run. Nothing of this
-line reaches the rendered report or the step summary.
+The request count is every request the tool issued, including retries and
+attempts that never got an answer. The points come from GitHub's own
+`x-ratelimit-*` response headers rather than from counting: GitHub meters a
+token across more than one bucket per resource (alike requests seconds apart
+can carry different `x-ratelimit-reset` values with independent counters), so
+each bucket's spread between its lowest and highest reading is summed per
+resource. The lowest reading already includes that request's own cost, so the
+figure is short by the first request of each bucket — a measurement aid, not a
+bill. Nothing of this line reaches the rendered report or the step summary.
 
 > As with `graph_batch`, an empty input is not passed to the tool, so set
 > `GSR_CONCURRENCY` only once the pinned release supports `--concurrency`.

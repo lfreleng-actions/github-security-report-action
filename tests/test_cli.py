@@ -1527,6 +1527,34 @@ def test_verbose_org_run_logs_the_request_accounting_once_per_org(
     ]
 
 
+def test_verbose_org_run_logs_the_request_accounting_when_collection_aborts(
+    recording_client: list[dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A run that aborts -- here on a rejected token, exit code 4 -- is exactly
+    # the run whose request, retry and timing figures are wanted, so the line
+    # is logged on the way out, once, before the abort is reported.
+    from github_security_report import collect
+    from github_security_report.client import AuthError
+
+    async def failing_collect(*_args: object, **_kwargs: object) -> OrgReport:
+        raise AuthError("GitHub rejected the credentials (HTTP 401)")
+
+    monkeypatch.setattr(collect, "collect_org", failing_collect)
+    config_data = json.dumps({"organizations": [{"name": "o"}, {"name": "p"}]})
+    with caplog.at_level(logging.INFO, logger="github_security_report.cli.modes"):
+        result = cli.invoke(
+            app, ["--verbose", "report", "--config-data", config_data, "--no-color"]
+        )
+    assert result.exit_code == 4, result.stdout
+    lines = [r.getMessage() for r in caplog.records if "GitHub API for" in r.message]
+    # Only the first organisation was reached before the abort.
+    assert lines == [
+        "GitHub API for o: 3 requests (0 retries), 0.0 MiB received, 1.5 s"
+    ]
+
+
 # --------------------------------------------------------------------------- #
 # Client concurrency
 # --------------------------------------------------------------------------- #
