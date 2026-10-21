@@ -69,6 +69,8 @@ class FakeClient:
         self.members: set[str] = {"insider"}
         # Why membership is unreadable; None reads ``members`` in full.
         self.membership_gap: MembershipGap | None = None
+        # Every identity read, by method name, in call order.
+        self.identity_reads: list[str] = []
         self.viewer: str = "insider"
         # "Allow auto-merge" per repository; absent names default to enabled.
         # Unlike the other posture flags this one rides the GraphQL prefetch,
@@ -88,11 +90,13 @@ class FakeClient:
         return 200, self.repos
 
     async def org_members(self, org: str) -> OrgMembership:
+        self.identity_reads.append("org_members")
         if self.membership_gap is not None:
             return OrgMembership(members=None, gap=self.membership_gap)
         return OrgMembership(members=frozenset(self.members))
 
     async def viewer_login(self) -> str:
+        self.identity_reads.append("viewer_login")
         return self.viewer
 
     async def org_bulk_alerts(self, org: str, kind: str) -> tuple[int, list[dict]]:
@@ -683,6 +687,35 @@ async def test_collect_org_carries_why_membership_was_unreadable(
         client, OrgConfig(name="o"), ReportConfig(), generated_at=WHEN
     )
     assert report.membership_gap is gap
+
+
+async def test_collect_org_without_author_tables_skips_identity_reads() -> None:
+    # Remediation acts on none of the author-aware tables, so collecting for it
+    # must not read membership (and so cannot warn about it) or the viewer.
+    client = FakeClient()
+    client.membership_gap = MembershipGap.PERMISSION
+    report = await collect.collect_org(
+        client,
+        OrgConfig(name="o"),
+        ReportConfig(),
+        generated_at=WHEN,
+        author_tables=False,
+    )
+    assert client.identity_reads == []
+    assert report.issues is None
+    assert report.pull_requests is None
+    assert report.assigned_pull_requests is None
+    assert report.membership_gap is None
+    # The posture tables remediation does act on are still collected.
+    assert report.private_vulnerability_reporting is not None
+
+
+async def test_collect_org_reads_identity_once_for_the_report() -> None:
+    client = FakeClient()
+    await collect.collect_org(
+        client, OrgConfig(name="o"), ReportConfig(), generated_at=WHEN
+    )
+    assert sorted(client.identity_reads) == ["org_members", "viewer_login"]
 
 
 async def test_collect_org_releases_exclude_and_min_age() -> None:

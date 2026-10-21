@@ -79,37 +79,13 @@ async def _posture_for_repo(repo: Repo, ctx: OrgCollectContext) -> RepoPosture:
     )
 
 
-async def attach_extra_tables(
+async def _attach_author_tables(
     report: OrgReport,
     in_scope: list[Repo],
     ctx: OrgCollectContext,
-    org_cfg: OrgConfig,
     report_cfg: ReportConfig,
 ) -> None:
-    """Probe posture for every repository and attach the derived tables."""
-    postures = await gather_in_batches(
-        in_scope, lambda repo: _posture_for_repo(repo, ctx)
-    )
-    report.dependabot_tables = posture.build_dependabot_tables(postures)
-    report.releases = posture.build_releases_table(
-        postures,
-        generated_at=report.generated_at,
-        repo_min_age_days=report_cfg.repo_min_age_days,
-        release_max_age_days=report_cfg.release_max_age_days,
-        exclude=org_cfg.releases_exclude,
-    )
-    report.mutable_releases = posture.build_mutable_releases_table(postures)
-    report.private_vulnerability_reporting = posture.build_pvr_table(postures)
-    report.auto_merge = posture.build_auto_merge_table(postures)
-    codeql_facts = await collect_codeql_facts(
-        in_scope, ctx, stale_days=report_cfg.codeql_stale_days
-    )
-    report.codeql_tables = codeql.build_codeql_tables(
-        codeql_facts, stale_days=report_cfg.codeql_stale_days
-    )
-    report.codeql_health = codeql.CodeQLHealth(
-        facts=tuple(codeql_facts), stale_days=report_cfg.codeql_stale_days
-    )
+    """Attach Issues, Pull Requests and Assigned to Me, and their identity reads."""
     # Organisation membership is collected once and reused by both author-aware
     # tables, so classifying contributions costs one query rather than a probe
     # per author. It is the token-independent basis for "outside the
@@ -157,6 +133,48 @@ async def attach_extra_tables(
             error_threshold=report_cfg.dependabot_error_threshold,
             viewer=viewer,
         )
+
+
+async def attach_extra_tables(
+    report: OrgReport,
+    in_scope: list[Repo],
+    ctx: OrgCollectContext,
+    org_cfg: OrgConfig,
+    report_cfg: ReportConfig,
+    *,
+    author_tables: bool = True,
+) -> None:
+    """Probe posture for every repository and attach the derived tables.
+
+    ``author_tables=False`` leaves the Issues, Pull Requests and Assigned to Me
+    tables uncollected, and with them the membership and viewer reads they
+    alone need. Remediation acts on none of them.
+    """
+    postures = await gather_in_batches(
+        in_scope, lambda repo: _posture_for_repo(repo, ctx)
+    )
+    report.dependabot_tables = posture.build_dependabot_tables(postures)
+    report.releases = posture.build_releases_table(
+        postures,
+        generated_at=report.generated_at,
+        repo_min_age_days=report_cfg.repo_min_age_days,
+        release_max_age_days=report_cfg.release_max_age_days,
+        exclude=org_cfg.releases_exclude,
+    )
+    report.mutable_releases = posture.build_mutable_releases_table(postures)
+    report.private_vulnerability_reporting = posture.build_pvr_table(postures)
+    report.auto_merge = posture.build_auto_merge_table(postures)
+    codeql_facts = await collect_codeql_facts(
+        in_scope, ctx, stale_days=report_cfg.codeql_stale_days
+    )
+    report.codeql_tables = codeql.build_codeql_tables(
+        codeql_facts, stale_days=report_cfg.codeql_stale_days
+    )
+    report.codeql_health = codeql.CodeQLHealth(
+        facts=tuple(codeql_facts), stale_days=report_cfg.codeql_stale_days
+    )
+    if author_tables:
+        await _attach_author_tables(report, in_scope, ctx, report_cfg)
     # The Dependabot alerts enablement sub-table carries the repositories with
     # Dependabot alerts disabled, so drop them from the Dependabot signal
     # section's nag list to avoid listing the same repositories twice under the

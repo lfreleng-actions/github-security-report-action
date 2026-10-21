@@ -318,6 +318,9 @@ async def _run_remediate(
                 org_cfg.report,
                 generated_at=now,
                 selected=selected[index] if repos else None,
+                # No remediation acts on the author-aware tables, so their
+                # membership and viewer reads would only cost requests.
+                author_tables=False,
             )
             results = await remediate_mod.remediate_org(
                 client, report, categories=categories, apply=apply

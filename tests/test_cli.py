@@ -1100,6 +1100,21 @@ def test_remediate_names_the_default_config_under_its_divider(
 
 
 @respx.mock
+def test_remediate_never_reads_membership_or_the_viewer() -> None:
+    _mock_offender_org()
+    result = cli.invoke(app, ["remediate", "--org", "o", "--no-color"])
+    assert result.exit_code == 0, result.stdout
+    queries = [
+        json.loads(call.request.content)["query"]
+        for call in respx.calls
+        if str(call.request.url) == f"{API}/graphql"
+    ]
+    assert queries, "the posture prefetch should still run"
+    assert not [q for q in queries if "membersWithRole" in q or "viewer {" in q]
+    assert "results incomplete" not in result.stdout
+
+
+@respx.mock
 def test_remediate_runs_the_codeql_cleanup_only_when_named() -> None:
     # Named explicitly, the cleanup category is accepted and reported. This
     # org has no CodeQL at all, so there is nothing to clean up -- and any
