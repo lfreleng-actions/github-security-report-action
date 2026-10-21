@@ -18,6 +18,7 @@ import httpx
 
 from github_security_report.client.copilot import _copilot_unresolved
 from github_security_report.client.reviews import _changes_requested
+from github_security_report.code_quality import linguist_names
 from github_security_report.models import (
     AuthorRef,
     IssueRef,
@@ -408,6 +409,7 @@ def _parse_repo_node(node: dict) -> RepoGraphData:
     return RepoGraphData(
         dependabot_alerts_enabled=enabled,
         auto_merge_allowed=auto_merge,
+        languages=linguist_names(node.get("languages")),
         head_committed_at=_parse_iso(head_target.get("committedDate")),
         latest_tag_at=_tag_committed_date(node.get("tags")),
         latest_release_at=latest.published_at if latest else None,

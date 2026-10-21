@@ -25,6 +25,7 @@ from github_security_report.client.queries import (
     _CODE_SCANNING_SIGNAL_TOOLS,
     _DEPENDABOT_ENABLED_QUERY,
 )
+from github_security_report.code_quality import CodeQualitySetup
 from github_security_report.codeql.facts import (
     WORKFLOW_MISSING,
     CodeQLConfiguration,
@@ -276,6 +277,25 @@ class ReadClient(OrgReadClient):
         data = resp.json()
         await resp.aclose()  # release the connection once the body is read
         return bool(data.get("enabled"))
+
+    async def code_quality_setup(self, org: str, repo: str) -> CodeQualitySetup | None:
+        """The repository's GitHub Code Quality setup (None = unreadable).
+
+        ``GET .../code-quality/setup`` returns ``{state, languages, ...}``
+        (200). Every other status is unreadable rather than "off": a ``403``
+        means the token may not read the setup (fine-grained tokens need
+        Administration: write even for this read) or Code Quality is not
+        available to the repository, and neither says the feature is off.
+        """
+        resp = await self._request(
+            "GET", f"{self._api_url}/repos/{org}/{repo}/code-quality/setup"
+        )
+        if resp.status_code != 200:
+            await resp.aclose()  # unread body would leak a pooled connection
+            return None
+        body = resp.json()
+        await resp.aclose()  # release the connection once the body is read
+        return CodeQualitySetup.from_api(body)
 
     # ------------------------------------------------------------------ #
     # CodeQL scan health (stale configurations, language coverage)

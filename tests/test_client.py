@@ -1027,6 +1027,52 @@ async def test_private_vulnerability_reporting_error_is_indeterminate(
     assert await client.private_vulnerability_reporting("o", "r") is None
 
 
+@respx.mock
+async def test_code_quality_setup_reads_state_and_languages(
+    client: GitHubClient,
+) -> None:
+    respx.get(f"{API}/repos/o/r/code-quality/setup").mock(
+        return_value=httpx.Response(
+            200, json={"state": "configured", "languages": ["python", "go"]}
+        )
+    )
+    setup = await client.code_quality_setup("o", "r")
+    assert setup is not None
+    assert setup.configured is True
+    assert setup.languages == frozenset({"python", "go"})
+
+
+@respx.mock
+async def test_code_quality_setup_off_without_languages(client: GitHubClient) -> None:
+    respx.get(f"{API}/repos/o/r/code-quality/setup").mock(
+        return_value=httpx.Response(
+            200, json={"state": "not-configured", "languages": []}
+        )
+    )
+    setup = await client.code_quality_setup("o", "r")
+    assert setup is not None
+    assert (setup.configured, setup.languages) == (False, frozenset())
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        # The token may not read the setup, or Code Quality is not available
+        # to the repository: unreadable, never "off".
+        httpx.Response(403, headers={"x-ratelimit-remaining": "4999"}),
+        httpx.Response(404),
+        # An undocumented state is not a reading either.
+        httpx.Response(200, json={"state": "updating"}),
+    ],
+)
+@respx.mock
+async def test_code_quality_setup_unreadable(
+    client: GitHubClient, response: httpx.Response
+) -> None:
+    respx.get(f"{API}/repos/o/r/code-quality/setup").mock(return_value=response)
+    assert await client.code_quality_setup("o", "r") is None
+
+
 # --------------------------------------------------------------------------- #
 # Remediation writes
 # --------------------------------------------------------------------------- #
@@ -1358,6 +1404,53 @@ async def test_repo_graph_batch_reads_auto_merge(
     sent = json.loads(route.calls.last.request.content)
     assert "autoMergeAllowed" in sent["query"]
     assert out["a"].auto_merge_allowed is expected
+
+
+@respx.mock
+async def test_repo_graph_batch_reads_linguist_languages(
+    client: GitHubClient,
+) -> None:
+    # Code Quality applicability comes from these names, so the fragment must
+    # ask for them; a repository whose connection is missing reads as unknown,
+    # not as one holding no language.
+    # One holding more languages than the window returned reads as unknown
+    # too: a supported language past the window would otherwise go unseen.
+    last = {"hasNextPage": False}
+    node = _graph_repo_node()
+    node["languages"] = {
+        "pageInfo": last,
+        "nodes": [{"name": "Python"}, {"name": "Shell"}, None],
+    }
+    empty = _graph_repo_node()
+    empty["languages"] = {"pageInfo": last, "nodes": []}
+    many = _graph_repo_node()
+    many["languages"] = {
+        "pageInfo": {"hasNextPage": True},
+        "nodes": [{"name": f"Lang{i}"} for i in range(20)],
+    }
+    route = respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "r0": node,
+                    "r1": empty,
+                    "r2": _graph_repo_node(),
+                    "r3": many,
+                }
+            },
+        )
+    )
+    out = await client.repo_graph_batch("o", ["a", "none", "unread", "many"])
+    sent = json.loads(route.calls.last.request.content)
+    assert (
+        "languages(first: 20) { pageInfo { hasNextPage } nodes { name } }"
+        in sent["query"]
+    )
+    assert out["a"].languages == ("Python", "Shell")
+    assert out["none"].languages == ()
+    assert out["unread"].languages is None
+    assert out["many"].languages is None
 
 
 @respx.mock

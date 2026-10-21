@@ -148,7 +148,13 @@ signal is skipped and every other part of the report is unaffected, so the
 minimal tokens below omit it. Grant the org-admin permission only if you want
 ruleset-based tool coverage.
 
-A token without that permission gets a `404` from the endpoint, which the tool
+GitHub Code Quality is gated the same way: a fine-grained token needs
+repository Administration **write** to read a repository's Code Quality setup,
+even though the report only reads it. Without it every repository Code Quality
+applies to is reported as **Unreadable** in that one category; a classic PAT's
+`repo` scope already covers the read.
+
+A token without the org-admin permission gets a `404` from the endpoint, which the tool
 reports at **INFO** — so it is invisible unless you pass `--verbose`:
 
 ```text
@@ -168,7 +174,7 @@ A fine-grained PAT is bound to one resource owner, so it works for a report
 covering a **single** organisation. Create it with **Resource owner** set to the
 organisation and **Repository access** set to *All repositories*, then grant:
 
-**Repository permissions** (all Read-only):
+**Repository permissions** (Read-only unless noted):
 
 | Permission | Used for |
 | ---------- | -------- |
@@ -178,7 +184,7 @@ organisation and **Repository access** set to *All repositories*, then grant:
 | Code scanning alerts | CodeQL / Scorecard / zizmor / aislop findings |
 | Secret scanning alerts | Open secret-scanning alerts, across every GitHub pattern category |
 | Issues | Open issues and their labels (GitHub Issues table) |
-| Administration | Dependabot enablement + security-updates status, and effective branch rules |
+| Administration | Dependabot enablement + security-updates status, and effective branch rules. *Optional* **write** reads the Code Quality setup, which GitHub gates behind write |
 | Actions | Workflow state behind a stale CodeQL configuration |
 
 **Organization permissions:**
@@ -188,7 +194,7 @@ organisation and **Repository access** set to *All repositories*, then grant:
 | Administration | Read (write for rulesets) | *Optional*, and the only permission here with a write variant. **Read** keeps the token read-only and unlocks GitHub's secret-scanning pattern inventory (see below). **Write** additionally unlocks organisation rulesets (detecting tools enforced through an org ruleset), which GitHub gates behind Administration write. Omit the permission entirely to skip both; everything else is unaffected. |
 
 > Read-only is enough for everything except the optional ruleset coverage
-> above. A fine-grained token cannot span organisations. For a report covering
+> and the Code Quality setup read above. A fine-grained token cannot span organisations. For a report covering
 > more than one org, use a classic PAT (below).
 
 ### Multiple organisations — classic PAT

@@ -257,6 +257,10 @@ class RepoGraphData:
     dependabot_alerts_enabled: bool | None = None
     # Repository "Allow auto-merge" setting (None = indeterminate).
     auto_merge_allowed: bool | None = None
+    # Linguist language names, as GitHub classifies the repository's code;
+    # what decides whether Code Quality applies to it. None means the
+    # connection could not be read, which is not the same as no language.
+    languages: tuple[str, ...] | None = None
     # Commit date of the default branch's head: the newest code a scan could
     # describe, and so the reference a code-scanning configuration's last scan
     # is measured against. None for an empty repository or an unread field.

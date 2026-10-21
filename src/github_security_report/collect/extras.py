@@ -6,9 +6,10 @@ Dependabot configuration posture, release/tag freshness, release mutability,
 private vulnerability reporting, the auto-merge setting and CodeQL scan health
 are rendered as tables rather than as pass/fail signals, so they are assembled
 here once the signal report exists. The Dependabot alerts enablement flag, the
-auto-merge flag, the default branch head and the release/tag data are reused
-from the batched GraphQL prefetch; the security-updates,
-private-vulnerability-reporting and CodeQL reads are still per-repo REST calls.
+auto-merge flag, the Linguist languages, the default branch head and the
+release/tag data are reused from the batched GraphQL prefetch; the
+security-updates, private-vulnerability-reporting, Code Quality setup and
+CodeQL reads are still per-repo REST calls.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import asyncio
 import logging
 
 from github_security_report import codeql, layout, posture
+from github_security_report.code_quality import CodeQualitySetup, applicable_languages
 from github_security_report.collect.codeql import collect_codeql_facts
 from github_security_report.collect.context import (
     OrgCollectContext,
@@ -40,22 +42,40 @@ from github_security_report.report import OrgReport
 log = logging.getLogger(__name__)
 
 
+async def _code_quality_setup(
+    repo: Repo, ctx: OrgCollectContext, languages: frozenset[str] | None
+) -> CodeQualitySetup | None:
+    """The Code Quality setup, read only where Code Quality applies.
+
+    A repository with no Code Quality language, or whose languages could not
+    be read, is never asked: its setup could not change how it is reported.
+    """
+    if not languages:
+        return None
+    return await ctx.client.code_quality_setup(ctx.org, repo.name)
+
+
 async def _posture_for_repo(repo: Repo, ctx: OrgCollectContext) -> RepoPosture:
     """Build one repo's Dependabot posture and release/tag freshness.
 
-    The Dependabot-alerts flag, the auto-merge setting and the
-    release/tag/``dependabot.yml`` data come from the batched GraphQL prefetch;
-    the security-updates and private-vulnerability-reporting flags remain
-    per-repo REST calls, since GitHub exposes no GraphQL equivalent. They are
-    independent, so they are gathered together and the two reads overlap
-    (bounded by the client semaphore); private vulnerability reporting is always
-    probed, like every other signal, with the per-category toggle governing only
-    whether the resulting table renders.
+    The Dependabot-alerts flag, the auto-merge setting, the Linguist languages
+    and the release/tag/``dependabot.yml`` data come from the batched GraphQL
+    prefetch; the security-updates, private-vulnerability-reporting and Code
+    Quality setup reads remain per-repo REST calls, since GitHub exposes no
+    GraphQL equivalent. They are independent, so they are gathered together
+    and the reads overlap (bounded by the client semaphore). Private
+    vulnerability reporting is always probed, like every other signal, with the
+    per-category toggle governing only whether the resulting table renders; the
+    Code Quality setup is read only where Code Quality applies.
     """
     graph = ctx.graph_for(repo.name)
-    security_updates, pvr = await asyncio.gather(
+    quality_languages = (
+        applicable_languages(graph.languages) if graph.languages is not None else None
+    )
+    security_updates, pvr, quality = await asyncio.gather(
         ctx.client.automated_security_fixes(ctx.org, repo.name),
         ctx.client.private_vulnerability_reporting(ctx.org, repo.name),
+        _code_quality_setup(repo, ctx, quality_languages),
     )
     config_text = graph.dependabot_config
     cooldown_missing = (
@@ -70,6 +90,8 @@ async def _posture_for_repo(repo: Repo, ctx: OrgCollectContext) -> RepoPosture:
         security_updates=security_updates,
         private_vulnerability_reporting=pvr,
         auto_merge=graph.auto_merge_allowed,
+        code_quality_languages=quality_languages,
+        code_quality=quality,
         cooldown_missing=cooldown_missing,
         has_dependabot_config=config_text is not None,
         latest_release_at=graph.latest_release_at,
