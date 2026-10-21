@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from github_security_report.authors import OrgMembership
+from github_security_report.code_quality import CodeQualitySetup
 from github_security_report.codeql.facts import CodeQLConfiguration, DefaultSetup
 from github_security_report.models import Repo, RepoGraphData
 
@@ -75,6 +76,10 @@ class ClientProtocol(Protocol):
 
     async def private_vulnerability_reporting(self, org: str, repo: str) -> bool | None:
         """Whether private vulnerability reporting is enabled for a repository."""
+        raise NotImplementedError
+
+    async def code_quality_setup(self, org: str, repo: str) -> CodeQualitySetup | None:
+        """The repository's Code Quality setup, or None if unreadable."""
         raise NotImplementedError
 
     async def codeql_configurations(

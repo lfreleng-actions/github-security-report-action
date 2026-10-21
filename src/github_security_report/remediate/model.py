@@ -8,7 +8,7 @@ CodeQL cleanup in :mod:`.codeql`, and free of either, so both can depend on it.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -55,6 +55,10 @@ class RemediationClient(Protocol):
     async def enable_secret_scanning(self, org: str, repo: str) -> tuple[bool, str]: ...
 
     async def enable_auto_merge(self, org: str, repo: str) -> tuple[bool, str]: ...
+
+    async def enable_code_quality(
+        self, org: str, repo: str, languages: Sequence[str]
+    ) -> tuple[bool, str]: ...
 
     async def delete_codeql_analyses(
         self, org: str, repo: str, analysis_ids: tuple[int, ...]
@@ -141,6 +145,8 @@ class _Target:
     batch: frozenset[str] = frozenset()
     # The repository's alert holders, shared by all of its cleanup targets.
     alerts: _AlertHolders = field(default_factory=_AlertHolders)
+    # The full language list a Code Quality write sets; empty otherwise.
+    languages: tuple[str, ...] = ()
 
 
 def _repo_targets(

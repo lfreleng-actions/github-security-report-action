@@ -503,6 +503,28 @@ def test_repo_list_can_force_the_disabled_side() -> None:
     assert "Enabled: a" not in out
 
 
+def test_code_quality_language_breakdown_reaches_the_terminal() -> None:
+    # The terminal omits descriptions, so the per-language breakdown must be a
+    # footer line to be seen there at all.
+    org = _org([], count=5)
+    org.code_quality = report.TableSection(
+        category=category_meta(CategoryKey.CODE_QUALITY),
+        columns=("Repository", "Status", "Languages", "Missing"),
+        rows=[report.TableRow(_repo("off"), ("Disabled", "python", "python"))],
+        pass_count=2,
+        fail_count=1,
+        unknown_count=1,
+        not_applicable_count=1,
+        notes=("Enabled by language: python 2/3",),
+    )
+    out = _render(org)
+    assert "1 Disabled or partial" in out
+    assert "1 Unreadable" in out
+    assert "2 Enabled" in out
+    assert "Enabled by language: python 2/3" in out
+    assert "1 Not applicable" in out
+
+
 def _excluded_org() -> report.OrgReport:
     """Two org-wide exclusions, and an Auto-merge table that excludes a third."""
     org = report.build_org_report(

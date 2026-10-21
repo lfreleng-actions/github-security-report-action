@@ -13,6 +13,7 @@ and the remediation writes.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from urllib.parse import quote
 
 import httpx
@@ -187,6 +188,37 @@ class GitHubClient(ReadClient):
         )
         ok = resp.status_code == 200
         note = "" if ok else self._write_note(resp)
+        await resp.aclose()
+        return ok, note
+
+    async def enable_code_quality(
+        self, org: str, repo: str, languages: Sequence[str]
+    ) -> tuple[bool, str]:
+        """Configure GitHub Code Quality for ``languages``. Returns ``(ok, note)``.
+
+        ``PATCH .../code-quality/setup`` with ``state: configured`` and the
+        full language list: the caller passes the languages already configured
+        as well as the ones to add, since the list replaces the setup's own.
+        GitHub queues the first analysis and answers ``202`` (a ``200`` is
+        taken as success too). A ``409`` means an update is already in
+        progress; ``403`` an archived repository or one Code Quality is not
+        allowed for; ``422`` a change GitHub refuses. Each is that
+        repository's failure, leaving the rest of the run untouched.
+        """
+        resp = await self._request(
+            "PATCH",
+            f"{self._api_url}/repos/{org}/{repo}/code-quality/setup",
+            json={"state": "configured", "languages": list(languages)},
+        )
+        status = resp.status_code
+        if status == 202:
+            ok, note = True, "accepted (async)"
+        elif status == 200:
+            ok, note = True, ""
+        elif status == 409:
+            ok, note = False, "409 a Code Quality update is already in progress"
+        else:
+            ok, note = False, self._write_note(resp)
         await resp.aclose()
         return ok, note
 

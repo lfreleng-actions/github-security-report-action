@@ -21,9 +21,10 @@ configuration-posture and freshness checks rendered as plain tables.
 
 The implementation is split across ``facts`` (the :class:`RepoPosture` record
 every table reads), ``enablement`` (the boolean feature checks and the
-Dependabot cooldown check) and ``releases`` (the release/tag freshness and
-release-immutability tables). This module re-exports the public surface, so
-importing from ``github_security_report.posture`` is unchanged.
+Dependabot cooldown check), ``quality`` (the language-scoped Code Quality
+check) and ``releases`` (the release/tag freshness and release-immutability
+tables). This module re-exports the public surface, so importing from
+``github_security_report.posture`` is unchanged.
 """
 
 from __future__ import annotations
@@ -38,6 +39,10 @@ from github_security_report.posture.enablement import (
     cooldown_missing_ecosystems,
 )
 from github_security_report.posture.facts import RepoPosture
+from github_security_report.posture.quality import (
+    build_code_quality_table,
+    code_quality_writes,
+)
 from github_security_report.posture.releases import (
     build_mutable_releases_table,
     build_releases_table,
@@ -56,4 +61,6 @@ __all__ = [
     "build_cooldown_table",
     "build_pvr_table",
     "build_auto_merge_table",
+    "build_code_quality_table",
+    "code_quality_writes",
 ]

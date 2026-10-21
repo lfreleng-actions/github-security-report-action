@@ -7,6 +7,7 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass
 
+from github_security_report.code_quality import CodeQualitySetup
 from github_security_report.models import ReleaseRef, Repo
 
 
@@ -27,6 +28,13 @@ class RepoPosture:
     private_vulnerability_reporting: bool | None = None
     # Repository "Allow auto-merge" setting (None = indeterminate).
     auto_merge: bool | None = None
+    # The Code Quality languages the repository's Linguist languages map to.
+    # Empty means Code Quality does not apply to it; None means its languages
+    # could not be read, so nobody knows whether it applies.
+    code_quality_languages: frozenset[str] | None = None
+    # Its Code Quality setup, read only where Code Quality applies (None =
+    # unread or unreadable).
+    code_quality: CodeQualitySetup | None = None
     # Ecosystems declared in .github/dependabot.yml that set no cooldown.
     cooldown_missing: tuple[str, ...] = ()
     # True when .github/dependabot.yml exists and declares version updates.

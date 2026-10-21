@@ -90,6 +90,14 @@ class OrgReport:
     # The Auto-merge table: repositories where "Allow auto-merge" is switched
     # off. None in repo mode / when not collected.
     auto_merge: TableSection | None = None
+    # The Code Quality table: repositories holding a language GitHub Code
+    # Quality analyses with the feature off or partial. None in repo mode /
+    # when not collected.
+    code_quality: TableSection | None = None
+    # The languages remediation sets on each Code Quality row, by repository:
+    # the configured ones plus every applicable one. Not serialised; the
+    # table's Languages column already shows what applies.
+    code_quality_writes: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # The GitHub Issues table (open issues per repository, split by label).
     # None in repo mode / when not collected.
     issues: TableSection | None = None
@@ -130,6 +138,7 @@ class OrgReport:
             self.mutable_releases,
             self.private_vulnerability_reporting,
             self.auto_merge,
+            self.code_quality,
             self.issues,
             self.pull_requests,
             self.assigned_pull_requests,

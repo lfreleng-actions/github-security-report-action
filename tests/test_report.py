@@ -91,6 +91,34 @@ class TestBuildSummary:
             "excluded",
         ]
 
+    def test_note_and_not_applicable_lines(self) -> None:
+        # A note is shown verbatim beneath the pass line and never blocks the
+        # collapse; not-applicable repositories sit with the neutral lines.
+        lines = report.build_summary(
+            [
+                report.SummaryCount("na", 4, "Not applicable"),
+                report.SummaryCount("note", 1, "Enabled by language: go 3/3"),
+                report.SummaryCount("pass", 3, "Enabled"),
+                report.SummaryCount("excluded", 1, "Excluded", ("x",)),
+            ]
+        )
+        assert [(line.kind, line.text) for line in lines] == [
+            ("pass", "3 Enabled"),
+            ("note", "Enabled by language: go 3/3"),
+            ("na", "4 Not applicable"),
+            ("excluded", "1 Excluded"),
+        ]
+        lines = report.build_summary(
+            [
+                report.SummaryCount("pass", 3, "Enabled"),
+                report.SummaryCount("note", 1, "Enabled by language: go 3/3"),
+            ]
+        )
+        assert [line.text for line in lines] == [
+            "All Enabled",
+            "Enabled by language: go 3/3",
+        ]
+
     def test_zero_counts_dropped(self) -> None:
         lines = report.build_summary(
             [

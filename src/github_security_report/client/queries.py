@@ -68,9 +68,10 @@ query {
 _CODE_SCANNING_SIGNAL_TOOLS = tuple(CODE_SCANNING_TOOLS.values())
 
 # Batched per-repo prefetch: one aliased query fetches Dependabot enablement,
-# the auto-merge setting, the newest tag's commit date, latest/recent releases
-# with immutability, the raw .github/dependabot.yml, and the open issues,
-# replacing five per-repo round-trips.
+# the auto-merge setting, the Linguist languages, the newest tag's commit
+# date, latest/recent releases with immutability, the raw
+# .github/dependabot.yml, and the open issues, replacing five per-repo
+# round-trips.
 #
 # ``autoMergeAllowed`` is a plain scalar on Repository, so it adds no nodes and
 # therefore no rate-limit cost, and rides a request the run already makes --
@@ -154,10 +155,18 @@ _OPINIONATED_REVIEW_WINDOW = 5
 # window honest -- a pull request carrying more threads than the window returned
 # is reported as indeterminate rather than as having nothing outstanding.
 _REVIEW_THREAD_WINDOW = 20
+# Linguist languages per repository, which decide whether GitHub Code Quality
+# applies to it (ADR-0006). Twenty covers every repository in practice and
+# adds at most twenty nodes per repository to the query's cost; it rides the
+# existing request, so classifying costs no extra HTTP call. ``hasNextPage``
+# keeps the window honest: a repository holding more languages than it
+# returned reads as unknown rather than as one holding only those listed.
+_LANGUAGE_WINDOW = 20
 _REPO_GRAPH_FRAGMENT = f"""\
 fragment RepoData on Repository {{
   hasVulnerabilityAlertsEnabled
   autoMergeAllowed
+  languages(first: {_LANGUAGE_WINDOW}) {{ pageInfo {{ hasNextPage }} nodes {{ name }} }}
   defaultBranchRef {{ target {{ ... on Commit {{ committedDate }} }} }}
   dependabotConfig: object(expression: "HEAD:.github/dependabot.yml") {{
     ... on Blob {{ text }}

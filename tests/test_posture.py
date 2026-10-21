@@ -9,7 +9,9 @@ import datetime as dt
 import pytest
 
 from github_security_report import posture, report
+from github_security_report.code_quality import CodeQualitySetup
 from github_security_report.models import ReleaseRef, Repo
+from github_security_report.render import markdown
 from github_security_report.report import RepoList
 
 NOW = dt.datetime(2026, 6, 18, 12, 0, tzinfo=dt.timezone.utc)
@@ -232,6 +234,133 @@ def test_auto_merge_table_all_enabled_summary() -> None:
     assert (table.fail_count, table.pass_count, table.unknown_count) == (0, 2, 0)
     lines = report.build_summary(table.summary_counts())
     assert [(line.kind, line.text) for line in lines] == [("pass", "All Enabled")]
+
+
+def _quality(
+    name: str,
+    languages: set[str] | None,
+    configured: set[str] | None = None,
+    *,
+    unreadable: bool = False,
+) -> posture.RepoPosture:
+    """A posture with ``languages`` applicable and ``configured`` set up.
+
+    ``configured`` None is a not-configured setup; ``unreadable`` drops the
+    setup read entirely.
+    """
+    setup = (
+        None
+        if unreadable
+        else CodeQualitySetup(
+            configured=configured is not None,
+            languages=frozenset(configured or ()),
+        )
+    )
+    return posture.RepoPosture(
+        repo=_repo(name),
+        code_quality_languages=None if languages is None else frozenset(languages),
+        code_quality=setup,
+    )
+
+
+def test_code_quality_table_classifies_every_repository() -> None:
+    postures = [
+        _quality("py-on", {"python"}, {"python"}),
+        _quality("both-partial", {"python", "go"}, {"python"}),
+        _quality("go-off", {"go"}),
+        _quality("js-on", {"javascript-typescript"}, {"javascript-typescript"}),
+        _quality("shell-only", set()),
+        _quality("setup-unread", {"python"}, unreadable=True),
+        _quality("languages-unread", None),
+    ]
+    table = posture.build_code_quality_table(postures)
+    assert table.title == "Code Quality"
+    assert table.columns == ("Repository", "Status", "Languages", "Missing")
+    assert [(r.repo.name, r.cells) for r in table.rows] == [
+        ("both-partial", ("Partial", "python, go", "go")),
+        ("go-off", ("Disabled", "go", "go")),
+    ]
+    assert (
+        table.fail_count,
+        table.pass_count,
+        table.unknown_count,
+        table.not_applicable_count,
+    ) == (2, 2, 2, 1)
+    # Each repository counts under every applicable language it holds; the
+    # partial one is enabled for Python, and the unreadable setup for none.
+    assert table.notes == (
+        "Enabled by language: python 2/3 \u00b7 go 0/2 \u00b7 "
+        "javascript-typescript 1/1",
+    )
+    lines = report.build_summary(table.summary_counts())
+    assert [(line.kind, line.text) for line in lines] == [
+        ("fail", "2 Disabled or partial"),
+        ("unknown", "2 Unreadable"),
+        ("pass", "2 Enabled"),
+        (
+            "note",
+            "Enabled by language: python 2/3 \u00b7 go 0/2 \u00b7 "
+            "javascript-typescript 1/1",
+        ),
+        ("na", "1 Not applicable"),
+    ]
+
+
+def test_code_quality_table_all_enabled_summary() -> None:
+    table = posture.build_code_quality_table(
+        [_quality("a", {"go"}, {"go"}), _quality("b", {"go", "ruby"}, {"go", "ruby"})]
+    )
+    assert table.rows == []
+    lines = report.build_summary(table.summary_counts())
+    # The breakdown qualifies the pass line without stopping it collapsing.
+    assert [(line.kind, line.text) for line in lines] == [
+        ("pass", "All Enabled"),
+        ("note", "Enabled by language: go 2/2 \u00b7 ruby 1/1"),
+    ]
+
+
+def test_code_quality_table_without_applicable_repositories() -> None:
+    table = posture.build_code_quality_table(
+        [_quality("docker-workflows", set()), _quality("node-workflows", set())]
+    )
+    assert table.notes == ()
+    lines = report.build_summary(table.summary_counts())
+    assert [(line.kind, line.text) for line in lines] == [("na", "2 Not applicable")]
+
+
+def test_code_quality_all_not_applicable_renders_explanation() -> None:
+    # Shell and workflow repositories only: no rows and nothing enabled or
+    # off, yet the Not applicable count is data, so the section keeps its
+    # description rather than falling back to "No data available".
+    table = posture.build_code_quality_table(
+        [_quality("docker-workflows", set()), _quality("node-workflows", set())]
+    )
+    out = markdown.render_table_section(table, level=3)
+    assert "_No data available._" not in out
+    assert "Linguist" in out
+    assert "\u2796 2 Not applicable" in out
+    # Counted on neither side: no pass or fail line.
+    assert "\u2705" not in out
+    assert "\u274c" not in out
+
+
+def test_code_quality_writes_keep_configured_languages() -> None:
+    writes = posture.code_quality_writes(
+        [
+            _quality("py-on", {"python"}, {"python"}),
+            # Configured for rust, which Linguist scope does not cover: the
+            # write keeps it rather than dropping it from the setup.
+            _quality("partial", {"python", "go"}, {"rust", "go"}),
+            _quality("go-off", {"go"}),
+            _quality("shell-only", set()),
+            _quality("setup-unread", {"python"}, unreadable=True),
+            _quality("languages-unread", None),
+        ]
+    )
+    assert writes == {
+        "partial": ("python", "go", "rust"),
+        "go-off": ("go",),
+    }
 
 
 def _auto_merge(enabled: int, disabled: int) -> report.TableSection:

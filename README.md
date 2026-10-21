@@ -32,7 +32,9 @@ states and rendered worst-first:
 
 Every category renders the same **standardised summary footer** beneath its
 table: remediation-first count lines (failures, disabled, unknown, then the
-healthy pass line, then excluded). The pass line reads **"All <state>"** when
+healthy pass line, then excluded). A category may add a note qualifying the
+pass line (Code Quality's per-language breakdown) and a **Not applicable**
+count, both shown on every surface. The pass line reads **"All <state>"** when
 nothing needs attention, or **"N <state>"** otherwise. The terminal and Slack
 stay brevity-first; the explanatory per-category description and documentation
 link are shown only on the richer Markdown and HTML (GitHub Pages) outputs.
@@ -110,6 +112,26 @@ tables (org mode):
   window a reviewed dependency update sits in while the vulnerability it fixes
   stays unpatched. Read from the batched GraphQL prefetch, so it costs no extra
   request; hide it with the `auto_merge` render toggle.
+- **Code Quality** — repositories where
+  [GitHub Code Quality](https://docs.github.com/en/code-security/concepts/code-quality/code-quality)
+  is **Disabled**, or **Partial**: configured, but without a language the
+  repository holds. Code Quality analyses six language families, so each
+  repository is first classified from its GitHub Linguist languages, read
+  from the batched GraphQL prefetch: Python (`python`), Go (`go`), Java and
+  Kotlin (`java-kotlin`), JavaScript and TypeScript
+  (`javascript-typescript`), Ruby (`ruby`) and C# (`csharp`). A repository
+  with none of them, such as one holding only shell scripts and workflow
+  files, is **Not applicable**: counted on a line of its own and never
+  reported as off. Only applicable repositories have their setup read, with
+  `GET /repos/{owner}/{repo}/code-quality/setup`; one whose setup or languages
+  cannot be read, or that holds more than the twenty languages the prefetch
+  reads, is counted as **Unreadable**, never as Disabled. The
+  **Missing** column names the languages each listed repository still needs,
+  and a footer line on every surface, the terminal included, gives the
+  enabled count out of the applicable count per language, such as
+  `python 30/32 · go 5/5 · javascript-typescript 10/12`. See
+  [ADR-0006](docs/adr/0006-github-code-quality.md); hide it with the
+  `code_quality` render toggle.
 
 The four enablement categories count the repositories with and without the
 feature (plus any whose state could not be read), and by default name whichever
@@ -148,7 +170,13 @@ signal is skipped and every other part of the report is unaffected, so the
 minimal tokens below omit it. Grant the org-admin permission only if you want
 ruleset-based tool coverage.
 
-A token without that permission gets a `404` from the endpoint, which the tool
+GitHub Code Quality is gated the same way: a fine-grained token needs
+repository Administration **write** to read a repository's Code Quality setup,
+even though the report only reads it. Without it every repository Code Quality
+applies to is reported as **Unreadable** in that one category; a classic PAT's
+`repo` scope already covers the read.
+
+A token without the org-admin permission gets a `404` from the endpoint, which the tool
 reports at **INFO** — so it is invisible unless you pass `--verbose`:
 
 ```text
@@ -168,7 +196,7 @@ A fine-grained PAT is bound to one resource owner, so it works for a report
 covering a **single** organisation. Create it with **Resource owner** set to the
 organisation and **Repository access** set to *All repositories*, then grant:
 
-**Repository permissions** (all Read-only):
+**Repository permissions** (Read-only unless noted):
 
 | Permission | Used for |
 | ---------- | -------- |
@@ -178,7 +206,7 @@ organisation and **Repository access** set to *All repositories*, then grant:
 | Code scanning alerts | CodeQL / Scorecard / zizmor / aislop findings |
 | Secret scanning alerts | Open secret-scanning alerts, across every GitHub pattern category |
 | Issues | Open issues and their labels (GitHub Issues table) |
-| Administration | Dependabot enablement + security-updates status, and effective branch rules |
+| Administration | Dependabot enablement + security-updates status, and effective branch rules. *Optional* **write** reads the Code Quality setup, which GitHub gates behind write |
 | Actions | Workflow state behind a stale CodeQL configuration |
 
 **Organization permissions:**
@@ -188,7 +216,7 @@ organisation and **Repository access** set to *All repositories*, then grant:
 | Administration | Read (write for rulesets) | *Optional*, and the only permission here with a write variant. **Read** keeps the token read-only and unlocks GitHub's secret-scanning pattern inventory (see below). **Write** additionally unlocks organisation rulesets (detecting tools enforced through an org ruleset), which GitHub gates behind Administration write. Omit the permission entirely to skip both; everything else is unaffected. |
 
 > Read-only is enough for everything except the optional ruleset coverage
-> above. A fine-grained token cannot span organisations. For a report covering
+> and the Code Quality setup read above. A fine-grained token cannot span organisations. For a report covering
 > more than one org, use a classic PAT (below).
 
 ### Multiple organisations — classic PAT
@@ -420,10 +448,11 @@ Pages output. The valid category keys are: `codeql`,
 `zizmor`, `aislop`, `dependabot_alerts`, `secret_scanning`,
 `dependabot_alerts_enabled`, `dependabot_updates_enabled`,
 `dependabot_cooldown`, `releases`, `mutable_releases`,
-`private_vulnerability_reporting`, `auto_merge`, `github_issues`,
-`pull_requests`, `pull_requests_assigned`. Like the other `report` settings,
-`categories` can be set globally and overridden per organisation (overrides
-merge key-by-key, so flipping one output leaves the rest untouched). The
+`private_vulnerability_reporting`, `auto_merge`, `code_quality`,
+`github_issues`, `pull_requests`, `pull_requests_assigned`. Like the other
+`report` settings, `categories` can be set globally and overridden per
+organisation (overrides merge key-by-key, so flipping one output leaves the
+rest untouched). The
 machine-readable `report.json` artifact always contains the complete dataset,
 regardless of these toggles.
 
@@ -1608,8 +1637,8 @@ the run, rather than falling back to every repository. The run then collects
 exactly the repositories that check validated, without listing the
 organisation again, and prints `Limited to:` beneath its heading.
 
-The remediable categories are the simple on/off features with a documented
-enablement endpoint:
+The remediable categories are the features with a documented enablement
+endpoint:
 
 | `--category` | Enables |
 |---|---|
@@ -1619,15 +1648,48 @@ enablement endpoint:
 | `dependabot_updates_enabled` | Dependabot security updates (plus alerts) |
 | `private_vulnerability_reporting` | Private vulnerability reporting |
 | `auto_merge` | The repository's "Allow auto-merge" setting |
+| `code_quality` | GitHub Code Quality, per language (named only; billed) |
+| `codeql_stale_configurations` | Stale CodeQL cleanup (named only; deletes) |
 
 Qualitative findings (Scorecard, zizmor, open Dependabot alerts, cooldown,
 release freshness/mutability) are reported but not auto-remediated. Remediation
 is organisation-scoped (`--scope org`, the default and only supported scope).
 
+The last two run **only when named** with `--category`, and the no-argument
+run never includes them: `code_quality`, because GitHub bills it,
+and `codeql_stale_configurations`, because it deletes data.
+
+### Enabling GitHub Code Quality
+
+GitHub Code Quality is billed per active committer and uses GitHub Actions
+minutes, so switching it on is a spending decision a routine run must not
+make:
+
+```bash
+# Preview: each repository with the languages it would get.
+uvx github-security-report remediate --org lfreleng-actions \
+  --category code_quality
+
+# Apply.
+uvx github-security-report remediate --org lfreleng-actions \
+  --category code_quality --apply
+```
+
+It acts on the rows of **Code Quality**, the Disabled and Partial
+repositories. Each one is configured for the union of the languages its
+setup already analyses and the ones its Linguist languages make applicable,
+so a write never drops a configured language; the dry run names them, as in
+`dependamerge (python, javascript-typescript)`. Not applicable and Unreadable
+repositories are never written. GitHub provisions the first analysis
+asynchronously. A `409` (an update already in progress), a `403` (an archived
+repository, or Code Quality not allowed for it) or a `422` fails that
+repository only and names the cause. The token needs the classic `repo`
+scope, or a fine-grained token's Administration: write. See
+[ADR-0006](docs/adr/0006-github-code-quality.md) for the reasoning.
+
 ### Cleaning up stale CodeQL configurations
 
-One category is **destructive**, so it runs only when named. The no-argument
-run never includes it:
+This category is **destructive**, so it runs only when named:
 
 ```bash
 # Preview: which configurations would go, and which are refused and why.

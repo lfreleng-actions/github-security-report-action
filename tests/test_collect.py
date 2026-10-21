@@ -14,6 +14,7 @@ from github_security_report import collect, layout, pulls, scope
 from github_security_report.authors import MembershipGap, OrgMembership
 from github_security_report.categories import CategoryKey
 from github_security_report.client import GraphBatchError
+from github_security_report.code_quality import CodeQualitySetup
 from github_security_report.codeql import CodeQLConfiguration, DefaultSetup
 from github_security_report.collect.graph import (
     GRAPH_PREFETCH_IN_FLIGHT,
@@ -85,6 +86,12 @@ class FakeClient:
         self.workflows: dict[tuple[str, str], str] = {}
         self.workflow_reads: list[tuple[str, str]] = []
         self.head: dict[str, dt.datetime] = {}
+        # Linguist languages per repository (absent: unreadable), and the Code
+        # Quality setup each read returns (absent: not configured).
+        # ``code_quality_reads`` records every setup read.
+        self.languages: dict[str, tuple[str, ...]] = {}
+        self.code_quality: dict[str, CodeQualitySetup | None] = {}
+        self.code_quality_reads: list[str] = []
 
     async def list_org_repos(self, org: str) -> tuple[int, list[Repo]]:
         return 200, self.repos
@@ -154,6 +161,10 @@ class FakeClient:
     async def private_vulnerability_reporting(self, org: str, repo: str) -> bool | None:
         return True
 
+    async def code_quality_setup(self, org: str, repo: str) -> CodeQualitySetup | None:
+        self.code_quality_reads.append(repo)
+        return self.code_quality.get(repo, CodeQualitySetup(configured=False))
+
     async def codeql_configurations(
         self, org: str, repo: str, branch: str
     ) -> tuple[int, tuple[CodeQLConfiguration, ...]]:
@@ -186,6 +197,7 @@ class FakeClient:
             out[name] = RepoGraphData(
                 dependabot_alerts_enabled=await self.dependabot_enabled(org, name),
                 auto_merge_allowed=self.auto_merge.get(name, True),
+                languages=self.languages.get(name),
                 head_committed_at=self.head.get(name, WHEN),
                 latest_tag_at=await self.latest_tag_at(org, name),
                 latest_release_at=await self.latest_release_at(org, name),
@@ -548,6 +560,17 @@ class PostureClient(FakeClient):
         self._pvr = {"dependamerge": True, "git-configure-action": False}
         # Auto-merge: same split, so the Auto-merge table has one offender too.
         self.auto_merge = {"dependamerge": True, "git-configure-action": False}
+        # Code Quality: on for dependamerge (Python); off for
+        # git-configure-action, whose Linguist languages include Go.
+        self.languages = {
+            "dependamerge": ("Python",),
+            "git-configure-action": ("Go", "Shell"),
+        }
+        self.code_quality = {
+            "dependamerge": CodeQualitySetup(
+                configured=True, languages=frozenset({"python"})
+            ),
+        }
         self._configs = {
             "dependamerge": (
                 200,
@@ -641,6 +664,38 @@ async def test_collect_org_attaches_dependabot_tables_and_releases() -> None:
     assert auto_merge.title == "Auto-merge"
     assert [r.repo.name for r in auto_merge.rows] == ["git-configure-action"]
     assert (auto_merge.fail_count, auto_merge.pass_count) == (1, 1)
+
+    quality = report.code_quality
+    assert quality is not None
+    assert [(r.repo.name, r.cells) for r in quality.rows] == [
+        ("git-configure-action", ("Disabled", "go", "go"))
+    ]
+    assert (quality.fail_count, quality.pass_count) == (1, 1)
+    assert quality.notes == ("Enabled by language: python 1/1 \u00b7 go 0/1",)
+
+
+@pytest.mark.parametrize(
+    ("languages", "expected"),
+    [
+        # Only a repository holding a Code Quality language is asked.
+        (
+            {"dependamerge": ("Python", "Shell"), "git-configure-action": ("Shell",)},
+            ["dependamerge"],
+        ),
+        # A repository with no languages, or whose languages could not be read,
+        # is never asked.
+        ({"dependamerge": ()}, []),
+    ],
+)
+async def test_collect_org_reads_code_quality_only_where_it_applies(
+    languages: dict[str, tuple[str, ...]], expected: list[str]
+) -> None:
+    client = FakeClient()
+    client.languages = languages
+    await collect.collect_org(
+        client, OrgConfig(name="o"), ReportConfig(), generated_at=WHEN
+    )
+    assert client.code_quality_reads == expected
 
 
 async def test_collect_org_omits_the_personal_queue_without_a_person() -> None:

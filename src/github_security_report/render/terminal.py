@@ -68,6 +68,8 @@ _SUMMARY_STYLE = {
     "disabled": "yellow",
     "unknown": "dim",
     "pass": "green",
+    "note": "cyan",
+    "na": "dim",
     "excluded": "blue",
 }
 

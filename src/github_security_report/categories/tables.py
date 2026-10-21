@@ -170,6 +170,27 @@ TABLE_CATEGORIES: dict[CategoryKey, CategoryMeta] = {
             "vulnerability it fixes stays unpatched."
         ),
     ),
+    CategoryKey.CODE_QUALITY: CategoryMeta(
+        key=CategoryKey.CODE_QUALITY,
+        title="Code Quality",
+        pass_label="Enabled",
+        fail_label="Disabled or partial",
+        unknown_label="Unreadable",
+        url=(
+            "https://docs.github.com/en/code-security/concepts/code-quality/"
+            "code-quality"
+        ),
+        description=(
+            "Repositories holding a language GitHub Code Quality analyses "
+            "(python, go, java-kotlin, javascript-typescript, ruby, csharp, as "
+            "GitHub's Linguist classifies them) where Code Quality is off "
+            "(Disabled) or configured without one of those languages "
+            "(Partial). Missing names the languages to add. A repository with "
+            "none of them -- shell scripts and workflow files alone, say -- is "
+            "Not applicable and never counted as off. Unreadable counts the "
+            "repositories whose setup, or whose languages, could not be read."
+        ),
+    ),
     CategoryKey.GITHUB_ISSUES: CategoryMeta(
         key=CategoryKey.GITHUB_ISSUES,
         title="GitHub Issues",

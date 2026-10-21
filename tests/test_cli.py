@@ -994,7 +994,8 @@ def _mock_offender_org() -> None:
     The single repo is an offender in all five remediable categories: CodeQL
     (no analyses), secret scanning (404), Dependabot alerts (GraphQL reports
     disabled), Dependabot security updates (automated-security-fixes off) and
-    private vulnerability reporting (off). Read routes only -- write routes are
+    private vulnerability reporting (off); it is a Python repository without
+    Code Quality, too. Read routes only -- write routes are
     added per test so a dry run can assert none were called.
     """
     respx.get(url__startswith=f"{API}/orgs/o/repos").mock(
@@ -1039,6 +1040,10 @@ def _mock_offender_org() -> None:
                 "dependabotConfig": None,
                 "tags": {"nodes": []},
                 "releases": {"nodes": []},
+                "languages": {
+                    "pageInfo": {"hasNextPage": False},
+                    "nodes": [{"name": "Python"}],
+                },
             }
         return httpx.Response(200, json={"data": data})
 
@@ -1053,6 +1058,10 @@ def _mock_offender_org() -> None:
         return_value=httpx.Response(200, json={"enabled": False})
     )
     respx.get(f"{API}/repos/o/r/code-scanning/default-setup").mock(
+        return_value=httpx.Response(200, json={"state": "not-configured"})
+    )
+    # A Python repository without Code Quality -> Code Quality Disabled.
+    respx.get(f"{API}/repos/o/r/code-quality/setup").mock(
         return_value=httpx.Response(200, json={"state": "not-configured"})
     )
 
@@ -1162,6 +1171,57 @@ def test_remediate_apply_enables_every_category() -> None:
     assert "enabled: r" in result.stdout
     for route in (codeql, secret, alerts, fixes, pvr):
         assert route.called, result.stdout
+
+
+@respx.mock
+def test_remediate_enables_code_quality_only_when_named() -> None:
+    # Code Quality is billed, so the bare run leaves it alone and only a run
+    # naming the category sends the setup write, with the languages to set.
+    _mock_offender_org()
+    respx.patch(f"{API}/repos/o/r/code-scanning/default-setup").mock(
+        return_value=httpx.Response(202, json={})
+    )
+    respx.patch(f"{API}/repos/o/r").mock(return_value=httpx.Response(200, json={}))
+    respx.put(url__startswith=f"{API}/repos/o/r/vulnerability-alerts").mock(
+        return_value=httpx.Response(204)
+    )
+    respx.put(url__startswith=f"{API}/repos/o/r/automated-security-fixes").mock(
+        return_value=httpx.Response(204)
+    )
+    respx.put(url__startswith=f"{API}/repos/o/r/private-vulnerability-reporting").mock(
+        return_value=httpx.Response(204)
+    )
+    quality = respx.patch(f"{API}/repos/o/r/code-quality/setup").mock(
+        return_value=httpx.Response(202, json={"run_id": 1})
+    )
+
+    bare = cli.invoke(app, ["remediate", "--org", "o", "--apply", "--no-color"])
+    assert bare.exit_code == 0, bare.stdout
+    assert not quality.called
+    assert "Code Quality" not in bare.stdout
+
+    def named(*flags: str) -> str:
+        result = cli.invoke(
+            app,
+            ["remediate", "--org", "o", "--category", "code_quality", "--no-color"]
+            + list(flags),
+        )
+        assert result.exit_code == 0, result.stdout
+        return result.stdout
+
+    # The dry run names the languages it would set, and writes nothing.
+    preview = named()
+    assert not quality.called
+    assert "r (python)" in preview
+
+    applied = named("--apply")
+    assert quality.call_count == 1
+    assert json.loads(quality.calls.last.request.content) == {
+        "state": "configured",
+        "languages": ["python"],
+    }
+    assert "Code Quality" in applied
+    assert "r (python)" in applied
 
 
 @respx.mock

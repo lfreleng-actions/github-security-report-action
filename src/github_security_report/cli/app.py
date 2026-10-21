@@ -303,7 +303,7 @@ def remediate(
     category: list[str] | None = typer.Option(
         None,
         "--category",
-        help=f"Remediable category to act on (repeatable; default: all except the destructive {_EXPLICIT_HELP}, which run only when named). One of: {_REMEDIABLE_HELP}.",
+        help=f"Remediable category to act on (repeatable; default: all except the explicit-only {_EXPLICIT_HELP}, which delete data or incur charges and run only when named). One of: {_REMEDIABLE_HELP}.",
     ),
     token_env: str | None = typer.Option(
         None,
@@ -327,9 +327,9 @@ def remediate(
     Runs the same collection the report uses, then switches on each selected
     remediable feature wherever a repository has it confirmed off. Named
     explicitly, codeql_stale_configurations also deletes orphaned CodeQL
-    configurations. Dry run by default: pass --apply to make changes. Requires
-    a write-capable token (org admin), distinct from the read-only reporting
-    PAT.
+    configurations, and code_quality enables billed GitHub Code Quality. Dry
+    run by default: pass --apply to make changes. Requires a write-capable
+    token (org admin), distinct from the read-only reporting PAT.
     """
     console = _console(no_color)
 
