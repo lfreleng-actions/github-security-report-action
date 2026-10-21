@@ -13,8 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TypeVar
 
 import httpx
@@ -39,7 +38,7 @@ from github_security_report.client.failures import (
     _auth_error,
     _transport_failure_result,
 )
-from github_security_report.client.parsers import _next_page_url, _parse_retry_after
+from github_security_report.client.parsers import _parse_retry_after
 
 log = logging.getLogger(__name__)
 
@@ -71,27 +70,6 @@ class _RetryBudget:
         await asyncio.sleep(delay)
         self.waited += delay
         self.attempt += 1
-
-
-@dataclass(frozen=True)
-class PageResult:
-    """What walking a paginated GitHub list produced.
-
-    ``status`` is the first page's HTTP status, or a later page's when one
-    failed part-way (the items gathered before it are kept, so a caller can
-    tell an undercount from a complete read). ``304`` means the caller's
-    ``etag`` still matched: nothing was read and ``items`` is empty. ``etag``
-    is the first page's validator, for the caller to present next time;
-    ``None`` when the read failed or GitHub sent none. ``stopped`` says the
-    caller's ``stop`` predicate ended the walk before the last page, which is
-    how an incremental read knows it reached data it already held rather than
-    the end of the list.
-    """
-
-    status: int
-    items: list[dict] = field(default_factory=list)
-    etag: str | None = None
-    stopped: bool = False
 
 
 @dataclass(frozen=True)
@@ -337,104 +315,3 @@ class Transport:
             )
         else:
             log.log(level, "rate limited on %s; backing off %.0fs", url, plan.delay)
-
-    async def _paginate(
-        self,
-        url: str,
-        params: dict[str, object] | None = None,
-        *,
-        items_key: str | None = None,
-        stop: Callable[[dict], bool] | None = None,
-        etag: str | None = None,
-        quiet: bool = False,
-    ) -> PageResult:
-        """Walk a paginated GitHub list, newest page first, into one result.
-
-        ``params`` are sent with the first page (``per_page=100`` is added);
-        later pages follow the ``Link: rel="next"`` header verbatim.
-        ``items_key`` names the list inside an enveloped body such as
-        ``{"total_count": N, "workflow_runs": [...]}``; ``None`` reads a bare
-        JSON array.
-
-        ``stop`` is consulted for each item in order. The first item it
-        accepts ends the walk: that item and everything after it are dropped,
-        no further page is requested, and the result says ``stopped``. An
-        incremental read passes the predicate "older than what I already
-        hold", so a newest-first listing costs one page on a quiet day rather
-        than the whole history.
-
-        ``etag`` is presented as ``If-None-Match`` on the first page. GitHub
-        answers an unchanged resource with ``304`` and does not charge it
-        against the rate limit, so a caller that keeps the validator between
-        runs pays nothing to learn that nothing changed. The response's own
-        ``ETag`` is returned for the next run. The validator is only useful
-        when the URL and parameters are byte-for-byte stable across runs: a
-        moving date filter in the query string is a different resource every
-        day.
-
-        If a *later* page fails, the items gathered so far are returned under
-        that failing status (not 200): the data is incomplete, so callers must
-        be able to degrade to unknown rather than treat an undercount as
-        authoritative. Every response is closed once read, or unread on a
-        failure, so no pooled connection leaks.
-        """
-        headers = {"If-None-Match": etag} if etag else None
-        resp = await self._request(
-            "GET",
-            url,
-            params={**(params or {}), "per_page": 100},
-            headers=headers,
-            quiet=quiet,
-        )
-        if resp.status_code != 200:
-            status = resp.status_code
-            await resp.aclose()  # unread body would leak a pooled connection
-            return PageResult(status)
-        first_etag = resp.headers.get("etag")
-        items: list[dict] = []
-        while True:
-            page = _page_items(resp.json(), items_key)
-            next_url = _next_page_url(resp)
-            await resp.aclose()  # release the connection once body/links are read
-            if stop is not None:
-                for index, item in enumerate(page):
-                    if stop(item):
-                        items.extend(page[:index])
-                        return PageResult(200, items, first_etag, stopped=True)
-            items.extend(page)
-            if not next_url:
-                return PageResult(200, items, first_etag)
-            resp = await self._request("GET", next_url, quiet=quiet)
-            if resp.status_code != 200:
-                log.log(
-                    logging.DEBUG if quiet else logging.WARNING,
-                    "pagination stopped early: %s -> %s (results may be partial)",
-                    next_url,
-                    resp.status_code,
-                )
-                status = resp.status_code
-                await resp.aclose()
-                return PageResult(status, items, first_etag)
-
-    async def _get_list(self, url: str, **params: object) -> tuple[int, list[dict]]:
-        """GET a paginated bare-array list, returning (status, items collected).
-
-        The status is itself a signal for these endpoints (404 = feature
-        disabled); see :meth:`_paginate` for the partial-read contract.
-        """
-        result = await self._paginate(url, dict(params))
-        return result.status, result.items
-
-
-def _page_items(body: object, items_key: str | None) -> list[dict]:
-    """The items on one page: the bare array, or the list under ``items_key``.
-
-    An envelope without the key, or a body of the wrong shape, reads as an
-    empty page rather than raising: the page's status was 200, so the walk
-    goes on to the next link and the caller sees what the remaining pages hold.
-    """
-    if items_key is not None:
-        page = body.get(items_key) if isinstance(body, dict) else None
-    else:
-        page = body
-    return list(page) if isinstance(page, list) else []

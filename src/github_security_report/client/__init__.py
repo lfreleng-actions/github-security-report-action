@@ -11,7 +11,8 @@ See ``docs/BRIEF.md`` sections 9, 13 and ``docs/phase0-findings.md``.
 The implementation is split across ``endpoints`` (environment-resolved API URLs
 and the shared retry/backoff policy), ``queries`` (GraphQL documents),
 ``parsers`` (pure header/node parsing), ``transport`` (connection lifecycle and
-the retrying request primitives), ``accounting`` (what a run's requests
+the retrying request primitives), ``paging`` (paginated REST walks and single
+GraphQL queries over it), ``accounting`` (what a run's requests
 cost), ``failures`` (the errors a request that cannot succeed ends in),
 ``alerts`` (the org-bulk sweeps and the two-pass secret-scanning read),
 ``org_reads`` (the remaining reads issued once per organisation), ``reads`` (the per-repository reads) and ``writes`` (the
@@ -45,6 +46,7 @@ from github_security_report.client.errors import (
 )
 from github_security_report.client.failures import _endpoint_diagnostics
 from github_security_report.client.org_reads import OrgReadClient
+from github_security_report.client.paging import GraphQLResult, PageResult, Paging
 from github_security_report.client.parsers import (
     _last_published,
     _next_page_url,
@@ -78,8 +80,11 @@ __all__ = [
     "AuthError",
     "GitHubClient",
     "GraphBatchError",
+    "GraphQLResult",
     "NetworkError",
     "OrgReadClient",
+    "PageResult",
+    "Paging",
     "ReadClient",
     "RequestStats",
     "Transport",

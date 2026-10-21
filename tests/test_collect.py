@@ -878,7 +878,7 @@ async def _learning(
     client: BatchLimitedClient, *, batch_size: int
 ) -> dict[str, RepoGraphData]:
     """Run the prefetch with every learned batch size recorded in ``events``."""
-    logger = logging.getLogger("github_security_report.collect.graph")
+    logger = logging.getLogger("github_security_report.collect.context")
     handler = _Learned(client.events)
     logger.addHandler(handler)
     try:
@@ -933,7 +933,7 @@ async def test_graph_batch_halves_on_a_server_error_and_stays_halved(
     # of the one batch that happened to hit it first.
     client = BatchLimitedClient(23, limit=5)
     with caplog.at_level(
-        logging.WARNING, logger="github_security_report.collect.graph"
+        logging.WARNING, logger="github_security_report.collect.context"
     ):
         graph = await _learning(client, batch_size=10)
     assert sorted(client.batches) == [3, 5, 5, 5, 5, 10, 10]
@@ -1018,7 +1018,7 @@ async def test_graph_batch_log_names_the_reason_the_client_gave(
         4, limit=2, status=200, reason="resource limits exceeded"
     )
     with caplog.at_level(
-        logging.WARNING, logger="github_security_report.collect.graph"
+        logging.WARNING, logger="github_security_report.collect.context"
     ):
         await _collect_graph(client, batch_size=4)
     assert "failed (resource limits exceeded)" in caplog.records[0].getMessage()

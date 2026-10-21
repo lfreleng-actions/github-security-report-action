@@ -124,19 +124,10 @@ class ReadClient(OrgReadClient):
 
     async def dependabot_enabled(self, org: str, repo: str) -> bool | None:
         """Whether Dependabot alerts are enabled (None when indeterminate)."""
-        resp = await self._request(
-            "POST",
-            self._graphql_url,
-            json={
-                "query": _DEPENDABOT_ENABLED_QUERY,
-                "variables": {"owner": org, "name": repo},
-            },
+        result = await self._graphql(
+            _DEPENDABOT_ENABLED_QUERY, {"owner": org, "name": repo}
         )
-        if resp.status_code != 200:
-            await resp.aclose()  # unread body would leak a pooled connection
-            return None
-        node = (resp.json().get("data") or {}).get("repository")
-        await resp.aclose()  # release the connection once the body is read
+        node = (result.data or {}).get("repository")
         if not node:
             return None
         return bool(node.get("hasVulnerabilityAlertsEnabled"))

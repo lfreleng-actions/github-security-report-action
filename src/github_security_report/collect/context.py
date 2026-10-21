@@ -13,19 +13,31 @@ long and steadily-growing positional parameter list.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping
+import logging
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass
-from typing import TypeVar
+from typing import Any, TypeVar
 
+from github_security_report.client import GraphBatchError
 from github_security_report.collect.protocols import ClientProtocol
 from github_security_report.models import Repo, RepoGraphData
 
+log = logging.getLogger(__name__)
+
 _T = TypeVar("_T")
+_K = TypeVar("_K")
+_V = TypeVar("_V")
 
 # Per-repo probe tasks are created in batches of this size so very large orgs
 # do not allocate every task at once (HTTP concurrency is bounded separately by
 # the client semaphore).
 REPO_BATCH = 50
+
+# Batched GraphQL queries kept in flight at once. Each takes seconds on
+# GitHub's side while holding one client slot, so a serial walk left the rest
+# of the semaphore idle. A constant until a measurement justifies making it a
+# setting; it is bounded by the client semaphore regardless.
+GRAPH_PREFETCH_IN_FLIGHT = 4
 
 
 @dataclass(frozen=True)
@@ -83,3 +95,78 @@ async def gather_in_batches(
         batch = repos[start : start + REPO_BATCH]
         results.extend(await asyncio.gather(*(probe(repo) for repo in batch)))
     return results
+
+
+async def batched(
+    fetch: Callable[[list[_K]], Coroutine[Any, Any, Mapping[_K, _V]]],
+    items: list[_K],
+    *,
+    size: int,
+    in_flight: int = GRAPH_PREFETCH_IN_FLIGHT,
+    describe: str = "GraphQL batch",
+) -> dict[_K, _V]:
+    """Run ``fetch`` over ``items`` in batches, halving a batch GitHub refuses.
+
+    Issues one ``fetch`` per ``size`` items with up to ``in_flight`` calls at
+    once, and merges what each returns. The result keeps the order of
+    ``items`` for the keys that were answered.
+
+    The batch size adapts downwards. GitHub bounds GraphQL execution per query
+    and reports a breach as a gateway timeout (502/504), a 200 with no
+    ``data``, or a 200 whose ``errors`` say the query's resource limits were
+    exceeded, so a query can fail purely because of how many items it
+    carries; the same items then read fine in two smaller queries. When a
+    batch fails that way after the transport's own retries, it is re-queued
+    at half its size, and every batch issued after the failure is observed
+    uses the smaller size too: a slow day at GitHub is a property of the
+    collection, not of the one batch that happened to hit it first. The
+    learned size only ever shrinks, so of two failures observed close
+    together the smaller result wins. Batches already in flight when a
+    failure is observed were issued at the old size, so on a bad day up to
+    ``in_flight`` oversized batches (plus their retries) may fail before the
+    smaller size takes effect -- a bounded cost, accepted for the overlap. A
+    failure that a smaller query could not fix (a permission error, an
+    exhausted rate limit, a 500/503 outage) propagates unchanged, as does a
+    single-item query that still fails: at that point the API is genuinely
+    unusable. The sibling queries still in flight are cancelled before the
+    error propagates. ``fetch`` makes the splittable call (see
+    :func:`client.batch_errors._batch_response`); this loop only acts on it.
+    """
+    out: dict[_K, _V] = {}
+    pending = list(items)
+    size = max(1, size)
+    # Insertion-ordered, so failures observed together are handled in the
+    # order their batches were issued.
+    running: dict[asyncio.Task[Mapping[_K, _V]], list[_K]] = {}
+    try:
+        while pending or running:
+            while pending and len(running) < in_flight:
+                batch, pending = pending[:size], pending[size:]
+                running[asyncio.create_task(fetch(batch))] = batch
+            done, _ = await asyncio.wait(running, return_when=asyncio.FIRST_COMPLETED)
+            for task in [t for t in running if t in done]:
+                batch = running.pop(task)
+                try:
+                    out.update(dict(task.result()))
+                except GraphBatchError as exc:
+                    if len(batch) == 1 or not exc.splittable:
+                        raise
+                    size = min(size, len(batch) // 2)
+                    log.warning(
+                        "%s failed (%s) for a batch of %d; retrying them (and "
+                        "the %d remaining) in batches of %d, since GitHub "
+                        "bounds how much work one query may do",
+                        describe,
+                        exc.reason,
+                        len(batch),
+                        len(pending),
+                        size,
+                    )
+                    pending = batch + pending
+    finally:
+        for task in running:
+            task.cancel()
+        await asyncio.gather(*running, return_exceptions=True)
+    ordered: dict[_K, _V] = {key: out[key] for key in items if key in out}
+    ordered.update(out)
+    return ordered
