@@ -150,6 +150,13 @@ def code_quality_status(
     return CodeQualityStatus.PARTIAL
 
 
+def configured_languages(setup: CodeQualitySetup | None) -> frozenset[str]:
+    """The languages a setup already analyses; none unless it is configured."""
+    if setup is None or not setup.configured:
+        return frozenset()
+    return setup.languages
+
+
 def ordered(languages: Iterable[str]) -> tuple[str, ...]:
     """``languages`` in display order, any identifier outside the six last."""
     present = set(languages)

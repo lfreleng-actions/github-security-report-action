@@ -19,6 +19,10 @@ One category is destructive: stale CodeQL configurations are cleaned up by
 deleting their analyses (ADR-0005). It runs only when named explicitly, never
 as part of the default set, and each target passes guards that can refuse it
 -- a refusal is reported beside the work done, not treated as a failure.
+
+Code Quality is explicit-only too, for a different reason (ADR-0006): it is
+billed per active committer and consumes Actions minutes, so switching it on
+is a spending decision a bare run must not make.
 """
 
 from __future__ import annotations
@@ -92,6 +96,33 @@ def _table_offenders(key: CategoryKey) -> Callable[[OrgReport], list[Repo]]:
     return _get
 
 
+def _code_quality_targets(report: OrgReport) -> list[_Target]:
+    """One target per Code Quality row, carrying the languages to configure.
+
+    Only Disabled and Partial repositories are rows, so Not applicable and
+    Unreadable ones are never written. A row with no planned languages is
+    refused rather than written blind.
+    """
+    table = _find_table(report, CategoryKey.CODE_QUALITY)
+    if table is None:
+        return []
+    targets: list[_Target] = []
+    for row in table.rows:
+        languages = report.code_quality_writes.get(row.repo.name, ())
+        if not languages:
+            targets.append(
+                _Target(
+                    row.repo,
+                    row.repo.name,
+                    refusal="languages unknown; nothing written",
+                )
+            )
+            continue
+        name = f"{row.repo.name} ({', '.join(languages)})"
+        targets.append(_Target(row.repo, name, languages=languages))
+    return targets
+
+
 # --------------------------------------------------------------------------- #
 # Registry
 # --------------------------------------------------------------------------- #
@@ -105,7 +136,8 @@ class _Remediator:
     precheck: (
         Callable[[RemediationClient, str, _Target], Awaitable[str | None]] | None
     ) = None
-    # Destructive remediators act only when named with --category.
+    # Remediators that delete data or incur charges act only when named with
+    # --category.
     explicit_only: bool = False
 
 
@@ -141,6 +173,12 @@ _REMEDIATORS: tuple[_Remediator, ...] = (
         lambda c, o, t: c.enable_auto_merge(o, t.repo.name),
     ),
     _Remediator(
+        CategoryKey.CODE_QUALITY,
+        _code_quality_targets,
+        lambda c, o, t: c.enable_code_quality(o, t.repo.name, t.languages),
+        explicit_only=True,
+    ),
+    _Remediator(
         CategoryKey.CODEQL_STALE_CONFIGURATIONS,
         _cleanup_targets,
         _cleanup_write,
@@ -154,7 +192,8 @@ _BY_KEY: dict[CategoryKey, _Remediator] = {r.key: r for r in _REMEDIATORS}
 # The remediable category keys, in the order they are acted on and rendered.
 REMEDIABLE: tuple[CategoryKey, ...] = tuple(r.key for r in _REMEDIATORS)
 
-# What runs when no --category is given: everything but the destructive ones.
+# What runs when no --category is given: everything but the destructive and
+# billed ones.
 DEFAULT_REMEDIABLE: tuple[CategoryKey, ...] = tuple(
     r.key for r in _REMEDIATORS if not r.explicit_only
 )
@@ -195,7 +234,7 @@ async def remediate_org(
     """Remediate (or, in dry run, preview remediating) one org report.
 
     Acts on every selected category -- by default every remediable category
-    except the explicit-only, destructive ones -- in the canonical
+    except the explicit-only, destructive or billed ones -- in the canonical
     :data:`REMEDIABLE` order. In dry run every target yields a ``"would
     <verb>"`` outcome and no write is issued; with ``apply`` each target is
     written and yields the verb's past participle or ``"FAILED"`` with the

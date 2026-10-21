@@ -344,6 +344,25 @@ def test_code_quality_all_not_applicable_renders_explanation() -> None:
     assert "\u274c" not in out
 
 
+def test_code_quality_writes_keep_configured_languages() -> None:
+    writes = posture.code_quality_writes(
+        [
+            _quality("py-on", {"python"}, {"python"}),
+            # Configured for rust, which Linguist scope does not cover: the
+            # write keeps it rather than dropping it from the setup.
+            _quality("partial", {"python", "go"}, {"rust", "go"}),
+            _quality("go-off", {"go"}),
+            _quality("shell-only", set()),
+            _quality("setup-unread", {"python"}, unreadable=True),
+            _quality("languages-unread", None),
+        ]
+    )
+    assert writes == {
+        "partial": ("python", "go", "rust"),
+        "go-off": ("go",),
+    }
+
+
 def _auto_merge(enabled: int, disabled: int) -> report.TableSection:
     """An Auto-merge table with ``enabled`` repos on and ``disabled`` off."""
     return posture.build_auto_merge_table(

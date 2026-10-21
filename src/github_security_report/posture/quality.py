@@ -6,7 +6,8 @@ Unlike the other enablement checks, Code Quality only means something for a
 repository written in a language it analyses, so each repository is classified
 before it is counted. Disabled and Partial repositories are the rows; Enabled,
 Unreadable and Not applicable are footer counts, and a footer note gives the
-enabled-of-applicable count per language on every surface.
+enabled-of-applicable count per language on every surface. Remediation writes
+the languages :func:`code_quality_writes` plans for the same rows.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from github_security_report.code_quality import (
     CODE_QUALITY_LANGUAGES,
     CodeQualityStatus,
     code_quality_status,
+    configured_languages,
     ordered,
 )
 from github_security_report.posture.facts import RepoPosture
@@ -50,11 +52,7 @@ def build_code_quality_table(postures: list[RepoPosture]) -> TableSection:
         counts[status] += 1
         if not languages:
             continue
-        configured = (
-            p.code_quality.languages
-            if p.code_quality is not None and p.code_quality.configured
-            else frozenset()
-        )
+        configured = configured_languages(p.code_quality)
         for lang in languages:
             applicable[lang] = applicable.get(lang, 0) + 1
             if lang in configured:
@@ -80,3 +78,19 @@ def build_code_quality_table(postures: list[RepoPosture]) -> TableSection:
         not_applicable_count=counts[CodeQualityStatus.NOT_APPLICABLE],
         notes=(f"Enabled by language: {breakdown}",) if breakdown else (),
     )
+
+
+def code_quality_writes(postures: list[RepoPosture]) -> dict[str, tuple[str, ...]]:
+    """The languages remediation sets on each Disabled or Partial repository.
+
+    The union of what the setup already analyses and what applies, so the
+    write never drops a configured language; in display order.
+    """
+    return {
+        p.repo.name: ordered(
+            p.code_quality_languages | configured_languages(p.code_quality)
+        )
+        for p in postures
+        if p.code_quality_languages
+        and code_quality_status(p.code_quality_languages, p.code_quality).offending
+    }

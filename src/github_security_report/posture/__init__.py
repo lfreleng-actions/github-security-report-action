@@ -39,7 +39,10 @@ from github_security_report.posture.enablement import (
     cooldown_missing_ecosystems,
 )
 from github_security_report.posture.facts import RepoPosture
-from github_security_report.posture.quality import build_code_quality_table
+from github_security_report.posture.quality import (
+    build_code_quality_table,
+    code_quality_writes,
+)
 from github_security_report.posture.releases import (
     build_mutable_releases_table,
     build_releases_table,
@@ -59,4 +62,5 @@ __all__ = [
     "build_pvr_table",
     "build_auto_merge_table",
     "build_code_quality_table",
+    "code_quality_writes",
 ]

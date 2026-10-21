@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Sequence
 from types import MappingProxyType
 
 import pytest
@@ -104,6 +105,11 @@ class FakeClient:
     async def enable_auto_merge(self, o: str, r: str) -> tuple[bool, str]:
         return await self._do("auto_merge", o, r)
 
+    async def enable_code_quality(
+        self, o: str, r: str, languages: Sequence[str]
+    ) -> tuple[bool, str]:
+        return await self._do("code_quality", o, f"{r}:{','.join(languages)}")
+
     # CodeQL cleanup. ``holders`` maps a repository to each open alert's
     # holding categories; a repository mapped to None models an unreadable
     # alert list, and an absent one has no open alerts.
@@ -144,10 +150,11 @@ def test_remediable_set_excludes_qualitative_categories() -> None:
         remediate.DEFAULT_REMEDIABLE,
         remediate.EXPLICIT_ONLY,
     )
-    assert remediable == (*toggles, CategoryKey.CODEQL_STALE_CONFIGURATIONS)
-    # The destructive cleanup runs only when named: never by default.
+    named_only = (CategoryKey.CODE_QUALITY, CategoryKey.CODEQL_STALE_CONFIGURATIONS)
+    assert remediable == (*toggles, *named_only)
+    # The destructive cleanup and billed Code Quality run only when named.
     assert default == toggles
-    assert explicit == (CategoryKey.CODEQL_STALE_CONFIGURATIONS,)
+    assert explicit == named_only
     for excluded in (
         CategoryKey.SCORECARD,
         CategoryKey.ZIZMOR,
@@ -285,6 +292,69 @@ async def test_remediate_org_rejects_a_non_remediable_category() -> None:
         await remediate.remediate_org(
             client, _report(), categories=[CategoryKey.SCORECARD], apply=False
         )
+    assert client.calls == []
+
+
+# --------------------------------------------------------------------------- #
+# GitHub Code Quality
+# --------------------------------------------------------------------------- #
+def _quality_report() -> OrgReport:
+    report = _report()
+    report.code_quality = _table(CategoryKey.CODE_QUALITY, ["off", "partial", "lost"])
+    report.code_quality_writes = {
+        "off": ("python",),
+        # Partial: go is configured, python applies too; both are sent.
+        "partial": ("python", "go"),
+    }
+    return report
+
+
+async def test_default_run_never_enables_code_quality() -> None:
+    # Code Quality is billed, so the no-argument run never switches it on.
+    client = FakeClient()
+    results = await remediate.remediate_org(client, _quality_report(), apply=True)
+    assert CategoryKey.CODE_QUALITY not in {r.category.key for r in results}
+    assert not any(kind == "code_quality" for kind, _, _ in client.calls)
+
+
+async def test_code_quality_dry_run_names_the_languages() -> None:
+    client = FakeClient()
+    (result,) = await remediate.remediate_org(
+        client,
+        _quality_report(),
+        categories=[CategoryKey.CODE_QUALITY],
+        apply=False,
+    )
+    assert client.calls == []
+    outcomes = [(o.name, o.action, o.note) for o in result.outcomes]
+    assert outcomes == [
+        ("off (python)", "would enable", ""),
+        ("partial (python, go)", "would enable", ""),
+        ("lost", "refused", "languages unknown; nothing written"),
+    ]
+
+
+async def test_code_quality_apply_sends_the_full_language_list() -> None:
+    client = FakeClient()
+    (result,) = await remediate.remediate_org(
+        client,
+        _quality_report(),
+        categories=[CategoryKey.CODE_QUALITY],
+        apply=True,
+    )
+    assert client.calls == [
+        ("code_quality", "o", "off:python"),
+        ("code_quality", "o", "partial:python,go"),
+    ]
+    assert result.failures == 0
+
+
+async def test_code_quality_without_its_table_has_nothing_to_do() -> None:
+    client = FakeClient()
+    (result,) = await remediate.remediate_org(
+        client, _report(), categories=[CategoryKey.CODE_QUALITY], apply=True
+    )
+    assert result.outcomes == ()
     assert client.calls == []
 
 

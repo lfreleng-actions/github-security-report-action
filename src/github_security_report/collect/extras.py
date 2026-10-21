@@ -187,6 +187,7 @@ async def attach_extra_tables(
     report.private_vulnerability_reporting = posture.build_pvr_table(postures)
     report.auto_merge = posture.build_auto_merge_table(postures)
     report.code_quality = posture.build_code_quality_table(postures)
+    report.code_quality_writes = posture.code_quality_writes(postures)
     codeql_facts = await collect_codeql_facts(
         in_scope, ctx, stale_days=report_cfg.codeql_stale_days
     )

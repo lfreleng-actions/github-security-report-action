@@ -1233,6 +1233,48 @@ async def test_enable_auto_merge_failure_carries_note(client: GitHubClient) -> N
     assert note.startswith("403")
 
 
+_CQ_SETUP = f"{API}/repos/o/r/code-quality/setup"
+
+
+@respx.mock
+@pytest.mark.parametrize(("status", "note"), [(202, "accepted (async)"), (200, "")])
+async def test_enable_code_quality_ok(
+    client: GitHubClient, status: int, note: str
+) -> None:
+    route = respx.patch(_CQ_SETUP).mock(
+        return_value=httpx.Response(status, json={"run_id": 1, "run_url": "u"})
+    )
+    assert await client.enable_code_quality("o", "r", ("python", "go")) == (
+        True,
+        note,
+    )
+    # The whole language list goes with the state, in the order given.
+    assert json.loads(route.calls.last.request.content) == {
+        "state": "configured",
+        "languages": ["python", "go"],
+    }
+
+
+@respx.mock
+async def test_enable_code_quality_update_in_progress(client: GitHubClient) -> None:
+    respx.patch(_CQ_SETUP).mock(return_value=httpx.Response(409, json={}))
+    ok, note = await client.enable_code_quality("o", "r", ("python",))
+    assert ok is False
+    assert note == "409 a Code Quality update is already in progress"
+
+
+@respx.mock
+async def test_enable_code_quality_forbidden_carries_note(
+    client: GitHubClient,
+) -> None:
+    respx.patch(_CQ_SETUP).mock(
+        return_value=httpx.Response(403, json={"message": "Code Quality not enabled"})
+    )
+    ok, note = await client.enable_code_quality("o", "r", ("python",))
+    assert ok is False
+    assert note.startswith("403")
+
+
 # --------------------------------------------------------------------------- #
 # Batched per-repo GraphQL prefetch
 # --------------------------------------------------------------------------- #

@@ -1637,8 +1637,8 @@ the run, rather than falling back to every repository. The run then collects
 exactly the repositories that check validated, without listing the
 organisation again, and prints `Limited to:` beneath its heading.
 
-The remediable categories are the simple on/off features with a documented
-enablement endpoint:
+The remediable categories are the features with a documented enablement
+endpoint:
 
 | `--category` | Enables |
 |---|---|
@@ -1648,15 +1648,48 @@ enablement endpoint:
 | `dependabot_updates_enabled` | Dependabot security updates (plus alerts) |
 | `private_vulnerability_reporting` | Private vulnerability reporting |
 | `auto_merge` | The repository's "Allow auto-merge" setting |
+| `code_quality` | GitHub Code Quality, per language (named only; billed) |
+| `codeql_stale_configurations` | Stale CodeQL cleanup (named only; deletes) |
 
 Qualitative findings (Scorecard, zizmor, open Dependabot alerts, cooldown,
 release freshness/mutability) are reported but not auto-remediated. Remediation
 is organisation-scoped (`--scope org`, the default and only supported scope).
 
+The last two run **only when named** with `--category`, and the no-argument
+run never includes them: `code_quality`, because GitHub bills it,
+and `codeql_stale_configurations`, because it deletes data.
+
+### Enabling GitHub Code Quality
+
+GitHub Code Quality is billed per active committer and uses GitHub Actions
+minutes, so switching it on is a spending decision a routine run must not
+make:
+
+```bash
+# Preview: each repository with the languages it would get.
+uvx github-security-report remediate --org lfreleng-actions \
+  --category code_quality
+
+# Apply.
+uvx github-security-report remediate --org lfreleng-actions \
+  --category code_quality --apply
+```
+
+It acts on the rows of **Code Quality**, the Disabled and Partial
+repositories. Each one is configured for the union of the languages its
+setup already analyses and the ones its Linguist languages make applicable,
+so a write never drops a configured language; the dry run names them, as in
+`dependamerge (python, javascript-typescript)`. Not applicable and Unreadable
+repositories are never written. GitHub provisions the first analysis
+asynchronously. A `409` (an update already in progress), a `403` (an archived
+repository, or Code Quality not allowed for it) or a `422` fails that
+repository only and names the cause. The token needs the classic `repo`
+scope, or a fine-grained token's Administration: write. See
+[ADR-0006](docs/adr/0006-github-code-quality.md) for the reasoning.
+
 ### Cleaning up stale CodeQL configurations
 
-One category is **destructive**, so it runs only when named. The no-argument
-run never includes it:
+This category is **destructive**, so it runs only when named:
 
 ```bash
 # Preview: which configurations would go, and which are refused and why.
