@@ -344,6 +344,21 @@ class RunStore:
         """All stored records, optionally for one repo and/or since a time."""
         return self._select(repo, since)
 
+    def get_many(self, ids: Iterable[int]) -> dict[int, WorkflowRunRecord]:
+        """The stored records among ``ids``, by id; absent ids are omitted."""
+        wanted = list(ids)
+        out: dict[int, WorkflowRunRecord] = {}
+        # SQLite caps the variables one statement may bind, so look up in
+        # chunks well under that limit.
+        for start in range(0, len(wanted), 500):
+            chunk = wanted[start : start + 500]
+            marks = ", ".join("?" * len(chunk))
+            rows = self._conn.execute(
+                f"SELECT * FROM runs WHERE id IN ({marks})", chunk
+            )
+            out.update((row["id"], _from_row(row)) for row in rows)
+        return out
+
     def needing_enrichment(
         self, repo: str | None = None, *, since: dt.datetime | None = None
     ) -> list[WorkflowRunRecord]:
@@ -362,12 +377,10 @@ class RunStore:
 
     def count(self, repo: str | None = None) -> int:
         """How many records are stored, for one repo or in total."""
-        if repo is None:
-            (total,) = self._conn.execute("SELECT COUNT(*) FROM runs").fetchone()
-        else:
-            (total,) = self._conn.execute(
-                "SELECT COUNT(*) FROM runs WHERE repo = ?", (repo,)
-            ).fetchone()
+        where, params = ("", ()) if repo is None else (" WHERE repo = ?", (repo,))
+        (total,) = self._conn.execute(
+            f"SELECT COUNT(*) FROM runs{where}", params
+        ).fetchone()
         return int(total)
 
     # -- housekeeping -------------------------------------------------------
