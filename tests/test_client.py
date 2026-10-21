@@ -163,6 +163,79 @@ async def test_get_list_later_page_failure_returns_partial_and_status(
 
 
 @respx.mock
+async def test_paginate_stop_predicate_ends_walk_on_first_match(
+    client: GitHubClient,
+) -> None:
+    # The first item the predicate accepts, and everything after it, is
+    # dropped, and no further page is requested: an incremental read of a
+    # newest-first list costs one page once it meets data it already holds.
+    page1 = httpx.Response(
+        200,
+        json={"total_count": 5, "workflow_runs": [{"n": 5}, {"n": 4}, {"n": 3}]},
+        headers={
+            "Link": f'<{API}/repos/o/r/actions/runs?page=2>; rel="next"',
+            "ETag": 'W/"abc"',
+        },
+    )
+    route = respx.get(url__startswith=f"{API}/repos/o/r/actions/runs")
+    route.side_effect = [page1, httpx.Response(500)]
+    result = await client._paginate(
+        f"{API}/repos/o/r/actions/runs",
+        items_key="workflow_runs",
+        stop=lambda item: item["n"] <= 3,
+    )
+    assert result.status == 200
+    assert [item["n"] for item in result.items] == [5, 4]
+    assert result.stopped is True
+    assert result.etag == 'W/"abc"'
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_paginate_presents_etag_and_reads_304_as_unchanged(
+    client: GitHubClient,
+) -> None:
+    route = respx.get(f"{API}/repos/o/r/actions/runs").mock(
+        return_value=httpx.Response(304)
+    )
+    result = await client._paginate(
+        f"{API}/repos/o/r/actions/runs", items_key="workflow_runs", etag='W/"abc"'
+    )
+    assert result.status == 304
+    assert result.items == []
+    assert result.stopped is False
+    assert route.calls.last.request.headers["If-None-Match"] == 'W/"abc"'
+
+
+@respx.mock
+async def test_paginate_walks_every_page_without_a_stop(
+    client: GitHubClient,
+) -> None:
+    # Without a predicate the walk reaches the last page; an enveloped page
+    # that lacks the items key reads as empty rather than failing the walk.
+    page1 = httpx.Response(
+        200,
+        json={"workflow_runs": [{"n": 2}]},
+        headers={"Link": f'<{API}/repos/o/r/actions/runs?page=2>; rel="next"'},
+    )
+    page2 = httpx.Response(
+        200,
+        json={"total_count": 0},
+        headers={"Link": f'<{API}/repos/o/r/actions/runs?page=3>; rel="next"'},
+    )
+    page3 = httpx.Response(200, json={"workflow_runs": [{"n": 1}]})
+    route = respx.get(url__startswith=f"{API}/repos/o/r/actions/runs")
+    route.side_effect = [page1, page2, page3]
+    result = await client._paginate(
+        f"{API}/repos/o/r/actions/runs", items_key="workflow_runs"
+    )
+    assert result.status == 200
+    assert [item["n"] for item in result.items] == [2, 1]
+    assert result.stopped is False
+    assert route.call_count == 3
+
+
+@respx.mock
 async def test_code_scanning_tools(client: GitHubClient) -> None:
     # Each signal tool is probed via the analyses tool_name filter; CodeQL and
     # Scorecard have analyses, zizmor does not.
