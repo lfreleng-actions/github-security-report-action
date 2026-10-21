@@ -5,10 +5,12 @@
 
 # ADR-0001: Architecture and scope of the GitHub Security Report Action
 
-- **Status:** Accepted
+- **Status:** Accepted (the Code Quality deferral in decision 3 superseded
+  by [ADR-0006](0006-github-code-quality.md))
 - **Date:** 2026-06-16
 - **Supersedes:** —
-- **Superseded by:** —
+- **Superseded by:** [ADR-0006](0006-github-code-quality.md), partially: for
+  GitHub Code Quality alone
 - **Related:** [`docs/BRIEF.md`](../BRIEF.md) (full design brief and decision log)
 
 ## Context
@@ -121,4 +123,7 @@ load-bearing architecture:
   via the `modeseven-lfreleng-actions` fork org — all four-state status
   semantics (404 = disabled, 403 = unknown).)*
 - Revisit Code Quality when/if a public API ships (would be a new ADR).
+  *(Done — the API shipped, and
+  [ADR-0006](0006-github-code-quality.md) adds Code Quality reporting and
+  explicit-only remediation.)*
 - Pin the Simple-DataTables CDN asset + add SRI rather than `@latest`.
