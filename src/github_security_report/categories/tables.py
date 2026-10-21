@@ -191,6 +191,55 @@ TABLE_CATEGORIES: dict[CategoryKey, CategoryMeta] = {
             "repositories whose setup, or whose languages, could not be read."
         ),
     ),
+    CategoryKey.WORKFLOW_FAILURES: CategoryMeta(
+        key=CategoryKey.WORKFLOW_FAILURES,
+        title="Workflow Failures",
+        pass_label="Without failures",
+        fail_label="With failures",
+        unknown_label="Unreadable",
+        url=(
+            "https://docs.github.com/en/actions/monitoring-and-troubleshooting-"
+            "workflows/monitoring-workflows/viewing-workflow-run-history"
+        ),
+        description=(
+            "Repositories whose GitHub Actions workflows failed in the window, "
+            "ranked by failed runs. Runs counts the concluded runs of every "
+            "workflow in the repository; Fail % is failed over failed plus "
+            "passed, so skipped and cancelled runs (Skipped) never dilute it. "
+            "Retried counts runs that passed on a later attempt, a direct sign "
+            "of flakiness. Workflows is how many distinct workflows failed, and "
+            "Worst workflow the one with the most failures. GitHub-managed "
+            "workflows (Dependabot updates, default-setup CodeQL, Copilot "
+            "review) are left out unless configured in, since nobody can edit "
+            "them. Unreadable counts the repositories whose run listing could "
+            "not be read this run; their failures are unknown, not absent."
+        ),
+    ),
+    CategoryKey.WORKFLOW_FAILURES_DETAIL: CategoryMeta(
+        key=CategoryKey.WORKFLOW_FAILURES_DETAIL,
+        title="Workflow Failures: Detail",
+        pass_label="Without failures",
+        fail_label="Failing workflows",
+        unknown_label="Unreadable",
+        url=(
+            "https://docs.github.com/en/actions/monitoring-and-troubleshooting-"
+            "workflows/troubleshooting-workflows/using-workflow-run-logs"
+        ),
+        description=(
+            "Every workflow that failed in the window, one row per workflow, "
+            "with the jobs that failed (and how often each did) linked to "
+            "their most recent failed run. Pattern is persistent when the "
+            "failure rate is at or above the configured threshold, "
+            "intermittent below it, and insufficient with too few runs to "
+            "judge. Triggers says what started the failing runs. Reading "
+            "isolates where the workflow fails: 'post-merge only' when every "
+            "pull-request run passed and only merges or tag pushes fail -- the "
+            "integration test that needs credentials a pull request cannot "
+            "have -- 'no PR runs' when it never ran on a pull request, and "
+            "'everywhere' when pull requests fail too. Matrix legs are folded "
+            "into one job name unless configured otherwise."
+        ),
+    ),
     CategoryKey.GITHUB_ISSUES: CategoryMeta(
         key=CategoryKey.GITHUB_ISSUES,
         title="GitHub Issues",
