@@ -18,12 +18,14 @@ Split across three modules -- :mod:`~github_security_report.config.schema`
 from __future__ import annotations
 
 from github_security_report.config.loader import (
+    DEFAULT_CACHE_DIR,
     DEFAULT_CONFIG_DIR,
     DEFAULT_CONFIG_FILE,
     _categories_from,
     _report_from,
     _slack_from,
     build_config,
+    default_cache_dir,
     default_config_path,
     find_default_config,
     load_file,
@@ -63,6 +65,7 @@ __all__ = [
     "CONCURRENCY_MAX",
     "CONFIG_SCHEMA",
     "DEFAULT_BAU",
+    "DEFAULT_CACHE_DIR",
     "DEFAULT_CONFIG_DIR",
     "DEFAULT_CONFIG_FILE",
     "DEFAULT_ISSUE_LABELS",
@@ -86,6 +89,7 @@ __all__ = [
     "_report_from",
     "_slack_from",
     "build_config",
+    "default_cache_dir",
     "default_config_path",
     "find_default_config",
     "load_file",

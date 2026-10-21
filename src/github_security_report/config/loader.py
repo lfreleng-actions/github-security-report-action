@@ -383,6 +383,22 @@ def default_config_path() -> Path:
     return Path(base) / DEFAULT_CONFIG_DIR / DEFAULT_CONFIG_FILE
 
 
+# Conventional per-user cache location for data that is expensive to rebuild
+# but safe to lose (the workflow-run store). Honours $XDG_CACHE_HOME, falling
+# back to ~/.cache (the XDG Base Directory default).
+DEFAULT_CACHE_DIR = "github-security-report"
+
+
+def default_cache_dir() -> Path:
+    """The conventional per-user cache directory (whether or not it exists).
+
+    ``$XDG_CACHE_HOME/github-security-report`` when the variable is set,
+    otherwise ``~/.cache/github-security-report``.
+    """
+    base = os.environ.get("XDG_CACHE_HOME", "").strip() or str(Path.home() / ".cache")
+    return Path(base) / DEFAULT_CACHE_DIR
+
+
 def find_default_config() -> Path | None:
     """The per-user config path if a readable file exists there, else None."""
     path = default_config_path()
