@@ -5,10 +5,13 @@
 from __future__ import annotations
 
 import datetime as dt
+from pathlib import Path
 
+import pytest
 from rich.console import Console
 
 from github_security_report import remediate, report
+from github_security_report.authors import MembershipGap
 from github_security_report.categories import CategoryKey, category_meta
 from github_security_report.models import (
     Repo,
@@ -592,3 +595,50 @@ def test_render_remediation_dry_run_names_each_verb() -> None:
     assert "1 would delete: a (Default, python)" in out
     assert "1 would re-enable: b (Advanced, python)" in out
     assert "1 to delete, 1 to re-enable (dry run)" in out
+
+
+@pytest.mark.parametrize(
+    ("gap", "line"),
+    [
+        (
+            MembershipGap.PERMISSION,
+            "Token lacks read/organisation permission; "
+            "results incomplete for lfreleng-actions",
+        ),
+        (
+            MembershipGap.NOT_MEMBER,
+            "Token's account is not a member of lfreleng-actions; "
+            "results incomplete for lfreleng-actions",
+        ),
+        (
+            MembershipGap.UNREADABLE,
+            "Organisation membership could not be read; "
+            "results incomplete for lfreleng-actions",
+        ),
+    ],
+)
+def test_membership_gap_warns_once_under_the_divider(
+    gap: MembershipGap, line: str
+) -> None:
+    org = _org([])
+    org.membership_gap = gap
+    lines = _render(org).splitlines()
+    divider = next(
+        i for i, text in enumerate(lines) if "Security report: lfreleng-actions" in text
+    )
+    assert lines[divider + 1] == f"\u26a0\ufe0f {line}"
+    assert sum("results incomplete" in text for text in lines) == 1
+
+
+def test_membership_gap_follows_the_config_line() -> None:
+    org = _org([])
+    org.membership_gap = MembershipGap.PERMISSION
+    console = Console(record=True, width=120, no_color=True)
+    terminal.render_org(org, console, config_path=Path("/cfg/config.json"))
+    lines = console.export_text().splitlines()
+    assert lines[1] == "Using config: /cfg/config.json"
+    assert lines[2].startswith("\u26a0\ufe0f Token lacks read/organisation")
+
+
+def test_complete_membership_prints_no_warning() -> None:
+    assert "results incomplete" not in _render(_org([]))

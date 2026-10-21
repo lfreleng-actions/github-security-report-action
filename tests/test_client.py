@@ -15,6 +15,7 @@ import httpx
 import pytest
 import respx
 
+from github_security_report.authors import MembershipGap
 from github_security_report.client import (
     API_MAX_RETRIES,
     AuthError,
@@ -2606,7 +2607,45 @@ async def test_org_members_rejects_an_unusable_member_node(
                 },
             )
         )
-        assert await client.org_members("o") is None
+        read = await client.org_members("o")
+        assert read.members is None
+        assert read.gap is MembershipGap.UNREADABLE
+
+
+@respx.mock
+async def test_org_members_rejects_malformed_page_info(
+    client: GitHubClient,
+) -> None:
+    # Without a usable pageInfo a final page cannot be told from a truncated
+    # one, so neither an empty nor a nonempty member list may be trusted.
+    malformed: tuple[object, ...] = (
+        None,
+        {},
+        {"hasNextPage": "false"},
+        {"hasNextPage": None},
+    )
+    for page_info in malformed:
+        for nodes in ([], [{"login": "alice"}]):
+            respx.post(f"{API}/graphql").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "data": {
+                            "organization": {
+                                "viewerIsAMember": True,
+                                "membersWithRole": {
+                                    "totalCount": 2,
+                                    "pageInfo": page_info,
+                                    "nodes": nodes,
+                                },
+                            }
+                        }
+                    },
+                )
+            )
+            read = await client.org_members("o")
+            assert read.members is None, (page_info, nodes)
+            assert read.gap is MembershipGap.UNREADABLE, (page_info, nodes)
 
 
 @respx.mock
@@ -2634,7 +2673,9 @@ async def test_org_members_rejects_a_response_carrying_graphql_errors(
             },
         )
     )
-    assert await client.org_members("o") is None
+    read = await client.org_members("o")
+    assert read.members is None
+    assert read.gap is MembershipGap.UNREADABLE
 
 
 @respx.mock
@@ -2662,7 +2703,9 @@ async def test_org_members_outside_viewer_is_unknown_not_partial(
             },
         )
     )
-    assert await client.org_members("o") is None
+    read = await client.org_members("o")
+    assert read.members is None
+    assert read.gap is MembershipGap.NOT_MEMBER
 
 
 @respx.mock
@@ -2688,7 +2731,38 @@ async def test_org_members_returns_the_set_for_a_member_viewer(
             },
         )
     )
-    assert await client.org_members("o") == frozenset({"alice", "bob"})
+    read = await client.org_members("o")
+    assert read.members == frozenset({"alice", "bob"})
+    assert read.gap is None
+
+
+@respx.mock
+async def test_org_members_empty_list_for_a_member_viewer_is_a_permission_gap(
+    client: GitHubClient,
+) -> None:
+    # Seen with a fine-grained token: a member viewer, no errors, and no
+    # members. The viewer is itself a member, so the list cannot be complete,
+    # and trusting it would count every outsider association as external.
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "organization": {
+                        "viewerIsAMember": True,
+                        "membersWithRole": {
+                            "totalCount": 0,
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [],
+                        },
+                    }
+                }
+            },
+        )
+    )
+    read = await client.org_members("o")
+    assert read.members is None
+    assert read.gap is MembershipGap.PERMISSION
 
 
 @respx.mock
@@ -2701,7 +2775,49 @@ async def test_org_members_unreadable_organisation_is_unknown(
             json={"data": {"organization": None}, "errors": [{"message": "nope"}]},
         )
     )
-    assert await client.org_members("o") is None
+    read = await client.org_members("o")
+    assert read.members is None
+    assert read.gap is MembershipGap.UNREADABLE
+
+
+@respx.mock
+async def test_org_members_missing_scope_is_a_permission_gap(
+    client: GitHubClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A classic token without read:org: HTTP 200, a null organisation and an
+    # INSUFFICIENT_SCOPES error. The cause is named rather than folded into
+    # "could not be read", and nothing warns: the terminal report says it once.
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {"organization": None},
+                "errors": [
+                    {
+                        "type": "INSUFFICIENT_SCOPES",
+                        "message": "Your token has not been granted the "
+                        "required scopes to execute this query.",
+                    }
+                ],
+            },
+        )
+    )
+    with caplog.at_level(logging.INFO):
+        read = await client.org_members("o")
+    assert read.members is None
+    assert read.gap is MembershipGap.PERMISSION
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert "organisation membership for o" in caplog.text
+
+
+@respx.mock
+async def test_org_members_forbidden_is_a_permission_gap(
+    client: GitHubClient,
+) -> None:
+    respx.post(f"{API}/graphql").mock(return_value=httpx.Response(403))
+    read = await client.org_members("o")
+    assert read.members is None
+    assert read.gap is MembershipGap.PERMISSION
 
 
 @respx.mock
@@ -2729,7 +2845,9 @@ async def test_org_members_failed_later_page_discards_the_partial_set(
     # 404 rather than 500: a server error is retried on the shared backoff
     # schedule, which is not what this test is about.
     route.side_effect = [first, httpx.Response(404)]
-    assert await client.org_members("o") is None
+    read = await client.org_members("o")
+    assert read.members is None
+    assert read.gap is MembershipGap.UNREADABLE
 
 
 @respx.mock

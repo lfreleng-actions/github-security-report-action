@@ -15,6 +15,7 @@ import logging
 import os
 from collections.abc import Sequence
 from dataclasses import replace
+from pathlib import Path
 from typing import NoReturn
 
 import typer
@@ -54,10 +55,13 @@ def _load_config(
     config_data: str | None,
     org: str | None,
     token_env: str | None = None,
-    *,
-    console: Console | None = None,
-) -> Config | None:
+) -> tuple[Config | None, Path | None]:
     """Resolve the configuration, applying an explicit ``--token-env`` over it.
+
+    Returns the configuration with the path of the per-user config file when
+    that file was auto-discovered, else ``None``. The renderers print that
+    path under each report's divider rather than here, before collection,
+    where it would sit above everything the collection logs.
 
     ``token_env`` is ``None`` when the flag was not given, which is what makes
     it usable as an override at all: with an eager ``"GITHUB_TOKEN"`` default
@@ -68,6 +72,7 @@ def _load_config(
     alongside ``--config``.
     """
     cfg: Config | None = None
+    default_path: Path | None = None
     if config_file:
         cfg = config.load_file(config_file)
     elif config_data:
@@ -79,16 +84,17 @@ def _load_config(
         # one exists, so a local run with no flags works instead of erroring.
         default_path = config.find_default_config()
         if default_path is not None:
-            if console is not None:
-                console.print(f"[dim]Using config: {default_path}[/dim]")
             cfg = config.load_file(str(default_path))
     if cfg is None or token_env is None:
-        return cfg
-    return replace(
-        cfg,
-        organizations=tuple(
-            replace(org_cfg, token_env=token_env) for org_cfg in cfg.organizations
+        return cfg, default_path
+    return (
+        replace(
+            cfg,
+            organizations=tuple(
+                replace(org_cfg, token_env=token_env) for org_cfg in cfg.organizations
+            ),
         ),
+        default_path,
     )
 
 
@@ -180,6 +186,7 @@ async def _run_org(cfg: Config, options: OrgRunOptions, *, console: Console) -> 
             show=show(org_cfg.report, "cli", options.hidden),
             limit=limits.resolver(org_cfg.report, "cli"),
             footer=footer(org_cfg.report),
+            config_path=options.config_path,
         )
     if options.output_dir:
         publish.write_pages(
@@ -208,6 +215,7 @@ async def _run_repo(
     report_cfg: ReportConfig | None = None,
     limits: TopNLimits | None = None,
     hidden: frozenset[CategoryKey] = frozenset(),
+    config_path: Path | None = None,
 ) -> int:
     # Repo mode has no per-org block, so the report config is whatever a
     # supplied --config carried globally, falling back to the built-in
@@ -245,6 +253,7 @@ async def _run_repo(
         show=show(cfg, "cli", hidden),
         limit=caps.resolver(cfg, "cli"),
         footer=footer(cfg),
+        config_path=config_path,
     )
 
     runner.append_step_summary(
@@ -279,6 +288,7 @@ async def _run_remediate(
     categories: Sequence[CategoryKey],
     apply: bool,
     repos: Sequence[scope.RepoRef] = (),
+    config_path: Path | None = None,
 ) -> int:
     """Collect each org's posture and enable (or preview enabling) features.
 
@@ -287,8 +297,9 @@ async def _run_remediate(
     config is intentionally bypassed. ``repos``, when given, limits every
     category to those repositories; the selection is checked against every
     org before anything is read or written, and a name that matches nothing,
-    or only an excluded repository, stops the run. Returns 2 for a bad
-    selection, 1 when any write failed, else 0.
+    or only an excluded repository, stops the run. ``config_path`` is the
+    auto-discovered config file, printed under each org's divider. Returns 2
+    for a bad selection, 1 when any write failed, else 0.
     """
     now = dt.datetime.now(dt.timezone.utc)
     failures = 0
@@ -307,6 +318,9 @@ async def _run_remediate(
                 org_cfg.report,
                 generated_at=now,
                 selected=selected[index] if repos else None,
+                # No remediation acts on the author-aware tables, so their
+                # membership and viewer reads would only cost requests.
+                author_tables=False,
             )
             results = await remediate_mod.remediate_org(
                 client, report, categories=categories, apply=apply
@@ -322,6 +336,7 @@ async def _run_remediate(
                 # This entry's own validated repositories, not every selector:
                 # in a multi-org run each org names only what it collected.
                 limited_to=[r.name for r in selected[index]] if repos else [],
+                config_path=config_path,
             )
             failures += sum(result.failures for result in results)
     return 1 if failures else 0

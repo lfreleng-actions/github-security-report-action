@@ -298,6 +298,7 @@ async def collect_org(
     *,
     generated_at: dt.datetime | None = None,
     selected: Sequence[Repo] | None = None,
+    author_tables: bool = True,
 ) -> OrgReport:
     """Collect and build the report for one organisation.
 
@@ -307,6 +308,10 @@ async def collect_org(
     organisation is then not listed again. Per-repository reads cover only
     these; the org-bulk alert sweeps still read the organisation's open
     alerts, as they are single organisation-wide requests.
+
+    ``author_tables=False`` skips the Issues, Pull Requests and Assigned to Me
+    tables and the organisation membership and viewer reads behind them; see
+    :func:`~github_security_report.collect.extras.attach_extra_tables`.
     """
     org = org_cfg.name
     log.info("collecting %s", org)
@@ -334,5 +339,12 @@ async def collect_org(
         excluded_repos=scoped.excluded,
         skipped_signals=skipped,
     )
-    await attach_extra_tables(report, scoped.in_scope, ctx, org_cfg, report_cfg)
+    await attach_extra_tables(
+        report,
+        scoped.in_scope,
+        ctx,
+        org_cfg,
+        report_cfg,
+        author_tables=author_tables,
+    )
     return report

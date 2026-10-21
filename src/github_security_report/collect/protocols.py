@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from github_security_report.authors import OrgMembership
 from github_security_report.codeql.facts import CodeQLConfiguration, DefaultSetup
 from github_security_report.models import Repo, RepoGraphData
 
@@ -32,12 +33,13 @@ class ClientProtocol(Protocol):
         """Fetch the organisation's workflow rulesets."""
         raise NotImplementedError
 
-    async def org_members(self, org: str) -> frozenset[str] | None:
+    async def org_members(self, org: str) -> OrgMembership:
         """Return the organisation's member logins, normalised.
 
-        ``None`` means membership could not be read in full, which is not the
-        same as an organisation with no members: the caller must not treat a
-        missing member as evidence that an author is an outsider.
+        Members of ``None`` mean membership could not be read in full, which is
+        not the same as an organisation with no members: the caller must not
+        treat a missing member as evidence that an author is an outsider. The
+        result's ``gap`` says why it could not be read.
         """
         raise NotImplementedError
 

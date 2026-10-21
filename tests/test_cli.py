@@ -246,24 +246,94 @@ def _mock_org_o_r() -> None:
     )
 
 
+def _write_default_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Place a per-user config for org ``o`` where discovery will find it."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    cfg_dir = tmp_path / "github-security-report"
+    cfg_dir.mkdir()
+    path = cfg_dir / "config.json"
+    path.write_text(
+        json.dumps({"organizations": [{"name": "o", "token_env": "GITHUB_TOKEN"}]}),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _line_after(stdout: str, marker: str) -> str:
+    """The line printed directly beneath the first line containing ``marker``."""
+    lines = stdout.splitlines()
+    index = next(i for i, line in enumerate(lines) if marker in line)
+    return lines[index + 1]
+
+
 @respx.mock
 def test_org_mode_uses_default_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # With no --config/--config-data/--org, a per-user config file under
     # $XDG_CONFIG_HOME is discovered and used (org mode), rather than erroring.
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    cfg_dir = tmp_path / "github-security-report"
-    cfg_dir.mkdir()
-    (cfg_dir / "config.json").write_text(
-        json.dumps({"organizations": [{"name": "o", "token_env": "GITHUB_TOKEN"}]}),
-        encoding="utf-8",
-    )
+    _write_default_config(tmp_path, monkeypatch)
     _mock_org_o_r()
 
     result = cli.invoke(app, ["report", "--scope", "org", "--no-color"])
     assert result.exit_code == 0, result.stdout
-    assert "Using config" in result.stdout
+    # Named under the divider, not above it with the collection's own output.
+    assert result.stdout.count("Using config") == 1
+    assert _line_after(result.stdout, "Security report: o").startswith("Using config:")
+
+
+def _graphql_without_read_org(request: httpx.Request) -> httpx.Response:
+    """The org-mode GraphQL answers for a classic token lacking ``read:org``."""
+    if "membersWithRole" in json.loads(request.content).get("query", ""):
+        return httpx.Response(
+            200,
+            json={
+                "data": {"organization": None},
+                "errors": [
+                    {
+                        "type": "INSUFFICIENT_SCOPES",
+                        "message": "The 'viewerIsAMember' field requires one of "
+                        "the following scopes: ['read:org']",
+                    }
+                ],
+            },
+        )
+    return _org_graphql_side(request)
+
+
+@respx.mock
+def test_missing_read_org_warns_once_under_the_divider(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _mock_org_o_r()
+    respx.post(f"{API}/graphql").mock(side_effect=_graphql_without_read_org)
+    with caplog.at_level(logging.INFO):
+        result = cli.invoke(app, ["report", "--org", "o", "--no-color"])
+    assert result.exit_code == 0, result.stdout
+    assert result.stdout.count("\u26a0\ufe0f") == 1
+    assert _line_after(result.stdout, "Security report: o") == (
+        "\u26a0\ufe0f Token lacks read/organisation permission; "
+        "results incomplete for o"
+    )
+    # The cause stays visible with --verbose, but nothing warns about it.
+    assert not [
+        r
+        for r in caplog.records
+        if r.levelno >= logging.WARNING and "membership" in r.getMessage()
+    ]
+
+
+@respx.mock
+def test_explicit_config_prints_no_config_line(tmp_path: Path) -> None:
+    _mock_org_o_r()
+    path = tmp_path / "c.json"
+    path.write_text(
+        json.dumps({"organizations": [{"name": "o", "token_env": "GITHUB_TOKEN"}]}),
+        encoding="utf-8",
+    )
+    result = cli.invoke(app, ["report", "--config", str(path), "--no-color"])
+    assert result.exit_code == 0, result.stdout
+    assert "Using config" not in result.stdout
 
 
 @respx.mock
@@ -714,12 +784,12 @@ class TestTokenEnvOverride:
         return str(path)
 
     def test_unset_leaves_the_configured_value(self, tmp_path: Path) -> None:
-        cfg = _load_config(self._config(tmp_path), None, None)
+        cfg, _ = _load_config(self._config(tmp_path), None, None)
         assert cfg is not None
         assert cfg.organizations[0].token_env == "CONFIGURED_PAT"
 
     def test_explicit_value_overrides_the_configured_one(self, tmp_path: Path) -> None:
-        cfg = _load_config(self._config(tmp_path), None, None, "FLAG_PAT")
+        cfg, _ = _load_config(self._config(tmp_path), None, None, "FLAG_PAT")
         assert cfg is not None
         assert cfg.organizations[0].token_env == "FLAG_PAT"
 
@@ -732,17 +802,17 @@ class TestTokenEnvOverride:
                 ]
             }
         )
-        cfg = _load_config(None, data, None, "FLAG_PAT")
+        cfg, _ = _load_config(None, data, None, "FLAG_PAT")
         assert cfg is not None
         assert [o.token_env for o in cfg.organizations] == ["FLAG_PAT", "FLAG_PAT"]
 
     def test_org_shorthand_still_honours_the_flag(self) -> None:
-        cfg = _load_config(None, None, "o", "FLAG_PAT")
+        cfg, _ = _load_config(None, None, "o", "FLAG_PAT")
         assert cfg is not None
         assert cfg.organizations[0].token_env == "FLAG_PAT"
 
     def test_org_shorthand_defaults_to_github_token(self) -> None:
-        cfg = _load_config(None, None, "o")
+        cfg, _ = _load_config(None, None, "o")
         assert cfg is not None
         assert cfg.organizations[0].token_env == "GITHUB_TOKEN"
 
@@ -830,7 +900,7 @@ def test_org_shorthand_honours_token_env() -> None:
     # token from that env var, not the default GITHUB_TOKEN.
     from github_security_report.cli import _load_config
 
-    cfg = _load_config(None, None, "myorg", "SECURITY_REPORT_PAT")
+    cfg, _ = _load_config(None, None, "myorg", "SECURITY_REPORT_PAT")
     assert cfg is not None
     assert cfg.organizations[0].token_env == "SECURITY_REPORT_PAT"
 
@@ -1015,6 +1085,33 @@ def test_remediate_dry_run_makes_no_writes() -> None:
         assert route.call_count == 0, result.stdout
     # The destructive cleanup is never part of the default run.
     assert "CodeQL: Stale Configurations" not in result.stdout
+
+
+@respx.mock
+def test_remediate_names_the_default_config_under_its_divider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_default_config(tmp_path, monkeypatch)
+    _mock_offender_org()
+    result = cli.invoke(app, ["remediate", "--no-color"])
+    assert result.exit_code == 0, result.stdout
+    assert result.stdout.count("Using config") == 1
+    assert _line_after(result.stdout, "Remediation: o").startswith("Using config:")
+
+
+@respx.mock
+def test_remediate_never_reads_membership_or_the_viewer() -> None:
+    _mock_offender_org()
+    result = cli.invoke(app, ["remediate", "--org", "o", "--no-color"])
+    assert result.exit_code == 0, result.stdout
+    queries = [
+        json.loads(call.request.content)["query"]
+        for call in respx.calls
+        if str(call.request.url) == f"{API}/graphql"
+    ]
+    assert queries, "the posture prefetch should still run"
+    assert not [q for q in queries if "membersWithRole" in q or "viewer {" in q]
+    assert "results incomplete" not in result.stdout
 
 
 @respx.mock

@@ -32,7 +32,9 @@ contributors. Automation is reported in its own column instead.
 
 from __future__ import annotations
 
+import enum
 from collections.abc import Set
+from dataclasses import dataclass
 
 # --------------------------------------------------------------------------- #
 # Automation authors
@@ -218,3 +220,32 @@ def normalise_members(logins: object) -> frozenset[str]:
         for login in logins
         if isinstance(login, str) and (normalised := normalise_login(login))
     )
+
+
+class MembershipGap(enum.Enum):
+    """Why organisation membership could not be read in full.
+
+    Each names a different fix, so the run reports which one applies rather
+    than folding them into one "could not be read".
+    """
+
+    # The token lacks the organisation-membership permission (classic
+    # ``read:org``, fine-grained Members: read).
+    PERMISSION = "permission"
+    # The token's account is outside the organisation, so GitHub served only
+    # its public members.
+    NOT_MEMBER = "not_member"
+    # Anything else: a failed page, a malformed response, the page limit.
+    UNREADABLE = "unreadable"
+
+
+@dataclass(frozen=True)
+class OrgMembership:
+    """An organisation membership read: the members, or why there are none.
+
+    Exactly one of the two is set. ``members`` of ``None`` carries the meaning
+    :func:`is_external_author` gives it, and ``gap`` says why.
+    """
+
+    members: frozenset[str] | None
+    gap: MembershipGap | None = None
