@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from enum import Enum
 from types import MappingProxyType
 
 # Linguist language name -> Code Quality language identifier. Every other
@@ -110,3 +111,47 @@ class CodeQualitySetup:
             else frozenset()
         )
         return cls(configured=state == "configured", languages=languages)
+
+
+class CodeQualityStatus(str, Enum):
+    """Where a repository stands on Code Quality; the value is its label."""
+
+    ENABLED = "Enabled"
+    PARTIAL = "Partial"
+    DISABLED = "Disabled"
+    UNREADABLE = "Unreadable"
+    NOT_APPLICABLE = "Not applicable"
+
+    @property
+    def offending(self) -> bool:
+        """Whether the report lists the repository, and remediation acts on it."""
+        return self in (CodeQualityStatus.DISABLED, CodeQualityStatus.PARTIAL)
+
+
+def code_quality_status(
+    applicable: frozenset[str] | None, setup: CodeQualitySetup | None
+) -> CodeQualityStatus:
+    """Classify one repository from its applicable languages and its setup.
+
+    ``applicable`` is ``None`` when the repository's Linguist languages could
+    not be read: nothing then shows whether Code Quality applies, so the
+    repository is unreadable rather than presumed out of scope.
+    """
+    if applicable is None:
+        return CodeQualityStatus.UNREADABLE
+    if not applicable:
+        return CodeQualityStatus.NOT_APPLICABLE
+    if setup is None:
+        return CodeQualityStatus.UNREADABLE
+    if not setup.configured:
+        return CodeQualityStatus.DISABLED
+    if applicable <= setup.languages:
+        return CodeQualityStatus.ENABLED
+    return CodeQualityStatus.PARTIAL
+
+
+def ordered(languages: Iterable[str]) -> tuple[str, ...]:
+    """``languages`` in display order, any identifier outside the six last."""
+    present = set(languages)
+    known = tuple(lang for lang in CODE_QUALITY_LANGUAGES if lang in present)
+    return known + tuple(sorted(present.difference(CODE_QUALITY_LANGUAGES)))

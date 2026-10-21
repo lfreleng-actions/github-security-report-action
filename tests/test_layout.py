@@ -79,6 +79,7 @@ def _report(
             "private_vulnerability_reporting",
         ),
         (CategoryKey.AUTO_MERGE, "auto_merge"),
+        (CategoryKey.CODE_QUALITY, "code_quality"),
         (CategoryKey.GITHUB_ISSUES, "issues"),
         (CategoryKey.PULL_REQUESTS, "pull_requests"),
         (CategoryKey.PULL_REQUESTS_ASSIGNED, "assigned_pull_requests"),

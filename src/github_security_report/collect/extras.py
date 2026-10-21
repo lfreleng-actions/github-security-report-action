@@ -3,13 +3,13 @@
 """Reporting categories outside the four-state per-signal model.
 
 Dependabot configuration posture, release/tag freshness, release mutability,
-private vulnerability reporting, the auto-merge setting and CodeQL scan health
-are rendered as tables rather than as pass/fail signals, so they are assembled
-here once the signal report exists. The Dependabot alerts enablement flag, the
-auto-merge flag, the Linguist languages, the default branch head and the
-release/tag data are reused from the batched GraphQL prefetch; the
-security-updates, private-vulnerability-reporting, Code Quality setup and
-CodeQL reads are still per-repo REST calls.
+private vulnerability reporting, the auto-merge setting, Code Quality and
+CodeQL scan health are rendered as tables rather than as pass/fail signals, so
+they are assembled here once the signal report exists. The Dependabot alerts
+enablement flag, the auto-merge flag, the Linguist languages, the default
+branch head and the release/tag data are reused from the batched GraphQL
+prefetch; the security-updates, private-vulnerability-reporting, Code Quality
+setup and CodeQL reads are still per-repo REST calls.
 """
 
 from __future__ import annotations
@@ -186,6 +186,7 @@ async def attach_extra_tables(
     report.mutable_releases = posture.build_mutable_releases_table(postures)
     report.private_vulnerability_reporting = posture.build_pvr_table(postures)
     report.auto_merge = posture.build_auto_merge_table(postures)
+    report.code_quality = posture.build_code_quality_table(postures)
     codeql_facts = await collect_codeql_facts(
         in_scope, ctx, stale_days=report_cfg.codeql_stale_days
     )

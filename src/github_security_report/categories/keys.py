@@ -34,6 +34,7 @@ class CategoryKey(str, Enum):
     MUTABLE_RELEASES = "mutable_releases"
     PRIVATE_VULNERABILITY_REPORTING = "private_vulnerability_reporting"
     AUTO_MERGE = "auto_merge"
+    CODE_QUALITY = "code_quality"
     GITHUB_ISSUES = "github_issues"
     PULL_REQUESTS = "pull_requests"
     PULL_REQUESTS_ASSIGNED = "pull_requests_assigned"
@@ -66,6 +67,9 @@ class CategoryMeta:
     # Alternative pass wording for the collapsed "All <label>" footer line,
     # when the counted wording would not read grammatically after "All".
     pass_all_label: str | None = None
+    # Wording for the footer's unknown line, for a category whose unknowns have
+    # one specific cause worth naming.
+    unknown_label: str = "Unknown"
     # The lowest finding severity that counts as a failure for this category.
     # A repository fails (appears as an offender) only when it carries a finding
     # at or above this rung; findings below it fold into the clean count. The

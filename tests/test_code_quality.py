@@ -9,8 +9,11 @@ import pytest
 from github_security_report.code_quality import (
     CODE_QUALITY_LANGUAGES,
     CodeQualitySetup,
+    CodeQualityStatus,
     applicable_languages,
+    code_quality_status,
     linguist_names,
+    ordered,
 )
 
 
@@ -113,3 +116,44 @@ _LAST = {"hasNextPage": False}
 )
 def test_linguist_names(connection: object, expected: tuple[str, ...] | None) -> None:
     assert linguist_names(connection) == expected
+
+
+_PY = frozenset({"python"})
+_PY_GO = frozenset({"python", "go"})
+
+
+@pytest.mark.parametrize(
+    ("applicable", "setup", "expected"),
+    [
+        (_PY, CodeQualitySetup(True, _PY), CodeQualityStatus.ENABLED),
+        # Configuring more than applies is still enabled.
+        (_PY, CodeQualitySetup(True, _PY_GO), CodeQualityStatus.ENABLED),
+        (_PY_GO, CodeQualitySetup(True, _PY), CodeQualityStatus.PARTIAL),
+        (_PY_GO, CodeQualitySetup(False), CodeQualityStatus.DISABLED),
+        # A failed setup read is never folded into Disabled.
+        (_PY, None, CodeQualityStatus.UNREADABLE),
+        # Nothing to analyse: never off, whatever the setup says.
+        (frozenset(), None, CodeQualityStatus.NOT_APPLICABLE),
+        (frozenset(), CodeQualitySetup(False), CodeQualityStatus.NOT_APPLICABLE),
+        # Languages unread: nobody knows whether it applies.
+        (None, None, CodeQualityStatus.UNREADABLE),
+        (None, CodeQualitySetup(False), CodeQualityStatus.UNREADABLE),
+    ],
+)
+def test_status_model(
+    applicable: frozenset[str] | None,
+    setup: CodeQualitySetup | None,
+    expected: CodeQualityStatus,
+) -> None:
+    assert code_quality_status(applicable, setup) is expected
+
+
+def test_only_disabled_and_partial_offend() -> None:
+    assert {s for s in CodeQualityStatus if s.offending} == {
+        CodeQualityStatus.DISABLED,
+        CodeQualityStatus.PARTIAL,
+    }
+
+
+def test_ordered_puts_unknown_identifiers_last() -> None:
+    assert ordered({"rust", "ruby", "go", "python"}) == ("python", "go", "ruby", "rust")

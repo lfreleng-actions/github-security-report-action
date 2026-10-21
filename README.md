@@ -32,7 +32,9 @@ states and rendered worst-first:
 
 Every category renders the same **standardised summary footer** beneath its
 table: remediation-first count lines (failures, disabled, unknown, then the
-healthy pass line, then excluded). The pass line reads **"All <state>"** when
+healthy pass line, then excluded). A category may add a note qualifying the
+pass line (Code Quality's per-language breakdown) and a **Not applicable**
+count, both shown on every surface. The pass line reads **"All <state>"** when
 nothing needs attention, or **"N <state>"** otherwise. The terminal and Slack
 stay brevity-first; the explanatory per-category description and documentation
 link are shown only on the richer Markdown and HTML (GitHub Pages) outputs.
@@ -110,6 +112,26 @@ tables (org mode):
   window a reviewed dependency update sits in while the vulnerability it fixes
   stays unpatched. Read from the batched GraphQL prefetch, so it costs no extra
   request; hide it with the `auto_merge` render toggle.
+- **Code Quality** — repositories where
+  [GitHub Code Quality](https://docs.github.com/en/code-security/concepts/code-quality/code-quality)
+  is **Disabled**, or **Partial**: configured, but without a language the
+  repository holds. Code Quality analyses six language families, so each
+  repository is first classified from its GitHub Linguist languages, read
+  from the batched GraphQL prefetch: Python (`python`), Go (`go`), Java and
+  Kotlin (`java-kotlin`), JavaScript and TypeScript
+  (`javascript-typescript`), Ruby (`ruby`) and C# (`csharp`). A repository
+  with none of them, such as one holding only shell scripts and workflow
+  files, is **Not applicable**: counted on a line of its own and never
+  reported as off. Only applicable repositories have their setup read, with
+  `GET /repos/{owner}/{repo}/code-quality/setup`; one whose setup or languages
+  cannot be read, or that holds more than the twenty languages the prefetch
+  reads, is counted as **Unreadable**, never as Disabled. The
+  **Missing** column names the languages each listed repository still needs,
+  and a footer line on every surface, the terminal included, gives the
+  enabled count out of the applicable count per language, such as
+  `python 30/32 · go 5/5 · javascript-typescript 10/12`. See
+  [ADR-0006](docs/adr/0006-github-code-quality.md); hide it with the
+  `code_quality` render toggle.
 
 The four enablement categories count the repositories with and without the
 feature (plus any whose state could not be read), and by default name whichever
@@ -426,10 +448,11 @@ Pages output. The valid category keys are: `codeql`,
 `zizmor`, `aislop`, `dependabot_alerts`, `secret_scanning`,
 `dependabot_alerts_enabled`, `dependabot_updates_enabled`,
 `dependabot_cooldown`, `releases`, `mutable_releases`,
-`private_vulnerability_reporting`, `auto_merge`, `github_issues`,
-`pull_requests`, `pull_requests_assigned`. Like the other `report` settings,
-`categories` can be set globally and overridden per organisation (overrides
-merge key-by-key, so flipping one output leaves the rest untouched). The
+`private_vulnerability_reporting`, `auto_merge`, `code_quality`,
+`github_issues`, `pull_requests`, `pull_requests_assigned`. Like the other
+`report` settings, `categories` can be set globally and overridden per
+organisation (overrides merge key-by-key, so flipping one output leaves the
+rest untouched). The
 machine-readable `report.json` artifact always contains the complete dataset,
 regardless of these toggles.
 

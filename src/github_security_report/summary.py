@@ -65,7 +65,7 @@ class SummaryCount:
     ``All <pass>`` when the section is only partially clean.
     """
 
-    kind: str  # "fail" | "disabled" | "unknown" | "pass" | "excluded"
+    kind: str  # "fail" | "disabled" | "unknown" | "pass" | "note" | "na" | "excluded"
     count: int
     label: str
     names: tuple[str, ...] = ()
@@ -96,9 +96,19 @@ class SummaryLine:
 
 
 # Footer ordering: actionable items first (failures, then not-enabled, then
-# unknown), then the healthy pass line, then the neutral excluded line last.
-# This tool drives remediation, so the work to do sits at the top.
-_SUMMARY_ORDER = {"fail": 0, "disabled": 1, "unknown": 2, "pass": 3, "excluded": 4}
+# unknown), then the healthy pass line and any note qualifying it, then the
+# neutral lines last: repositories the category does not apply to, and the
+# excluded ones. This tool drives remediation, so the work to do sits at the
+# top.
+_SUMMARY_ORDER = {
+    "fail": 0,
+    "disabled": 1,
+    "unknown": 2,
+    "pass": 3,
+    "note": 4,
+    "na": 5,
+    "excluded": 6,
+}
 
 # Glyph per summary kind, shared by every render surface.
 SUMMARY_EMOJI = {
@@ -106,6 +116,8 @@ SUMMARY_EMOJI = {
     "disabled": "\u274c",
     "unknown": "\u2753",
     "pass": "\u2705",
+    "note": "\U0001f4ca",
+    "na": "\u2796",
     "excluded": "\u23e9",
 }
 
@@ -120,14 +132,18 @@ def build_summary(counts: Sequence[SummaryCount]) -> list[SummaryLine]:
     or excluded repositories); otherwise every present bucket shows its count.
     Zero-valued buckets are dropped, as are buckets flagged ``render=False``
     (which still count towards the collapse test but emit no visible line).
+    A ``note`` bucket is not a count: its ``label`` is the whole line, shown
+    when ``count`` is non-zero, and it never blocks the collapse.
     """
     present = [c for c in counts if c.count > 0]
-    non_pass = sum(c.count for c in present if c.kind != "pass")
+    non_pass = sum(c.count for c in present if c.kind not in ("pass", "note"))
     lines: list[SummaryLine] = []
     for count in sorted(present, key=lambda c: _SUMMARY_ORDER[c.kind]):
         if not count.render:
             continue
-        if count.kind == "pass" and non_pass == 0:
+        if count.kind == "note":
+            text = count.label
+        elif count.kind == "pass" and non_pass == 0:
             text = f"All {count.all_label or count.label}"
         else:
             text = f"{count.count} {count.label}"

@@ -560,6 +560,17 @@ class PostureClient(FakeClient):
         self._pvr = {"dependamerge": True, "git-configure-action": False}
         # Auto-merge: same split, so the Auto-merge table has one offender too.
         self.auto_merge = {"dependamerge": True, "git-configure-action": False}
+        # Code Quality: on for dependamerge (Python); off for
+        # git-configure-action, whose Linguist languages include Go.
+        self.languages = {
+            "dependamerge": ("Python",),
+            "git-configure-action": ("Go", "Shell"),
+        }
+        self.code_quality = {
+            "dependamerge": CodeQualitySetup(
+                configured=True, languages=frozenset({"python"})
+            ),
+        }
         self._configs = {
             "dependamerge": (
                 200,
@@ -653,6 +664,14 @@ async def test_collect_org_attaches_dependabot_tables_and_releases() -> None:
     assert auto_merge.title == "Auto-merge"
     assert [r.repo.name for r in auto_merge.rows] == ["git-configure-action"]
     assert (auto_merge.fail_count, auto_merge.pass_count) == (1, 1)
+
+    quality = report.code_quality
+    assert quality is not None
+    assert [(r.repo.name, r.cells) for r in quality.rows] == [
+        ("git-configure-action", ("Disabled", "go", "go"))
+    ]
+    assert (quality.fail_count, quality.pass_count) == (1, 1)
+    assert quality.notes == ("Enabled by language: python 1/1 \u00b7 go 0/1",)
 
 
 @pytest.mark.parametrize(

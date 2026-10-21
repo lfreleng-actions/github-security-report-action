@@ -34,6 +34,8 @@ def _table_to_dict(section: TableSection) -> dict:
         "pass_count": section.pass_count,
         "fail_count": section.fail_count,
         "unknown_count": section.unknown_count,
+        "not_applicable_count": section.not_applicable_count,
+        "notes": list(section.notes),
         "description": section.resolved_description(),
         # Aggregate rows beneath the totals, over every row (report.json is the
         # unconditionally complete artifact, so nothing here is truncated).
@@ -124,6 +126,7 @@ def _org_to_dict(org: OrgReport, hidden: Collection[CategoryKey] = ()) -> dict:
         "mutable_releases": table(org.mutable_releases),
         "private_vulnerability_reporting": table(org.private_vulnerability_reporting),
         "auto_merge": table(org.auto_merge),
+        "code_quality": table(org.code_quality),
         "issues": table(org.issues),
         "pull_requests": table(org.pull_requests),
         "assigned_pull_requests": table(org.assigned_pull_requests),

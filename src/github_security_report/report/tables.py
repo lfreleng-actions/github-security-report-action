@@ -118,6 +118,13 @@ class TableSection:
     # dropped from every published artifact, where "mine" would name the token
     # owner rather than the reader. See :func:`table_footer_rows`.
     personal_footer_labels: frozenset[str] = frozenset()
+    # Repositories the category does not apply to, counted on a footer line of
+    # their own rather than on either side. Zero for most categories.
+    not_applicable_count: int = 0
+    # Footer lines that qualify the counts rather than count anything (a
+    # per-language breakdown, say). Unlike the description, every surface
+    # shows them, the terminal included.
+    notes: tuple[str, ...] = ()
     # The repositories counted in ``pass_count``, for the boolean feature
     # categories only (see :data:`REPO_LIST_CATEGORIES`), where the passing side
     # is a plain repository list that can be named in place of the rows. Empty
@@ -174,7 +181,9 @@ class TableSection:
         *,
         repo_list: RepoList = RepoList.AUTO,
     ) -> list[SummaryCount]:
-        """Footer count buckets for this table (failure, unknown, pass, excluded).
+        """Footer buckets for this table.
+
+        Failure, unknown, pass, any notes, not applicable and excluded.
 
         A boolean feature table also names one side's repositories, chosen by
         ``repo_list`` (see :meth:`listed_kind`); both sides are always counted.
@@ -189,7 +198,7 @@ class TableSection:
         )
         return [
             SummaryCount("fail", self.fail_count, fail_label, fail_names),
-            SummaryCount("unknown", self.unknown_count, "Unknown"),
+            SummaryCount("unknown", self.unknown_count, self.category.unknown_label),
             SummaryCount(
                 "pass",
                 self.pass_count,
@@ -197,6 +206,8 @@ class TableSection:
                 pass_names,
                 all_label=self.category.pass_all_label,
             ),
+            *(SummaryCount("note", 1, note) for note in self.notes),
+            SummaryCount("na", self.not_applicable_count, "Not applicable"),
             SummaryCount(
                 "excluded",
                 len(excluded),
