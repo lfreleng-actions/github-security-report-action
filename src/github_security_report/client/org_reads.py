@@ -145,10 +145,11 @@ class OrgReadClient(AlertReads):
 
         The members are ``None`` -- never a partial set -- when membership
         cannot be read in full, and the result's ``gap`` says why: a token
-        without ``read:org`` (:attr:`MembershipGap.PERMISSION`), a viewer
-        outside the organisation (:attr:`MembershipGap.NOT_MEMBER`), or a
-        failed page, malformed response or membership larger than the
-        pagination guard (:attr:`MembershipGap.UNREADABLE`). A partial set is
+        without ``read:org``, or a member viewer served an empty list
+        (:attr:`MembershipGap.PERMISSION`); a viewer outside the organisation
+        (:attr:`MembershipGap.NOT_MEMBER`); or a failed page, malformed
+        response or membership larger than the pagination guard
+        (:attr:`MembershipGap.UNREADABLE`). A partial set is
         worse than none, because every member missing from it reads as an
         outsider, and the caller cannot tell an absent member from a genuine
         one. The caller degrades those authors to indeterminate instead.
@@ -218,6 +219,12 @@ class OrgReadClient(AlertReads):
                 # from a truncated one, so the set cannot be trusted as whole.
                 return _unreadable_membership(org, MembershipGap.UNREADABLE)
             if not page["hasNextPage"]:
+                if not logins:
+                    # The viewer is a member, so at least one exists. An empty
+                    # list here (seen with a fine-grained token, likely one
+                    # without Members: read) would make every outsider verdict
+                    # from author association count as external.
+                    return _unreadable_membership(org, MembershipGap.PERMISSION)
                 return OrgMembership(members=normalise_members(logins))
             after = page.get("endCursor")
             if not isinstance(after, str):

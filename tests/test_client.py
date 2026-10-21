@@ -2737,6 +2737,35 @@ async def test_org_members_returns_the_set_for_a_member_viewer(
 
 
 @respx.mock
+async def test_org_members_empty_list_for_a_member_viewer_is_a_permission_gap(
+    client: GitHubClient,
+) -> None:
+    # Seen with a fine-grained token: a member viewer, no errors, and no
+    # members. The viewer is itself a member, so the list cannot be complete,
+    # and trusting it would count every outsider association as external.
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "organization": {
+                        "viewerIsAMember": True,
+                        "membersWithRole": {
+                            "totalCount": 0,
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [],
+                        },
+                    }
+                }
+            },
+        )
+    )
+    read = await client.org_members("o")
+    assert read.members is None
+    assert read.gap is MembershipGap.PERMISSION
+
+
+@respx.mock
 async def test_org_members_unreadable_organisation_is_unknown(
     client: GitHubClient,
 ) -> None:
