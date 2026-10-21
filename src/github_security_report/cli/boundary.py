@@ -59,6 +59,29 @@ def check_positive(
         raise typer.Exit(2)
 
 
+def parse_windows(console: Console, value: str | None) -> tuple[int, ...] | None:
+    """``--run-windows`` as whole days, longest first, or ``None`` when unset.
+
+    Takes a comma- or space-separated list (``7,30,90``). Each entry must be a
+    positive integer and the list must not repeat one, matching the schema's
+    rules for a configured window list; anything else exits 2 naming the flag.
+    """
+    if value is None:
+        return None
+    parts = [part for part in value.replace(",", " ").split() if part]
+    if not parts or not all(part.isdigit() and int(part) > 0 for part in parts):
+        console.print(
+            "[red]--run-windows takes positive whole days, comma-separated "
+            "(e.g. 7,30,90)[/red]"
+        )
+        raise typer.Exit(2)
+    days = tuple(sorted({int(part) for part in parts}, reverse=True))
+    if len(days) != len(parts):
+        console.print("[red]--run-windows repeats a window[/red]")
+        raise typer.Exit(2)
+    return days
+
+
 def check_limits(console: Console, limits: Sequence[tuple[str, int | None]]) -> None:
     """Reject a negative row limit, naming the flag and the 0 convention."""
     for name, value in limits:

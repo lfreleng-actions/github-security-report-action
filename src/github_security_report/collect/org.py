@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from github_security_report import gating, rulesets
 from github_security_report.classify import RepoFacts, classify_repo
 from github_security_report.collect.context import (
+    CollectExtras,
     OrgCollectContext,
     gather_in_batches,
 )
@@ -298,7 +299,7 @@ async def collect_org(
     *,
     generated_at: dt.datetime | None = None,
     selected: Sequence[Repo] | None = None,
-    author_tables: bool = True,
+    extras: CollectExtras | None = None,
 ) -> OrgReport:
     """Collect and build the report for one organisation.
 
@@ -309,12 +310,13 @@ async def collect_org(
     these; the org-bulk alert sweeps still read the organisation's open
     alerts, as they are single organisation-wide requests.
 
-    ``author_tables=False`` skips the Issues, Pull Requests and Assigned to Me
-    tables and the organisation membership and viewer reads behind them; see
-    :func:`~github_security_report.collect.extras.attach_extra_tables`.
+    ``extras`` says what to collect beyond the signals and posture tables
+    (see :class:`CollectExtras`); the default collects the author tables and
+    no workflow runs.
     """
     org = org_cfg.name
     log.info("collecting %s", org)
+    wanted = extras if extras is not None else CollectExtras()
 
     scoped = (
         selected_scope(selected)
@@ -345,6 +347,6 @@ async def collect_org(
         ctx,
         org_cfg,
         report_cfg,
-        author_tables=author_tables,
+        extras=wanted,
     )
     return report

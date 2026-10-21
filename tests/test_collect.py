@@ -14,6 +14,7 @@ from github_security_report import collect, layout, pulls, scope
 from github_security_report.authors import MembershipGap, OrgMembership
 from github_security_report.categories import CategoryKey
 from github_security_report.client import GraphBatchError
+from github_security_report.client.workflow_runs import RunDrillDown, RunListing
 from github_security_report.code_quality import CodeQualitySetup
 from github_security_report.codeql import CodeQLConfiguration, DefaultSetup
 from github_security_report.collect.graph import (
@@ -23,6 +24,7 @@ from github_security_report.collect.graph import (
 from github_security_report.config import OrgConfig, ReportConfig
 from github_security_report.models import Repo, RepoGraphData, RepoState, SignalType
 from github_security_report.report import OrgReport, SignalSection
+from github_security_report.workflow_runs import WorkflowRunRecord
 
 WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.timezone.utc)
 
@@ -185,6 +187,30 @@ class FakeClient:
 
     async def latest_tag_at(self, org: str, repo: str) -> dt.datetime | None:
         return None
+
+    async def workflow_runs(
+        self,
+        org: str,
+        repo: str,
+        *,
+        default_branch: str,
+        params: dict[str, object] | None = None,
+        stop_before: dt.datetime | None = None,
+        etag: str | None = None,
+    ) -> RunListing:
+        # No runs anywhere: the Workflow Failures tables are exercised by
+        # their own tests with a scripted listing.
+        return RunListing(status=200)
+
+    async def workflow_run(
+        self, org: str, repo: str, run_id: int, *, default_branch: str
+    ) -> WorkflowRunRecord | None:
+        return None
+
+    async def workflow_run_jobs(
+        self, org: str, node_ids: list[str]
+    ) -> dict[str, RunDrillDown]:
+        return {}
 
     async def repo_graph_batch(
         self, org: str, names: list[str]
@@ -754,7 +780,7 @@ async def test_collect_org_without_author_tables_skips_identity_reads() -> None:
         OrgConfig(name="o"),
         ReportConfig(),
         generated_at=WHEN,
-        author_tables=False,
+        extras=collect.CollectExtras(author_tables=False),
     )
     assert client.identity_reads == []
     assert report.issues is None

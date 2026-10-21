@@ -67,6 +67,11 @@ def main(
     )
 
 
+def _supplied(flags: dict[str, bool]) -> list[str]:
+    """The names of the flags a caller supplied, for the repo-mode refusal."""
+    return [name for name, supplied in flags.items() if supplied]
+
+
 def _console(no_color: bool) -> Console:
     """A console that drops colour in CI, when piped, or on request."""
     plain = no_color or bool(os.environ.get("CI")) or not sys.stdout.isatty()
@@ -178,19 +183,34 @@ def report(
         "--concurrency",
         help=f"Concurrent GitHub API requests per organisation (1-{CONCURRENCY_MAX}; default: config, else 9). Raise it to shorten a run, lower it if GitHub's secondary rate limits push back.",
     ),
+    run_windows: str | None = typer.Option(
+        None,
+        "--run-windows",
+        help="Time windows, in days, for the Workflow Failures tables on every output (comma-separated, e.g. 7,30,90; default: config, else 7 on the terminal and Slack, 7,30,90 on GitHub Pages).",
+    ),
+    no_run_cache: bool = typer.Option(
+        False,
+        "--no-run-cache",
+        help="Keep the workflow-run store in memory for this run instead of the per-user cache, so every window is re-read from GitHub.",
+    ),
+    run_cache_dir: str | None = typer.Option(
+        None,
+        "--run-cache-dir",
+        help="Directory for the workflow-run store (default: $XDG_CACHE_HOME/github-security-report).",
+    ),
+    refresh_runs: bool = typer.Option(
+        False,
+        "--refresh-runs",
+        help="Re-read every repository's workflow runs for the longest window, ignoring what the run store already holds.",
+    ),
     no_color: bool = typer.Option(False, "--no-color", help="Disable coloured output."),
 ) -> None:
     """Generate a security and quality report."""
     console = _console(no_color)
-    boundary.check_limits(
-        console,
-        [
-            ("--top-n", top_n),
-            ("--top-n-report", top_n_report),
-            ("--top-n-cli", top_n_cli),
-            ("--top-n-slack", top_n_slack),
-        ],
+    limits = TopNLimits(
+        shared=top_n, report=top_n_report, cli=top_n_cli, slack=top_n_slack
     )
+    boundary.check_limits(console, limits.named())
     boundary.check_non_negative(console, "--repo-min-age-days", repo_min_age_days)
     boundary.check_non_negative(console, "--release-max-age-days", release_max_age_days)
     boundary.check_positive(console, "--graph-batch", graph_batch)
@@ -198,6 +218,21 @@ def report(
         console, "--concurrency", concurrency, maximum=CONCURRENCY_MAX
     )
     hidden = boundary.resolve_hidden(console, hide)
+    overrides = ReportOverrides(
+        repo_min_age_days=repo_min_age_days,
+        release_max_age_days=release_max_age_days,
+        releases_exclude=tuple(releases_exclude) if releases_exclude else None,
+        # One-way: the flags can only loosen what the config asked for, so an
+        # unset flag stays None rather than asserting the default.
+        gating=False if no_gating else None,
+        include_archived=True if include_archived else None,
+        include_test=True if include_test else None,
+        graph_batch=graph_batch,
+        concurrency=concurrency,
+        run_windows=boundary.parse_windows(console, run_windows),
+        run_cache=False if no_run_cache else None,
+        run_cache_dir=run_cache_dir,
+    )
 
     cfg, config_path = _load_config(config_file, config_data, org, token_env)
     detected = boundary.detect_target(console, repo, scope)
@@ -211,55 +246,43 @@ def report(
             pages_url=pages_url,
             slack_channel=slack_channel or None,
             force_notify=force_notify,
-            limits=TopNLimits(
-                shared=top_n,
-                report=top_n_report,
-                cli=top_n_cli,
-                slack=top_n_slack,
-            ),
-            overrides=ReportOverrides(
-                repo_min_age_days=repo_min_age_days,
-                release_max_age_days=release_max_age_days,
-                releases_exclude=tuple(releases_exclude) if releases_exclude else None,
-                # One-way: the flags can only loosen what the config asked for,
-                # so an unset flag stays None rather than asserting the default.
-                gating=False if no_gating else None,
-                include_archived=True if include_archived else None,
-                include_test=True if include_test else None,
-                graph_batch=graph_batch,
-                concurrency=concurrency,
-            ),
+            limits=limits,
+            overrides=overrides,
             hidden=hidden,
             config_path=config_path,
+            refresh_runs=refresh_runs,
         )
         code = boundary.run_guarded(console, _run_org(cfg, options, console=console))
     else:
         assert detected is not None
         # Every organisation-only flag is refused rather than accepted and
         # discarded. The remaining flags (--top-n, --top-n-cli, --top-n-report,
-        # --hide) and the config's report block are threaded into the run, so
-        # what repo mode accepts is what repo mode applies.
+        # --hide, --run-windows) and the config's report block are threaded
+        # into the run, so what repo mode accepts is what repo mode applies.
+        # The run-store flags are among the refused: one repository's week is
+        # read afresh each time, so they would be accepted and do nothing.
         boundary.reject_org_only(
             console,
-            [
-                name
-                for name, supplied in (
-                    ("--output-dir", output_dir is not None),
-                    ("--pages-url", pages_url is not None),
-                    ("--slack-channel", slack_channel is not None),
-                    ("--force-notify", force_notify),
-                    ("--top-n-slack", top_n_slack is not None),
-                    ("--repo-min-age-days", repo_min_age_days is not None),
-                    ("--release-max-age-days", release_max_age_days is not None),
-                    ("--releases-exclude", bool(releases_exclude)),
-                    ("--no-gating", no_gating),
-                    ("--include-archived", include_archived),
-                    ("--include-test", include_test),
-                    ("--graph-batch", graph_batch is not None),
-                    ("--concurrency", concurrency is not None),
-                )
-                if supplied
-            ],
+            _supplied(
+                {
+                    "--output-dir": output_dir is not None,
+                    "--pages-url": pages_url is not None,
+                    "--slack-channel": slack_channel is not None,
+                    "--force-notify": force_notify,
+                    "--top-n-slack": top_n_slack is not None,
+                    "--repo-min-age-days": repo_min_age_days is not None,
+                    "--release-max-age-days": release_max_age_days is not None,
+                    "--releases-exclude": bool(releases_exclude),
+                    "--no-gating": no_gating,
+                    "--include-archived": include_archived,
+                    "--include-test": include_test,
+                    "--graph-batch": graph_batch is not None,
+                    "--concurrency": concurrency is not None,
+                    "--no-run-cache": no_run_cache,
+                    "--run-cache-dir": run_cache_dir is not None,
+                    "--refresh-runs": refresh_runs,
+                }
+            ),
         )
         code = boundary.run_guarded(
             console,
@@ -270,9 +293,10 @@ def report(
                 console=console,
                 fail_threshold=fail_threshold,
                 report_cfg=cfg.report if cfg is not None else None,
-                limits=TopNLimits(shared=top_n, report=top_n_report, cli=top_n_cli),
+                limits=limits,
                 hidden=hidden,
                 config_path=config_path,
+                run_windows=overrides.run_windows,
             ),
         )
     raise typer.Exit(code)

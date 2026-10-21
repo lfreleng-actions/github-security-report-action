@@ -21,6 +21,7 @@ from typing import Any, TypeVar
 from github_security_report.client import GraphBatchError
 from github_security_report.collect.protocols import ClientProtocol
 from github_security_report.models import Repo, RepoGraphData
+from github_security_report.workflow_runs import RunStore
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +39,23 @@ REPO_BATCH = 50
 # of the semaphore idle. A constant until a measurement justifies making it a
 # setting; it is bounded by the client semaphore regardless.
 GRAPH_PREFETCH_IN_FLIGHT = 4
+
+
+@dataclass(frozen=True)
+class CollectExtras:
+    """What an org-mode run collects beyond the signals and posture tables.
+
+    ``author_tables`` off skips the Issues, Pull Requests and Assigned to Me
+    tables and the membership and viewer reads behind them; remediation acts
+    on none of them. ``run_store`` is the workflow-run cache the Workflow
+    Failures tables sync against, or ``None`` to leave them uncollected;
+    ``refresh_runs`` re-reads every repository's runs regardless of what the
+    store holds.
+    """
+
+    author_tables: bool = True
+    run_store: RunStore | None = None
+    refresh_runs: bool = False
 
 
 @dataclass(frozen=True)
@@ -79,6 +97,27 @@ class OrgCollectContext:
     def ruleset_signals(self, name: str) -> set[str]:
         """Signals an org ruleset enforces for a repository (possibly none)."""
         return self.coverage.get(name, set())
+
+
+def repo_context(client: ClientProtocol, owner: str) -> OrgCollectContext:
+    """A context with no org-wide evidence, for the reads repo mode shares.
+
+    Repo mode never sweeps an organisation, so every org-wide field is empty;
+    a collector that reads only ``client`` and ``org`` (the workflow-run
+    collection) can then serve both modes unchanged.
+    """
+    return OrgCollectContext(
+        client=client,
+        org=owner,
+        code_scanning={},
+        dependabot={},
+        secret={},
+        sweep_status={},
+        coverage={},
+        graph={},
+        probe_tools=(),
+        probe_scorecard=False,
+    )
 
 
 async def gather_in_batches(

@@ -3,9 +3,9 @@
 """Reporting categories outside the four-state per-signal model.
 
 Dependabot configuration posture, release/tag freshness, release mutability,
-private vulnerability reporting, the auto-merge setting, Code Quality and
-CodeQL scan health are rendered as tables rather than as pass/fail signals, so
-they are assembled here once the signal report exists. The Dependabot alerts
+private vulnerability reporting, the auto-merge setting, Code Quality, CodeQL
+scan health and Workflow Failures are rendered as tables rather than as
+pass/fail signals, so they are assembled here once the signal report exists. The Dependabot alerts
 enablement flag, the auto-merge flag, the Linguist languages, the default
 branch head and the release/tag data are reused from the batched GraphQL
 prefetch; the security-updates, private-vulnerability-reporting, Code Quality
@@ -21,9 +21,11 @@ from github_security_report import codeql, layout, posture
 from github_security_report.code_quality import CodeQualitySetup, applicable_languages
 from github_security_report.collect.codeql import collect_codeql_facts
 from github_security_report.collect.context import (
+    CollectExtras,
     OrgCollectContext,
     gather_in_batches,
 )
+from github_security_report.collect.workflow_runs import attach_workflow_failures
 from github_security_report.config import OrgConfig, ReportConfig
 from github_security_report.issues import build_issues_table
 from github_security_report.models import Repo, SignalType
@@ -164,14 +166,16 @@ async def attach_extra_tables(
     org_cfg: OrgConfig,
     report_cfg: ReportConfig,
     *,
-    author_tables: bool = True,
+    extras: CollectExtras | None = None,
 ) -> None:
     """Probe posture for every repository and attach the derived tables.
 
-    ``author_tables=False`` leaves the Issues, Pull Requests and Assigned to Me
-    tables uncollected, and with them the membership and viewer reads they
-    alone need. Remediation acts on none of them.
+    ``extras`` (see :class:`CollectExtras`) switches the author tables off,
+    which leaves the Issues, Pull Requests and Assigned to Me tables
+    uncollected and with them the membership and viewer reads they alone
+    need, and names the run store the Workflow Failures tables sync against.
     """
+    wanted = extras if extras is not None else CollectExtras()
     postures = await gather_in_batches(
         in_scope, lambda repo: _posture_for_repo(repo, ctx)
     )
@@ -197,8 +201,10 @@ async def attach_extra_tables(
     report.codeql_health = codeql.CodeQLHealth(
         facts=tuple(codeql_facts), stale_days=report_cfg.codeql_stale_days
     )
-    if author_tables:
+    if wanted.author_tables:
         await _attach_author_tables(report, in_scope, ctx, report_cfg)
+    if wanted.run_store is not None:
+        await attach_workflow_failures(report, in_scope, ctx, report_cfg, wanted)
     # The Dependabot alerts enablement sub-table carries the repositories with
     # Dependabot alerts disabled, so drop them from the Dependabot signal
     # section's nag list to avoid listing the same repositories twice under the

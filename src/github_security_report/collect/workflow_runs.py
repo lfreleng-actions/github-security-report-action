@@ -15,10 +15,13 @@ import datetime as dt
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from pathlib import Path
+from urllib.parse import urlparse
 
-from github_security_report.client import GraphBatchError
+from github_security_report.client import GITHUB_API, GraphBatchError
 from github_security_report.client.workflow_runs import RunDrillDown
 from github_security_report.collect.context import (
+    CollectExtras,
     OrgCollectContext,
     batched,
     gather_in_batches,
@@ -28,12 +31,21 @@ from github_security_report.collect.run_sync import (
     RepoSync,
     RunSyncOptions,
 )
+from github_security_report.config import (
+    ReportConfig,
+    WorkflowRunsConfig,
+    default_cache_dir,
+)
 from github_security_report.models import Repo
+from github_security_report.report import OrgReport
 from github_security_report.workflow_runs import (
     RunStore,
     Trigger,
+    WindowOptions,
     WorkflowRunRecord,
+    store_path,
 )
+from github_security_report.workflow_runs.tables import build_workflow_failure_tables
 
 log = logging.getLogger(__name__)
 
@@ -179,4 +191,64 @@ async def collect_workflow_runs(
         unknown=unknown,
         oldest={name: store.sync_state(name).oldest for name in names},
         syncs=tuple(syncs),
+    )
+
+
+def open_run_store(
+    cfg: WorkflowRunsConfig, org: str, *, api_url: str = GITHUB_API
+) -> RunStore:
+    """The run store for ``org`` under ``cfg``: on disk, or in memory.
+
+    Keyed by the API host as well as the organisation, since the same name
+    can exist on github.com and on an enterprise instance. With ``cache``
+    off the store lives in memory for this run alone, so the same code path
+    serves a run that must not leave anything behind.
+    """
+    if not cfg.cache:
+        return RunStore(Path(":memory:"))
+    base = Path(cfg.cache_dir).expanduser() if cfg.cache_dir else default_cache_dir()
+    host = urlparse(api_url).netloc or api_url
+    return RunStore(store_path(base, host, org))
+
+
+async def attach_workflow_failures(
+    report: OrgReport,
+    in_scope: list[Repo],
+    ctx: OrgCollectContext,
+    report_cfg: ReportConfig,
+    extras: CollectExtras,
+) -> None:
+    """Collect the organisation's runs and attach both tables per window."""
+    assert extras.run_store is not None
+    cfg = report_cfg.workflow_runs
+    result = await collect_workflow_runs(
+        in_scope,
+        ctx,
+        extras.run_store,
+        now=report.generated_at,
+        options=RunSyncOptions(
+            window_days=cfg.longest_window,
+            retention_days=cfg.retention,
+            backfill_days=cfg.backfill,
+            include_dynamic=cfg.include_dynamic,
+            refresh=extras.refresh_runs,
+        ),
+    )
+    report.workflow_failures, report.workflow_failures_detail = (
+        build_workflow_failure_tables(
+            result.records,
+            in_scope,
+            generated_at=report.generated_at,
+            windows=cfg.all_windows,
+            options=WindowOptions(
+                days=cfg.longest_window,
+                min_runs=cfg.min_runs,
+                persistent_threshold=cfg.persistent_threshold,
+                collapse_matrix=cfg.collapse_matrix,
+                include_dynamic=cfg.include_dynamic,
+                exclude_workflows=cfg.exclude_workflows,
+            ),
+            unknown=result.unknown,
+            oldest=result.oldest,
+        )
     )
