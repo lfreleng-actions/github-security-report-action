@@ -124,9 +124,11 @@ class WorkflowRunRecord:
     has read the run's jobs (and stays ``None`` when it could not), and an
     empty tuple when the drill-down found no failing job to name. ``ref_is_tag``
     is ``None`` until GraphQL settles the ref's prefix. ``retried`` marks a run
-    that was once stored as a failure and later found to have passed on a
-    re-run: a direct flakiness signal, since a re-run keeps its ``created_at``
-    and would otherwise never be noticed.
+    that passed on a later attempt: either the listing said so outright
+    (``run_attempt`` above one with a success) or a stored failure was later
+    re-read as a pass. Either way it is a direct flakiness signal, and the
+    second case would otherwise never be noticed, since a re-run keeps its
+    ``created_at`` and so never crosses the incremental watermark.
     """
 
     id: int
