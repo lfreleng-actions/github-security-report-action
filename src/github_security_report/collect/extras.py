@@ -114,8 +114,11 @@ async def attach_extra_tables(
     # tables, so classifying contributions costs one query rather than a probe
     # per author. It is the token-independent basis for "outside the
     # organisation"; see ``authors`` for why the per-item association alone is
-    # not enough.
-    members = await ctx.client.org_members(ctx.org)
+    # not enough. Why it could not be read, when it could not, travels with
+    # the report so the terminal can say so once.
+    membership = await ctx.client.org_members(ctx.org)
+    members = membership.members
+    report.membership_gap = membership.gap
     # "Mine" in the assignment breakdown is the account this run authenticated
     # as, read once here rather than assumed from configuration. Empty when that
     # account is automation or could not be read, which is what confines the

@@ -282,6 +282,47 @@ def test_org_mode_uses_default_config(
     assert _line_after(result.stdout, "Security report: o").startswith("Using config:")
 
 
+def _graphql_without_read_org(request: httpx.Request) -> httpx.Response:
+    """The org-mode GraphQL answers for a classic token lacking ``read:org``."""
+    if "membersWithRole" in json.loads(request.content).get("query", ""):
+        return httpx.Response(
+            200,
+            json={
+                "data": {"organization": None},
+                "errors": [
+                    {
+                        "type": "INSUFFICIENT_SCOPES",
+                        "message": "The 'viewerIsAMember' field requires one of "
+                        "the following scopes: ['read:org']",
+                    }
+                ],
+            },
+        )
+    return _org_graphql_side(request)
+
+
+@respx.mock
+def test_missing_read_org_warns_once_under_the_divider(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _mock_org_o_r()
+    respx.post(f"{API}/graphql").mock(side_effect=_graphql_without_read_org)
+    with caplog.at_level(logging.INFO):
+        result = cli.invoke(app, ["report", "--org", "o", "--no-color"])
+    assert result.exit_code == 0, result.stdout
+    assert result.stdout.count("\u26a0\ufe0f") == 1
+    assert _line_after(result.stdout, "Security report: o") == (
+        "\u26a0\ufe0f Token lacks read/organisation permission; "
+        "results incomplete for o"
+    )
+    # The cause stays visible with --verbose, but nothing warns about it.
+    assert not [
+        r
+        for r in caplog.records
+        if r.levelno >= logging.WARNING and "membership" in r.getMessage()
+    ]
+
+
 @respx.mock
 def test_explicit_config_prints_no_config_line(tmp_path: Path) -> None:
     _mock_org_o_r()

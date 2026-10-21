@@ -11,6 +11,7 @@ import logging
 import pytest
 
 from github_security_report import collect, layout, pulls, scope
+from github_security_report.authors import MembershipGap, OrgMembership
 from github_security_report.categories import CategoryKey
 from github_security_report.client import GraphBatchError
 from github_security_report.codeql import CodeQLConfiguration, DefaultSetup
@@ -66,6 +67,8 @@ class FakeClient:
         }
         self.scores = {"dependamerge": 8.2}
         self.members: set[str] = {"insider"}
+        # Why membership is unreadable; None reads ``members`` in full.
+        self.membership_gap: MembershipGap | None = None
         self.viewer: str = "insider"
         # "Allow auto-merge" per repository; absent names default to enabled.
         # Unlike the other posture flags this one rides the GraphQL prefetch,
@@ -84,8 +87,10 @@ class FakeClient:
     async def list_org_repos(self, org: str) -> tuple[int, list[Repo]]:
         return 200, self.repos
 
-    async def org_members(self, org: str) -> frozenset[str]:
-        return frozenset(self.members)
+    async def org_members(self, org: str) -> OrgMembership:
+        if self.membership_gap is not None:
+            return OrgMembership(members=None, gap=self.membership_gap)
+        return OrgMembership(members=frozenset(self.members))
 
     async def viewer_login(self) -> str:
         return self.viewer
@@ -659,6 +664,25 @@ async def test_collect_org_attaches_the_personal_queue_for_a_person() -> None:
     assert report.assigned_pull_requests is not None
     assert report.pull_requests is not None
     assert report.pull_requests.footer_labels == pulls.ASSIGNMENT_ROWS
+
+
+async def test_collect_org_carries_no_gap_for_a_complete_membership() -> None:
+    report = await collect.collect_org(
+        FakeClient(), OrgConfig(name="o"), ReportConfig(), generated_at=WHEN
+    )
+    assert report.membership_gap is None
+
+
+@pytest.mark.parametrize("gap", list(MembershipGap))
+async def test_collect_org_carries_why_membership_was_unreadable(
+    gap: MembershipGap,
+) -> None:
+    client = FakeClient()
+    client.membership_gap = gap
+    report = await collect.collect_org(
+        client, OrgConfig(name="o"), ReportConfig(), generated_at=WHEN
+    )
+    assert report.membership_gap is gap
 
 
 async def test_collect_org_releases_exclude_and_min_age() -> None:

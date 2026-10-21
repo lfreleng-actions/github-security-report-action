@@ -15,7 +15,12 @@ from __future__ import annotations
 
 import logging
 
-from github_security_report.authors import is_automation_author, normalise_members
+from github_security_report.authors import (
+    MembershipGap,
+    OrgMembership,
+    is_automation_author,
+    normalise_members,
+)
 from github_security_report.client.alerts import AlertReads
 from github_security_report.client.batch_errors import _alias_errors, _batch_response
 from github_security_report.client.parsers import _parse_iso, _parse_repo_node
@@ -35,23 +40,28 @@ log = logging.getLogger(__name__)
 _MEMBER_PAGE_LIMIT = 100
 
 
-def _log_unreadable_membership(org: str, *, outside: bool = False) -> None:
-    """Report that membership could not be read in full, once per attempt."""
-    reason = (
-        "the account this run authenticated as is not a member of it, so "
-        "GitHub served only its public members"
-        if outside
-        else "it could not be read in full"
-    )
-    log.warning(
-        "organisation membership for %s is incomplete (%s); "
-        "externally-raised contributions cannot be identified reliably and "
-        "are reported as a lower bound rather than guessed from GitHub's "
-        "per-item author association, which reports private members as "
-        "outsiders to a token without organisation visibility",
-        org,
-        reason,
-    )
+# HTTP statuses that mean the token may not read membership at all.
+_PERMISSION_STATUSES = frozenset({401, 403})
+
+# The GraphQL error ``type`` GitHub gives a query needing a scope the token
+# lacks; for this query, ``read:org``.
+_INSUFFICIENT_SCOPES = "INSUFFICIENT_SCOPES"
+
+
+def _unreadable_membership(org: str, gap: MembershipGap) -> OrgMembership:
+    """Record why membership is unknown; the terminal report shows the warning."""
+    log.info("organisation membership for %s not read: %s", org, gap.value)
+    return OrgMembership(members=None, gap=gap)
+
+
+def _errors_gap(errors: object) -> MembershipGap:
+    """Classify a GraphQL ``errors`` array: a missing scope, or anything else."""
+    if isinstance(errors, list) and any(
+        isinstance(error, dict) and error.get("type") == _INSUFFICIENT_SCOPES
+        for error in errors
+    ):
+        return MembershipGap.PERMISSION
+    return MembershipGap.UNREADABLE
 
 
 class OrgReadClient(AlertReads):
@@ -126,20 +136,22 @@ class OrgReadClient(AlertReads):
     # ------------------------------------------------------------------ #
     # Organisation membership (who counts as an insider)
     # ------------------------------------------------------------------ #
-    async def org_members(self, org: str) -> frozenset[str] | None:
-        """Every organisation member's login, normalised, or ``None``.
+    async def org_members(self, org: str) -> OrgMembership:
+        """Every organisation member's login, normalised, or why there are none.
 
         Collected once per organisation and reused for every repository, so
         deciding whether a contribution came from outside the organisation costs
         one query rather than a probe per author.
 
-        Returns ``None`` -- never a partial set -- when membership cannot be
-        read in full: a token without ``read:org``, a viewer outside the
-        organisation, a failed page, or a membership larger than the pagination
-        guard. A partial set is worse than none, because every member missing
-        from it reads as an outsider, and the caller cannot tell an absent
-        member from a genuine one. The caller degrades those authors to
-        indeterminate instead.
+        The members are ``None`` -- never a partial set -- when membership
+        cannot be read in full, and the result's ``gap`` says why: a token
+        without ``read:org`` (:attr:`MembershipGap.PERMISSION`), a viewer
+        outside the organisation (:attr:`MembershipGap.NOT_MEMBER`), or a
+        failed page, malformed response or membership larger than the
+        pagination guard (:attr:`MembershipGap.UNREADABLE`). A partial set is
+        worse than none, because every member missing from it reads as an
+        outsider, and the caller cannot tell an absent member from a genuine
+        one. The caller degrades those authors to indeterminate instead.
         """
         logins: set[str] = set()
         after: str | None = None
@@ -158,35 +170,37 @@ class OrgReadClient(AlertReads):
             )
             if resp.status_code != 200:
                 await resp.aclose()  # unread body would leak a pooled connection
-                _log_unreadable_membership(org)
-                return None
+                return _unreadable_membership(
+                    org,
+                    MembershipGap.PERMISSION
+                    if resp.status_code in _PERMISSION_STATUSES
+                    else MembershipGap.UNREADABLE,
+                )
             body = resp.json()
             await resp.aclose()  # release the connection once the body is read
-            if body.get("errors"):
+            if errors := body.get("errors"):
                 # GraphQL answers a partially-failed query with HTTP 200,
                 # populating what it could alongside an ``errors`` array. A
                 # shortened member list is indistinguishable from a complete
-                # one, so any error at all condemns the whole read.
-                _log_unreadable_membership(org)
-                return None
+                # one, so any error at all condemns the whole read. A token
+                # without ``read:org`` lands here too: a null organisation and
+                # an INSUFFICIENT_SCOPES error.
+                return _unreadable_membership(org, _errors_gap(errors))
             organization = (body.get("data") or {}).get("organization")
             if not isinstance(organization, dict):
                 # A token lacking organisation visibility gets HTTP 200 with a
                 # null organisation and an ``errors`` entry; that is an unknown
                 # membership, not an empty one.
-                _log_unreadable_membership(org)
-                return None
+                return _unreadable_membership(org, MembershipGap.UNREADABLE)
             if organization.get("viewerIsAMember") is not True:
                 # The connection is visibility-filtered, not refused: a viewer
                 # outside the organisation is served its *public* members with
                 # no error at all. Trusting that would report every private
                 # member as an outsider.
-                _log_unreadable_membership(org, outside=True)
-                return None
+                return _unreadable_membership(org, MembershipGap.NOT_MEMBER)
             members = organization.get("membersWithRole")
             if not isinstance(members, dict):
-                _log_unreadable_membership(org)
-                return None
+                return _unreadable_membership(org, MembershipGap.UNREADABLE)
             for node in members.get("nodes") or []:
                 # An unusable node is a member we cannot name, and a member
                 # missing from the set reads as an outsider. There is no way to
@@ -194,18 +208,21 @@ class OrgReadClient(AlertReads):
                 # whole read is condemned rather than quietly shortened.
                 login = node.get("login") if isinstance(node, dict) else None
                 if not login:
-                    _log_unreadable_membership(org)
-                    return None
+                    return _unreadable_membership(org, MembershipGap.UNREADABLE)
                 logins.add(str(login))
             page = members.get("pageInfo")
-            if not isinstance(page, dict) or not page.get("hasNextPage"):
-                return normalise_members(logins)
+            if not isinstance(page, dict) or not isinstance(
+                page.get("hasNextPage"), bool
+            ):
+                # Without a usable pageInfo there is no telling a final page
+                # from a truncated one, so the set cannot be trusted as whole.
+                return _unreadable_membership(org, MembershipGap.UNREADABLE)
+            if not page["hasNextPage"]:
+                return OrgMembership(members=normalise_members(logins))
             after = page.get("endCursor")
             if not isinstance(after, str):
-                _log_unreadable_membership(org)
-                return None
-        _log_unreadable_membership(org)
-        return None
+                return _unreadable_membership(org, MembershipGap.UNREADABLE)
+        return _unreadable_membership(org, MembershipGap.UNREADABLE)
 
     async def viewer_login(self) -> str:
         """The authenticated account's login, lower-cased, or ``""``.

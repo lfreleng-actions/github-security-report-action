@@ -1237,10 +1237,13 @@ see the relationship reports it), but one naming an outsider proves nothing,
 because that is exactly how a private member appears to an under-privileged
 token. Those authors are reported as indeterminate rather than external, so
 `Ext` **undercounts and should be read as a lower bound** — the table says so in
-its description whenever this happens, and the run logs a warning. Membership is
-never used partially: a failed page or an organisation beyond the pagination
-guard is treated as unreadable rather than as a member list with people missing
-from it, since every absent member would otherwise read as an outsider.
+its description whenever this happens, and the terminal report prints one
+warning line under each affected organisation's heading, naming the cause: a
+token without the membership permission, a token whose account is not a member,
+or a read that failed. Membership is never used partially: a failed page or an
+organisation beyond the pagination guard is treated as unreadable rather than as
+a member list with people missing from it, since every absent member would
+otherwise read as an outsider.
 
 **Automation is never counted as external.** Bots are outsiders by association —
 `dependabot[bot]` genuinely reports `CONTRIBUTOR` or `NONE` — so counting on
@@ -1253,8 +1256,9 @@ association value GitHub has newly introduced — is **not** counted as external
 The column understates rather than inventing an outsider.
 
 **Permissions.** Reading organisation membership needs `read:org` (classic) or
-**Members: read** (fine-grained). Without it the tool logs a warning and
-reports externally-raised counts as a lower bound rather than guessing from
+**Members: read** (fine-grained). Without it the terminal report prints
+`⚠️ Token lacks read/organisation permission; results incomplete for <org>`
+and reports externally-raised counts as a lower bound rather than guessing from
 `authorAssociation` alone.
 
 ### Organisation feature gating

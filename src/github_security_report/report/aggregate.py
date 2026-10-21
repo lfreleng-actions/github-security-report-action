@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from github_security_report import scope
+from github_security_report.authors import MembershipGap
 from github_security_report.categories import CategoryKey
 from github_security_report.models import (
     Repo,
@@ -103,6 +104,10 @@ class OrgReport:
     # rather than the ordering configuration, so the report model stays free of
     # a dependency on the config tree. Empty means assembly order.
     section_order: tuple[CategoryKey, ...] = ()
+    # Why organisation membership could not be read, or None when it was read
+    # in full or never collected (repo mode). Only the terminal reports it: the
+    # Markdown and HTML tables carry the same caveat in their descriptions.
+    membership_gap: MembershipGap | None = None
 
     @property
     def standalone_tables(self) -> tuple[TableSection | None, ...]:

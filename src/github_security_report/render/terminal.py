@@ -23,6 +23,10 @@ from github_security_report.categories import CategoryKey
 from github_security_report.models import Repo, RepoSignal, SignalType
 from github_security_report.remediate import CategoryRemediation
 from github_security_report.render import markdown
+from github_security_report.render.terminal_notices import (
+    render_config_path,
+    render_membership_gap,
+)
 from github_security_report.report import (
     CELL_BAD,
     CELL_GOOD,
@@ -265,12 +269,6 @@ def render_table_section(
     console.print()
 
 
-def _render_config_path(console: Console, config_path: Path | None) -> None:
-    """Name the auto-discovered config file directly under a run's divider."""
-    if config_path is not None:
-        console.print(f"[dim]Using config: {escape(str(config_path))}[/dim]")
-
-
 def render_org(
     org: OrgReport,
     console: Console,
@@ -297,7 +295,8 @@ def render_org(
         )
 
     console.rule(f"[bold]Security report: {org.org}[/bold]")
-    _render_config_path(console, config_path)
+    render_config_path(console, config_path)
+    render_membership_gap(console, org)
     console.print(f"[dim]{org.repo_count} repositories analysed[/dim]\n")
     if org.partial:
         console.print(
@@ -346,7 +345,7 @@ def render_remediation(
     a trailing summary totals the work across categories.
     """
     console.rule(f"[bold]Remediation: {escape(org)}[/bold]")
-    _render_config_path(console, config_path)
+    render_config_path(console, config_path)
     # A narrowed run says so up front, so its results are not read as the
     # whole organisation's.
     if limited_to:
