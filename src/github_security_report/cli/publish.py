@@ -27,6 +27,8 @@ from github_security_report.cli.outputs import (
     slack_footer,
     slack_limit,
     slack_show,
+    slack_windows,
+    windows,
     write_org_files,
 )
 from github_security_report.render import html as html_render
@@ -111,6 +113,7 @@ def slack_digest(
             show=slack_show(items, options.hidden),
             limit=slack_limit(items, options.limits),
             footer=slack_footer(items),
+            windows=slack_windows(items),
         )
         for channel, items in by_channel.items()
     ]
@@ -144,6 +147,7 @@ def summary(
                 show=show(org_cfg.report, "markdown", hidden),
                 limit=limits.resolver(org_cfg.report, "report"),
                 footer=footer(org_cfg.report),
+                windows=windows(org_cfg.report, "report"),
             )
             for org_cfg, org_report in pairs
         ).rstrip()

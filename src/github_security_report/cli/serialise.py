@@ -21,12 +21,17 @@ def _table_to_dict(section: TableSection) -> dict:
     return {
         "category": section.category.key.value,
         "title": section.title,
+        # The window this table covers, in days, for a windowed category;
+        # null for every other table.
+        "window_days": section.window_days,
         "columns": list(section.columns),
         "rows": [
             {
                 "repo": row.repo.full_name,
                 "url": row.repo.html_url,
                 "cells": list(row.cells),
+                # A link per cell where the builder gave one, else null.
+                "cell_urls": [row.url(i) for i in range(len(row.cells))],
             }
             for row in section.rows
         ],
@@ -127,6 +132,15 @@ def _org_to_dict(org: OrgReport, hidden: Collection[CategoryKey] = ()) -> dict:
         "private_vulnerability_reporting": table(org.private_vulnerability_reporting),
         "auto_merge": table(org.auto_merge),
         "code_quality": table(org.code_quality),
+        # One table per configured window, shortest first.
+        "workflow_failures": [
+            entry for t in org.workflow_failures if (entry := table(t)) is not None
+        ],
+        "workflow_failures_detail": [
+            entry
+            for t in org.workflow_failures_detail
+            if (entry := table(t)) is not None
+        ],
         "issues": table(org.issues),
         "pull_requests": table(org.pull_requests),
         "assigned_pull_requests": table(org.assigned_pull_requests),

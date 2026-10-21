@@ -20,7 +20,7 @@ from collections.abc import Callable, Sequence
 
 from github_security_report import layout
 from github_security_report.categories import CategoryKey
-from github_security_report.models import Repo, RepoSignal, SignalType
+from github_security_report.models import Repo
 from github_security_report.render.html import slugify
 from github_security_report.render.slack_limits import (
     MAX_TEXT_CHARS,
@@ -30,6 +30,13 @@ from github_security_report.render.slack_limits import (
     fit_section_text,
     header_block,
     text_length,
+)
+from github_security_report.render.slack_text import (
+    _fixed_table,
+    _fixed_table_generic,
+    _name_breaks,
+    _name_cap,
+    _summary_text,
 )
 from github_security_report.report import (
     DEFAULT_FOOTER,
@@ -41,185 +48,15 @@ from github_security_report.report import (
     OrgReport,
     RepoList,
     SignalSection,
-    SummaryLine,
     TableSection,
+    WindowsFor,
     build_summary,
     limit_resolver,
-    offender_column_totals,
-    section_shows_informational,
     table_column_totals,
     table_footer_rows,
     truncate,
+    window_shown,
 )
-
-
-def _plain_columns(signal: SignalType, *, informational: bool = False) -> list[str]:
-    if signal is SignalType.SECRET_SCANNING:
-        return ["Repository", "Open"]
-    info = ["I"] if informational else []
-    if signal is SignalType.SCORECARD:
-        return ["Repository", "Score", "C", "H", "M", "L", *info]
-    return ["Repository", "C", "H", "M", "L", *info]
-
-
-def _plain_row(sig: RepoSignal, *, informational: bool = False) -> list[str]:
-    c = sig.counts
-    if sig.signal is SignalType.SECRET_SCANNING:
-        return [sig.repo.name, str(c.total)]
-    info = [str(c.informational)] if informational else []
-    if sig.signal is SignalType.SCORECARD:
-        score = f"{sig.score:.1f}" if sig.score is not None else "-"
-        return [
-            sig.repo.name,
-            score,
-            str(c.critical),
-            str(c.high),
-            str(c.medium),
-            str(c.low),
-            *info,
-        ]
-    return [
-        sig.repo.name,
-        str(c.critical),
-        str(c.high),
-        str(c.medium),
-        str(c.low),
-        *info,
-    ]
-
-
-def _plain_total_row(
-    signal: SignalType, offenders: list[RepoSignal], *, informational: bool = False
-) -> list[str]:
-    """Trailing "Total" row summing the severity columns for Slack tables.
-
-    Slack's fixed-width columns omit the Total column the other surfaces carry,
-    so this matches ``_plain_row``'s shape rather than reusing the shared
-    Markdown helper. Scorecard's score is not additive and is left blank.
-    """
-    totals = offender_column_totals(offenders)
-    base = [
-        str(totals.critical),
-        str(totals.high),
-        str(totals.medium),
-        str(totals.low),
-    ]
-    info = [str(totals.informational)] if informational else []
-    if signal is SignalType.SCORECARD:
-        return ["Total", "", *base, *info]
-    return ["Total", *base, *info]
-
-
-def _fixed_table(section: SignalSection, shown_count: int) -> str:
-    """The fenced offender table showing the first ``shown_count`` rows.
-
-    Takes an absolute row count rather than a limit so the character budget in
-    :mod:`~github_security_report.render.slack_limits` can shed rows further
-    without a second truncation mechanism: the hidden tally is always derived
-    from the full offender list, so it stays honest no matter which cap did the
-    trimming.
-    """
-    shown = section.offenders[:shown_count]
-    hidden = len(section.offenders) - len(shown)
-    informational = section_shows_informational(shown)
-    cols = _plain_columns(section.signal, informational=informational)
-    rows = [_plain_row(s, informational=informational) for s in shown]
-    # A trailing totals row sums the additive severity columns; secret scanning
-    # has no such columns, so skip it. Summed over the shown (truncated) rows.
-    if section.signal.uses_severity_columns and shown:
-        rows.append(
-            _plain_total_row(section.signal, shown, informational=informational)
-        )
-    widths = [len(c) for c in cols]
-    for row in rows:
-        for i, cell in enumerate(row):
-            widths[i] = max(widths[i], len(cell))
-
-    # First column left-aligned (repo name), numeric columns right-aligned.
-    def fmt(row: list[str]) -> str:
-        cells = [row[0].ljust(widths[0])]
-        cells += [row[i].rjust(widths[i]) for i in range(1, len(row))]
-        return "  ".join(cells)
-
-    lines = [fmt(cols)] + [fmt(row) for row in rows]
-    if hidden:
-        # Match the posture/release tables: surface the hidden count.
-        lines.append(f"… and {hidden} more")
-    return "\n".join(lines)
-
-
-def _summary_text(lines: Sequence[SummaryLine], *, names: int) -> str:
-    """The standardised footer as Slack mrkdwn: count lines then name lists.
-
-    One line per count (failures first), each prefixed with its shared glyph,
-    followed by the name list of every line that names its repositories.
-    Brevity-first, so no per-category description is emitted.
-
-    ``names`` caps each name list at an absolute number of entries. It is
-    resolved by :func:`_name_cap` before it gets here, so ``0`` means "list no
-    names" -- not ``truncate``'s "no limit" -- and drops the enumerations
-    entirely. Nothing is lost by that: every name list has a count line above
-    it, and the count lines always survive.
-    """
-    out: list[str] = []
-    for line in lines:
-        out.append(f"{SUMMARY_EMOJI[line.kind]} {line.text}")
-    if names <= 0:
-        return "\n".join(out)
-    for line in lines:
-        if not line.listed:
-            continue
-        shown, hidden = truncate(line.names, names)
-        names_text = ", ".join(shown)
-        if hidden:
-            names_text += f" … (+{hidden} more)"
-        out.append(f"{line.names_label}: {names_text}")
-    return "\n".join(out)
-
-
-def _name_breaks(lines: Sequence[SummaryLine]) -> tuple[int, ...]:
-    """Lengths of the rendered name lists, where the allowance stops being
-    monotonic.
-
-    A list completing mid-range drops its "… (+N more)" suffix, which can
-    shorten the block even as the allowance rises. Handing these to
-    :func:`fit_section_text` puts each transition on a search boundary.
-    """
-    return tuple(sorted({len(line.names) for line in lines if line.listed}))
-
-
-def _name_cap(lines: Sequence[SummaryLine], top_n: int) -> int:
-    """Resolve the configured limit into an absolute name-list allowance.
-
-    ``top_n`` carries the documented "``0`` means no limit" convention, which
-    the character budget cannot work with -- it needs to be able to ask for
-    *fewer* names, including none. Resolving "no limit" to the longest list
-    present makes every allowance an ordinary count.
-
-    The result is bounded by that longest list either way. ``top_n`` is
-    operator-supplied with no schema maximum, and an allowance beyond the names
-    that exist renders identically to one that stops at them -- so passing the
-    raw value through would only make the budget's search probe a wide range of
-    indistinguishable outcomes before it could move on to shedding rows.
-    """
-    longest = max((len(line.names) for line in lines if line.listed), default=0)
-    if top_n > 0:
-        return min(top_n, longest)
-    return longest
-
-
-def _fixed_table_generic(columns: tuple[str, ...], rows: list[list[str]]) -> str:
-    """Fixed-width text table for a generic posture/freshness table."""
-    widths = [len(c) for c in columns]
-    for row in rows:
-        for i, cell in enumerate(row):
-            widths[i] = max(widths[i], len(cell))
-
-    def fmt(row: list[str]) -> str:
-        return "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row))
-
-    lines = [fmt(list(columns))] + [fmt(row) for row in rows]
-    return "\n".join(lines)
 
 
 def _table_block(
@@ -237,17 +74,26 @@ def _table_block(
     (genuinely no data) is skipped, keeping the brevity-first digest tight. The
     explanatory description is omitted: Slack is a brevity-first surface. A
     boolean feature table draws no fixed-width table: its repositories are
-    named in the footer, as on every other surface.
+    named in the footer, as on every other surface. A table whose rows carry
+    a ``digest`` line is drawn as a bullet per row instead of a fixed-width
+    table: it is too wide for a digest, and the line says what matters.
     """
     lines = build_summary(section.summary_counts(excluded, repo_list=repo_list))
     row_cap = 0 if section.lists_repos else len(truncate(section.rows, top_n)[0])
     name_cap = _name_cap(lines, top_n)
     if not row_cap and not _summary_text(lines, names=name_cap):
         return None
+    digest = bool(section.rows) and all(row.digest for row in section.rows)
 
     def build(rows: int, names: int) -> str:
         text = f"*{section.title}*"
-        if rows:
+        if rows and digest:
+            shown = section.rows[:rows]
+            text += "".join(f"\n• {row.digest}" for row in shown)
+            hidden = len(section.rows) - len(shown)
+            if hidden:
+                text += f"\n… and {hidden} more"
+        elif rows:
             shown = section.rows[:rows]
             cells = [[row.repo.name, *row.cells] for row in shown]
             totals = table_column_totals(section, shown)
@@ -319,6 +165,7 @@ def render_org_blocks(
     show: Callable[[CategoryKey], bool] | None = None,
     limit: LimitFor | None = None,
     footer: FooterOptions = DEFAULT_FOOTER,
+    windows: WindowsFor | None = None,
 ) -> list[dict]:
     """Slack blocks for one organisation."""
     visible = show or (lambda _key: True)
@@ -342,6 +189,8 @@ def render_org_blocks(
         """Append one extra table's block, honouring its visibility and limit."""
         if section is None or not visible(section.category.key):
             return
+        if not window_shown(windows, section):
+            return
         key = section.category.key
         block = _table_block(
             section,
@@ -355,6 +204,8 @@ def render_org_blocks(
     for item in layout.plan(org):
         if isinstance(item.section, TableSection):
             add_table(item.section)
+            for table_section in item.children:
+                add_table(table_section)
             continue
         section = item.section
         key = section.signal.category_key
@@ -402,6 +253,7 @@ def render_payload(
     show: Callable[[OrgReport, CategoryKey], bool] | None = None,
     limit: LimitFor | None = None,
     footer: Callable[[OrgReport], FooterOptions] | None = None,
+    windows: Callable[[OrgReport], WindowsFor | None] | None = None,
 ) -> dict:
     """Build a ``chat.postMessage`` payload across one or more organisations.
 
@@ -426,6 +278,7 @@ def render_payload(
                 show=org_show,
                 limit=limit,
                 footer=DEFAULT_FOOTER if footer is None else footer(org),
+                windows=None if windows is None else windows(org),
             )
         )
     blocks = enforce_block_limit(blocks, pages_url)

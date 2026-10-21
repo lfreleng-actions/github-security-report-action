@@ -43,12 +43,14 @@ from github_security_report.report import (
     SummaryLine,
     TableRow,
     TableSection,
+    WindowsFor,
     build_summary,
     limit_resolver,
     section_shows_informational,
     table_column_totals,
     table_footer_rows,
     truncate,
+    window_shown,
 )
 
 _SEVERITY_STYLE = {
@@ -279,6 +281,7 @@ def render_org(
     show: Callable[[CategoryKey], bool] | None = None,
     limit: LimitFor | None = None,
     footer: FooterOptions = DEFAULT_FOOTER,
+    windows: WindowsFor | None = None,
     config_path: Path | None = None,
 ) -> None:
     visible = show or (lambda _key: True)
@@ -287,6 +290,8 @@ def render_org(
     def table(section: TableSection | None) -> None:
         """Render one extra table, honouring its own visibility and limit."""
         if section is None or not visible(section.category.key):
+            return
+        if not window_shown(windows, section):
             return
         render_table_section(
             section,
@@ -308,6 +313,8 @@ def render_org(
     for item in layout.plan(org):
         if isinstance(item.section, TableSection):
             table(item.section)
+            for child in item.children:
+                table(child)
             continue
         key = item.section.signal.category_key
         if visible(key):
