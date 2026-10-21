@@ -100,3 +100,6 @@ class OrgRunOptions:
     # scheduled run can keep a reader-specific category out of its published
     # artifacts without editing (or contradicting) the shared configuration.
     hidden: frozenset[CategoryKey] = frozenset()
+    # The per-user config file, when the run auto-discovered it rather than
+    # being given a configuration; printed under each organisation's divider.
+    config_path: Path | None = None

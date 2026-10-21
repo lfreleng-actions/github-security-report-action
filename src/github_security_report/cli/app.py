@@ -199,7 +199,7 @@ def report(
     )
     hidden = boundary.resolve_hidden(console, hide)
 
-    cfg = _load_config(config_file, config_data, org, token_env, console=console)
+    cfg, config_path = _load_config(config_file, config_data, org, token_env)
     detected = boundary.detect_target(console, repo, scope)
     mode = boundary.resolve_mode(console, scope, cfg=cfg, detected=detected)
 
@@ -230,6 +230,7 @@ def report(
                 concurrency=concurrency,
             ),
             hidden=hidden,
+            config_path=config_path,
         )
         code = boundary.run_guarded(console, _run_org(cfg, options, console=console))
     else:
@@ -271,6 +272,7 @@ def report(
                 report_cfg=cfg.report if cfg is not None else None,
                 limits=TopNLimits(shared=top_n, report=top_n_report, cli=top_n_cli),
                 hidden=hidden,
+                config_path=config_path,
             ),
         )
     raise typer.Exit(code)
@@ -363,7 +365,7 @@ def remediate(
         )
         raise typer.Exit(2)
 
-    cfg = _load_config(config_file, config_data, org, token_env, console=console)
+    cfg, config_path = _load_config(config_file, config_data, org, token_env)
     if cfg is None:
         console.print(
             "[red]No configuration: provide --config, --config-data or --org.[/red]"
@@ -390,6 +392,7 @@ def remediate(
             categories=categories,
             apply=apply,
             repos=selection,
+            config_path=config_path,
         ),
     )
     raise typer.Exit(code)

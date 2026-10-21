@@ -11,6 +11,7 @@ sections 10-11.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from pathlib import Path
 
 from rich.console import Console
 from rich.markup import escape
@@ -264,6 +265,12 @@ def render_table_section(
     console.print()
 
 
+def _render_config_path(console: Console, config_path: Path | None) -> None:
+    """Name the auto-discovered config file directly under a run's divider."""
+    if config_path is not None:
+        console.print(f"[dim]Using config: {escape(str(config_path))}[/dim]")
+
+
 def render_org(
     org: OrgReport,
     console: Console,
@@ -272,6 +279,7 @@ def render_org(
     show: Callable[[CategoryKey], bool] | None = None,
     limit: LimitFor | None = None,
     footer: FooterOptions = DEFAULT_FOOTER,
+    config_path: Path | None = None,
 ) -> None:
     visible = show or (lambda _key: True)
     limit_for = limit_resolver(top_n, limit)
@@ -289,6 +297,7 @@ def render_org(
         )
 
     console.rule(f"[bold]Security report: {org.org}[/bold]")
+    _render_config_path(console, config_path)
     console.print(f"[dim]{org.repo_count} repositories analysed[/dim]\n")
     if org.partial:
         console.print(
@@ -326,6 +335,7 @@ def render_remediation(
     apply: bool,
     top_n: int | None = None,
     limited_to: Sequence[str] = (),
+    config_path: Path | None = None,
 ) -> None:
     """Render a remediation run: one block per category, with a trailing summary.
 
@@ -336,6 +346,7 @@ def render_remediation(
     a trailing summary totals the work across categories.
     """
     console.rule(f"[bold]Remediation: {escape(org)}[/bold]")
+    _render_config_path(console, config_path)
     # A narrowed run says so up front, so its results are not read as the
     # whole organisation's.
     if limited_to:
