@@ -12,6 +12,25 @@ per-workflow statistics.
 
 from __future__ import annotations
 
+from github_security_report.workflow_runs.aggregate import (
+    PATTERN_INSUFFICIENT,
+    PATTERN_INTERMITTENT,
+    PATTERN_PERSISTENT,
+    READING_EVERYWHERE,
+    READING_NO_PR_RUNS,
+    READING_OTHER,
+    READING_POST_MERGE_ONLY,
+    JobFailures,
+    RepoWindowStats,
+    WindowOptions,
+    WorkflowWindowStats,
+    in_window,
+    normalise_job_name,
+    pattern,
+    repo_stats,
+    window_records,
+    workflow_stats,
+)
 from github_security_report.workflow_runs.models import (
     DYNAMIC_PATH_PREFIX,
     FailedJob,
@@ -26,13 +45,30 @@ from github_security_report.workflow_runs.store import RunStore, store_path
 
 __all__ = [
     "DYNAMIC_PATH_PREFIX",
+    "PATTERN_INSUFFICIENT",
+    "PATTERN_INTERMITTENT",
+    "PATTERN_PERSISTENT",
+    "READING_EVERYWHERE",
+    "READING_NO_PR_RUNS",
+    "READING_OTHER",
+    "READING_POST_MERGE_ONLY",
     "FailedJob",
+    "JobFailures",
     "Outcome",
     "RepoSyncState",
+    "RepoWindowStats",
     "RunStore",
     "Trigger",
+    "WindowOptions",
     "WorkflowRunRecord",
+    "WorkflowWindowStats",
     "classify_outcome",
     "classify_trigger",
+    "in_window",
+    "normalise_job_name",
+    "pattern",
+    "repo_stats",
     "store_path",
+    "window_records",
+    "workflow_stats",
 ]
