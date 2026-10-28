@@ -119,20 +119,28 @@ _TERMINAL_ONLY = OutputToggles(cli=True, slack=False, markdown=False, html=False
 
 # Surfaces for a table too wide and too long for a chat digest: the per-workflow
 # detail of the Workflow Failures category runs to several rows per repository
-# and a dozen columns, so it stays off Slack by default while the per-repository
-# ranking carries the headline there.
+# and a dozen columns, so it stays off Slack even once enabled, while the
+# per-repository ranking carries the headline there.
 _NO_SLACK = OutputToggles(cli=True, slack=False, markdown=True, html=True)
 
 # Categories whose default visibility is narrower than "every surface". Merged
 # under any configured block key-by-key, so an operator who sets, say, a `top_n`
 # for one of these keeps the restricted surfaces rather than silently
 # publishing it everywhere.
+#
+# The Workflow Failures detail table is collected and published to report.json
+# but rendered nowhere by default: its shape (which jobs to list, how wide a
+# row may run) is still being settled against real data, and the per-repository
+# ranking carries the actionable headline meanwhile. Setting
+# `categories.workflow_failures_detail.enabled: true` switches it on.
 DEFAULT_CATEGORIES: Mapping[str, CategoryToggle] = MappingProxyType(
     {
         CategoryKey.PULL_REQUESTS_ASSIGNED.value: CategoryToggle(
             outputs=_TERMINAL_ONLY
         ),
-        CategoryKey.WORKFLOW_FAILURES_DETAIL.value: CategoryToggle(outputs=_NO_SLACK),
+        CategoryKey.WORKFLOW_FAILURES_DETAIL.value: CategoryToggle(
+            enabled=False, outputs=_NO_SLACK
+        ),
     }
 )
 

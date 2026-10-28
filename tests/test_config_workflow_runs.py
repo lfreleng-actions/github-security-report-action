@@ -125,17 +125,35 @@ class TestBuildConfig:
 
 
 class TestCategoryDefaults:
-    def test_detail_table_stays_off_slack(self) -> None:
-        # Too wide for a chat digest; the per-repository ranking carries the
-        # headline there.
+    def test_detail_table_is_off_by_default(self) -> None:
+        # Collected and published to report.json, but rendered on no surface
+        # until its shape settles; the per-repository ranking carries the
+        # headline meanwhile.
         toggle = DEFAULT_CATEGORIES[CategoryKey.WORKFLOW_FAILURES_DETAIL.value]
-        assert toggle.shows_on("slack") is False
-        assert toggle.shows_on("html") is True
+        assert toggle.enabled is False
         cfg = ReportConfig()
-        assert cfg.shows_category(CategoryKey.WORKFLOW_FAILURES, "slack") is True
-        assert (
-            cfg.shows_category(CategoryKey.WORKFLOW_FAILURES_DETAIL, "slack") is False
-        )
+        for output in ("cli", "slack", "markdown", "html"):
+            assert cfg.shows_category(CategoryKey.WORKFLOW_FAILURES, output) is True
+            assert (
+                cfg.shows_category(CategoryKey.WORKFLOW_FAILURES_DETAIL, output)
+                is False
+            )
+
+    def test_detail_table_can_be_enabled_but_stays_off_slack(self) -> None:
+        # Switching it on restores the published surfaces and the terminal;
+        # Slack stays off, as a dozen columns do not fit a chat digest.
+        cfg = config.build_config(
+            {
+                "organizations": [{"name": "o"}],
+                "report": {
+                    "categories": {"workflow_failures_detail": {"enabled": True}}
+                },
+            }
+        ).report
+        key = CategoryKey.WORKFLOW_FAILURES_DETAIL
+        assert cfg.shows_category(key, "html") is True
+        assert cfg.shows_category(key, "cli") is True
+        assert cfg.shows_category(key, "slack") is False
 
 
 class TestParseWindows:
