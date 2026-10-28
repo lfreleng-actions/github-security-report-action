@@ -230,8 +230,9 @@ async def _facts_for_repo(repo: Repo, ctx: OrgCollectContext) -> RepoFacts:
     These per-repo probes are independent, so they are gathered and each repo's
     reads overlap; real HTTP concurrency stays bounded by the client semaphore.
     The Dependabot-enabled flag comes from the batched GraphQL prefetch rather
-    than a probe of its own. ``ctx.probe_tools`` names the code-scanning tools
-    worth probing (feature gating removes unsupported ones), and
+    than a probe of its own, and the secret-scanning state from the repository
+    listing where it carried one. ``ctx.probe_tools`` names the code-scanning
+    tools worth probing (feature gating removes unsupported ones), and
     ``ctx.probe_scorecard`` skips the external Scorecard read when the signal is
     gated out -- the facts then default to "no score" and the skipped classifier
     never reads them.
@@ -240,13 +241,22 @@ async def _facts_for_repo(repo: Repo, ctx: OrgCollectContext) -> RepoFacts:
     async def no_scorecard() -> tuple[int, float | None]:
         return 404, None
 
+    async def secret_scanning_status() -> int:
+        # The listing already said whether secret scanning is on, for a token
+        # with admin or security-manager rights; the alerts endpoint answers
+        # 200 or 404 for the same two states, so the probe is spent only when
+        # the listing left the state out.
+        if repo.secret_scanning is not None:
+            return 200 if repo.secret_scanning else 404
+        return await ctx.client.secret_scanning_status(ctx.org, repo.name)
+
     (
         (cs_status, cs_tools),
         secret_status,
         (scorecard_status, score),
     ) = await asyncio.gather(
         ctx.client.code_scanning_tools(ctx.org, repo.name, ctx.probe_tools),
-        ctx.client.secret_scanning_status(ctx.org, repo.name),
+        secret_scanning_status(),
         ctx.client.scorecard_score(ctx.org, repo.name)
         if ctx.probe_scorecard
         else no_scorecard(),

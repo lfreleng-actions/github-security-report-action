@@ -4,31 +4,27 @@
 
 :class:`ReadClient` completes the reporting read surface by adding the reads
 issued once per repository to the org-scope reads of
-:class:`~github_security_report.client.org_reads.OrgReadClient`. Methods return
+:class:`~github_security_report.client.org_reads.OrgReadClient` and the cached
+code-scanning analyses reads of
+:class:`~github_security_report.client.analyses.AnalysesReads`. Methods return
 raw parsed JSON (and HTTP status where the status itself is the signal, e.g.
 404 = feature disabled).
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from urllib.parse import quote
 
-from github_security_report.client.codeql_parsers import (
-    _parse_default_setup,
-    latest_codeql_configurations,
-)
-from github_security_report.client.org_reads import OrgReadClient
-from github_security_report.client.parsers import _parse_iso
+from github_security_report.client.analyses import AnalysesReads
+from github_security_report.client.codeql_parsers import _parse_default_setup
 from github_security_report.client.queries import (
-    _CODE_SCANNING_SIGNAL_TOOLS,
     _DEPENDABOT_ENABLED_QUERY,
 )
+from github_security_report.client.repo_parser import _parse_repo
 from github_security_report.code_quality import CodeQualitySetup
 from github_security_report.codeql.facts import (
     WORKFLOW_MISSING,
-    CodeQLConfiguration,
     DefaultSetup,
 )
 from github_security_report.models import CODE_SCANNING_TOOLS, Repo, SignalType
@@ -36,81 +32,12 @@ from github_security_report.models import CODE_SCANNING_TOOLS, Repo, SignalType
 log = logging.getLogger(__name__)
 
 
-class ReadClient(OrgReadClient):
+class ReadClient(AnalysesReads):
     """The reporting reads: org sweeps plus the per-repository probes."""
 
     # ------------------------------------------------------------------ #
     # Per-repo enabled-probes
     # ------------------------------------------------------------------ #
-    async def _analyses_tool_probe(
-        self, org: str, repo: str, tool: str
-    ) -> tuple[int, bool]:
-        """Probe a repo's code-scanning analyses for one tool (status, present).
-
-        A ``per_page=1`` + ``tool_name`` filtered read of the analyses endpoint:
-        a definitive, single-request presence test for a SARIF-uploading tool.
-        """
-        url = f"{self._api_url}/repos/{org}/{repo}/code-scanning/analyses"
-        resp = await self._request(
-            "GET", url, params={"per_page": 1, "tool_name": tool}
-        )
-        status = resp.status_code
-        if status != 200:
-            await resp.aclose()  # unread body would leak a pooled connection
-            return status, False
-        has_analyses = bool(resp.json())
-        await resp.aclose()  # release the connection once the body is read
-        return 200, has_analyses
-
-    async def code_scanning_tool_present(self, org: str, repo: str, tool: str) -> bool:
-        """Whether ``tool`` has uploaded code-scanning analyses to this repo.
-
-        The lightweight organisation-gating probe: any non-200 (disabled,
-        forbidden, indeterminate) simply reports the tool as not present here,
-        so a gating sweep degrades to "no evidence" rather than erroring.
-        """
-        status, present = await self._analyses_tool_probe(org, repo, tool)
-        return status == 200 and present
-
-    async def code_scanning_tools(
-        self, org: str, repo: str, tools: tuple[str, ...] | None = None
-    ) -> tuple[int, set[str]]:
-        """Return (status, enabled signal tool names) from code-scanning analyses.
-
-        Each tool in ``tools`` (default: every signal tool) is probed with the
-        analyses ``tool_name`` filter, a definitive presence test that does not
-        depend on how many analyses a busy repo has accumulated (the previous
-        page-by-page scan could miss a low-frequency tool past its page cap and
-        wrongly nag it). The first probe's status is authoritative for the
-        endpoint (404 = code scanning disabled, 403 = forbidden, 5xx/0 =
-        indeterminate); a later per-tool probe that fails is skipped (its tool
-        goes undetected for this run) rather than discarding the whole result.
-        Callers pass a subset when organisation gating has already ruled some
-        tools out, saving one request per repo per skipped tool.
-        """
-        probe_tools = tools if tools is not None else _CODE_SCANNING_SIGNAL_TOOLS
-        if not probe_tools:
-            return 200, set()
-
-        first_tool, *rest = probe_tools
-        status, has = await self._analyses_tool_probe(org, repo, first_tool)
-        if status != 200:
-            # The first probe's status is authoritative for the endpoint
-            # (404 = disabled, 403 = forbidden, 5xx/0 = indeterminate).
-            return status, set()
-        tools_found: set[str] = {first_tool} if has else set()
-        # The endpoint is reachable; probe the remaining tools concurrently. A
-        # later probe that fails just leaves its tool undetected for this run.
-        results = await asyncio.gather(
-            *(self._analyses_tool_probe(org, repo, tool) for tool in rest)
-        )
-        tools_found.update(
-            tool
-            for tool, (st, hit) in zip(rest, results, strict=True)
-            if st == 200 and hit
-        )
-        return 200, tools_found
-
     async def secret_scanning_status(self, org: str, repo: str) -> int:
         """HTTP status of the secret-scanning alerts endpoint (404 = disabled)."""
         resp = await self._request(
@@ -175,17 +102,7 @@ class ReadClient(OrgReadClient):
             return None
         raw = resp.json()
         await resp.aclose()  # release the connection once the body is read
-        return Repo(
-            name=raw["name"],
-            full_name=raw["full_name"],
-            html_url=raw["html_url"],
-            archived=raw.get("archived", False),
-            fork=raw.get("fork", False),
-            is_template=raw.get("is_template", False),
-            private=raw.get("private", False),
-            default_branch=raw.get("default_branch", "main"),
-            created_at=_parse_iso(raw.get("created_at")),
-        )
+        return _parse_repo(raw)
 
     async def repo_code_scanning_alerts(
         self, org: str, repo: str
@@ -291,25 +208,6 @@ class ReadClient(OrgReadClient):
     # ------------------------------------------------------------------ #
     # CodeQL scan health (stale configurations, language coverage)
     # ------------------------------------------------------------------ #
-    async def codeql_configurations(
-        self, org: str, repo: str, branch: str
-    ) -> tuple[int, tuple[CodeQLConfiguration, ...]]:
-        """Every CodeQL configuration on ``branch``, as of its latest scan.
-
-        The analyses endpoint filters by tool and ref but not by category, so
-        the whole history is walked: a stale configuration's last upload is by
-        definition buried beneath the live ones' newer analyses, and stopping
-        early would miss exactly the configurations this read exists to find.
-        A later page failing returns that status with the partial result, which
-        callers must treat as unknown.
-        """
-        status, analyses = await self._get_list(
-            f"{self._api_url}/repos/{org}/{repo}/code-scanning/analyses",
-            tool_name=CODE_SCANNING_TOOLS[SignalType.CODEQL],
-            ref=f"refs/heads/{branch}",
-        )
-        return status, latest_codeql_configurations(analyses)
-
     async def codeql_default_setup(self, org: str, repo: str) -> DefaultSetup | None:
         """The repository's CodeQL default-setup state (None when unreadable)."""
         resp = await self._request(

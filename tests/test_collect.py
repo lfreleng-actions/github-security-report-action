@@ -827,6 +827,59 @@ async def test_collect_org_releases_exclude_and_min_age() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Feature states the listing already carried
+# --------------------------------------------------------------------------- #
+class ProbeCountingClient(FakeClient):
+    """Records which repositories the two listing-replaceable probes reach."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.secret_probed: list[str] = []
+        self.updates_probed: list[str] = []
+
+    async def secret_scanning_status(self, org: str, repo: str) -> int:
+        self.secret_probed.append(repo)
+        return 404
+
+    async def automated_security_fixes(self, org: str, repo: str) -> bool | None:
+        self.updates_probed.append(repo)
+        return False
+
+
+async def test_listing_feature_states_replace_the_probes() -> None:
+    # A repository the listing described is never probed, and the report
+    # reads the listing's answer; one it did not describe is probed as before.
+    client = ProbeCountingClient()
+    told = Repo(
+        "told",
+        "o/told",
+        "https://github.com/o/told",
+        secret_scanning=True,
+        security_updates=True,
+    )
+    mute = _repo("mute")
+    report = await collect.collect_org(
+        client,
+        OrgConfig(name="o"),
+        ReportConfig(),
+        generated_at=WHEN,
+        selected=[told, mute],
+    )
+    assert client.secret_probed == ["mute"]
+    assert client.updates_probed == ["mute"]
+    secret = next(s for s in report.sections if s.signal is SignalType.SECRET_SCANNING)
+    # "told" has secret scanning on (clean); "mute" was probed and found off.
+    assert [r.name for r in secret.nag_repos] == ["mute"]
+    updates = next(
+        t
+        for t in report.dependabot_tables
+        if t.category.key is CategoryKey.DEPENDABOT_UPDATES_ENABLED
+    )
+    assert [row.repo.name for row in updates.rows] == ["mute"]
+    assert [r.name for r in updates.pass_repos] == ["told"]
+
+
+# --------------------------------------------------------------------------- #
 # Adaptive GraphQL prefetch batching
 # --------------------------------------------------------------------------- #
 class BatchLimitedClient(FakeClient):

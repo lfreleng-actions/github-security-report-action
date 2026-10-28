@@ -57,14 +57,27 @@ async def _code_quality_setup(
     return await ctx.client.code_quality_setup(ctx.org, repo.name)
 
 
+async def _security_updates(repo: Repo, ctx: OrgCollectContext) -> bool | None:
+    """Whether Dependabot security updates are on, from the listing if it said.
+
+    The repository listing carries the state for a token with admin or
+    security-manager rights, so the per-repository probe is spent only when
+    the listing left it out.
+    """
+    if repo.security_updates is not None:
+        return repo.security_updates
+    return await ctx.client.automated_security_fixes(ctx.org, repo.name)
+
+
 async def _posture_for_repo(repo: Repo, ctx: OrgCollectContext) -> RepoPosture:
     """Build one repo's Dependabot posture and release/tag freshness.
 
     The Dependabot-alerts flag, the auto-merge setting, the Linguist languages
     and the release/tag/``dependabot.yml`` data come from the batched GraphQL
-    prefetch; the security-updates, private-vulnerability-reporting and Code
-    Quality setup reads remain per-repo REST calls, since GitHub exposes no
-    GraphQL equivalent. They are independent, so they are gathered together
+    prefetch, and the security-updates state from the repository listing where
+    it carried one; the private-vulnerability-reporting and Code Quality setup
+    reads remain per-repo REST calls, since GitHub exposes no GraphQL
+    equivalent. They are independent, so they are gathered together
     and the reads overlap (bounded by the client semaphore). Private
     vulnerability reporting is always probed, like every other signal, with the
     per-category toggle governing only whether the resulting table renders; the
@@ -75,7 +88,7 @@ async def _posture_for_repo(repo: Repo, ctx: OrgCollectContext) -> RepoPosture:
         applicable_languages(graph.languages) if graph.languages is not None else None
     )
     security_updates, pvr, quality = await asyncio.gather(
-        ctx.client.automated_security_fixes(ctx.org, repo.name),
+        _security_updates(repo, ctx),
         ctx.client.private_vulnerability_reporting(ctx.org, repo.name),
         _code_quality_setup(repo, ctx, quality_languages),
     )

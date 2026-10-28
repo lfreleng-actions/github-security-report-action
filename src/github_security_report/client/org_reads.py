@@ -23,12 +23,13 @@ from github_security_report.authors import (
 )
 from github_security_report.client.alerts import AlertReads
 from github_security_report.client.batch_errors import _alias_errors, _batch_response
-from github_security_report.client.parsers import _parse_iso, _parse_repo_node
+from github_security_report.client.parsers import _parse_repo_node
 from github_security_report.client.queries import (
     _ORG_MEMBERS_QUERY,
     _REPO_GRAPH_FRAGMENT,
     _VIEWER_QUERY,
 )
+from github_security_report.client.repo_parser import _parse_repo
 from github_security_report.models import Repo, RepoGraphData
 
 log = logging.getLogger(__name__)
@@ -86,23 +87,7 @@ class OrgReadClient(AlertReads):
             if raw.get("disabled") or raw.get("size", 0) == 0:
                 log.info("skipping %s: disabled or empty", raw.get("full_name"))
                 continue
-            repos.append(
-                Repo(
-                    name=raw["name"],
-                    full_name=raw["full_name"],
-                    html_url=raw["html_url"],
-                    archived=raw.get("archived", False),
-                    fork=raw.get("fork", False),
-                    is_template=raw.get("is_template", False),
-                    private=raw.get("private", False),
-                    # Every per-branch read (the CodeQL analyses, the head it
-                    # is measured against) follows this, so a repository whose
-                    # default branch is not "main" must not inherit that
-                    # default from the model.
-                    default_branch=raw.get("default_branch") or "main",
-                    created_at=_parse_iso(raw.get("created_at")),
-                )
-            )
+            repos.append(_parse_repo(raw))
         return status, repos
 
     # ------------------------------------------------------------------ #
