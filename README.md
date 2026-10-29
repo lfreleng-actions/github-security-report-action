@@ -132,6 +132,43 @@ tables (org mode):
   `python 30/32 · go 5/5 · javascript-typescript 10/12`. See
   [ADR-0006](docs/adr/0006-github-code-quality.md); hide it with the
   `code_quality` render toggle.
+- **Workflow Failures** — repositories whose GitHub Actions workflows failed
+  in the window, ranked by failed runs. The motivating case is the bulk
+  Dependabot merge whose integration tests need credentials, so they run
+  only once merged and never fail on the pull request; the table exists to
+  show which workflows fail, how often, and (in the detail table) whether a
+  pull request could have caught them. Each row gives **Failed** (runs that
+  concluded `failure`, `startup_failure`, `timed_out` or `action_required`),
+  **Runs** (every concluded run of every workflow in the repository),
+  **Fail %** (failed over failed *plus passed*, so skips never dilute it),
+  **Skipped** (skipped, cancelled, neutral and stale runs — a cancelled run
+  reached no verdict, and a bulk-merge round cancels hundreds of superseded
+  ones), **Retried** (runs that passed on a later attempt, a direct sign of
+  flakiness), **Workflows** (how many distinct workflows failed) and **Worst
+  workflow** (the one with the most failures, linked to its run history).
+  GitHub-managed workflows with no file in the repository to fix (Dependabot
+  updates, default-setup CodeQL, Copilot review) are left out unless
+  `workflow_runs.include_dynamic` is set. There is one table per time
+  window: seven days on the terminal and in Slack, and 7, 30 and 90 days on
+  GitHub Pages, where the later windows nest beneath the first. A repository
+  whose run listing could not be read this run (a token without Actions
+  read, a `5xx`) counts as **Unreadable**, never as failure-free, and a
+  footer note says when a window reaches further back than the stored
+  history does. The run history behind the table lives in a per-user
+  **run store**, so the first report against an organisation backfills the
+  longest window once and every later one asks GitHub only for what is new
+  — an unchanged repository costs a single conditional request that GitHub
+  answers `304` and does not charge. See
+  [Workflow run windows and store](#workflow-run-windows-and-store) and
+  [ADR-0007](docs/adr/0007-workflow-failures.md); hide it with the
+  `workflow_failures` render toggle. A per-workflow **detail** table
+  (`workflow_failures_detail`: workflow, file, failing job linked to its
+  newest log, pattern *persistent*/*intermittent*/*insufficient*, failing
+  triggers, and a **Reading** of *post-merge only*, *no PR runs*,
+  *everywhere* or *other*) is collected on every run but rendered nowhere
+  until `categories.workflow_failures_detail.enabled: true`; it stays off
+  Slack even then, being too wide for a chat digest, and is absent from
+  `report.json` while disabled.
 
 The four enablement categories count the repositories with and without the
 feature (plus any whose state could not be read), and by default name whichever
@@ -207,7 +244,7 @@ organisation and **Repository access** set to *All repositories*, then grant:
 | Secret scanning alerts | Open secret-scanning alerts, across every GitHub pattern category |
 | Issues | Open issues and their labels (GitHub Issues table) |
 | Administration | Dependabot enablement + security-updates status, and effective branch rules. *Optional* **write** reads the Code Quality setup, which GitHub gates behind write |
-| Actions | Workflow state behind a stale CodeQL configuration |
+| Actions | Workflow state behind a stale CodeQL configuration, and the workflow run history behind the Workflow Failures tables (the run listing, single-run re-reads, and the GraphQL read of a failed run's check suite) |
 
 **Organization permissions:**
 
@@ -227,7 +264,7 @@ organisations. Grant these scopes:
 
 | Scope | Used for |
 | ----- | -------- |
-| `repo` | Repository data, including private repositories |
+| `repo` | Repository data, including private repositories, and the workflow run history behind the Workflow Failures tables |
 | `security_events` | Code scanning, secret scanning, and Dependabot alerts (org-bulk and per-repo) |
 | `read:org` | Listing organisation repositories, and GitHub's secret-scanning pattern inventory (see below) |
 | `admin:org` | *Optional* — reading organisation rulesets for ruleset-based tool coverage. GitHub gates `GET /orgs/{org}/rulesets` behind the full `admin:org` scope; `read:org` and `write:org` return 404. Omit it to skip that one signal; everything else is unaffected. |
@@ -333,6 +370,9 @@ environment-variable name, never embedded.
     "issue_age_error_days": 60,
     "graph_batch": 10,
     "concurrency": 9,
+    "workflow_runs": {
+      "windows": { "cli": [7], "report": [7, 30, 90], "slack": [7] }
+    },
     "order": { "style": "auto" }
   },
   "organizations": [
@@ -449,7 +489,8 @@ Pages output. The valid category keys are: `codeql`,
 `dependabot_alerts_enabled`, `dependabot_updates_enabled`,
 `dependabot_cooldown`, `releases`, `mutable_releases`,
 `private_vulnerability_reporting`, `auto_merge`, `code_quality`,
-`github_issues`, `pull_requests`, `pull_requests_assigned`. Like the other
+`workflow_failures`, `workflow_failures_detail`, `github_issues`,
+`pull_requests`, `pull_requests_assigned`. Like the other
 `report` settings, `categories` can be set globally and overridden per
 organisation (overrides merge key-by-key, so flipping one output leaves the
 rest untouched). The
@@ -727,6 +768,8 @@ cooldown) are not independently placeable. They render beneath the Dependabot
 Alerts signal on every surface and travel with it, since three near-identical
 headings adrift in the report would not say which signal they qualified.
 Naming one in an ordering list is rejected rather than accepted and ignored.
+The later windows of the Workflow Failures tables (30 and 90 days on GitHub
+Pages) nest beneath the 7-day table in the same way and share its position.
 
 ### GitHub Issues
 
@@ -1437,6 +1480,139 @@ bill. Nothing of this line reaches the rendered report or the step summary.
 > As with `graph_batch`, an empty input is not passed to the tool, so set
 > `GSR_CONCURRENCY` only once the pinned release supports `--concurrency`.
 
+### Workflow run windows and store
+
+The Workflow Failures tables are the one part of the report built from
+history rather than from a repository's current state, so they have their
+own block, `report.workflow_runs`, settable globally or per organisation
+like every other `report` key. Every key with its default:
+
+```json
+{
+  "report": {
+    "workflow_runs": {
+      "windows": { "cli": [7], "report": [7, 30, 90], "slack": [7] },
+      "retention_days": 90,
+      "backfill_days": 90,
+      "include_dynamic": false,
+      "exclude_workflows": [],
+      "collapse_matrix": true,
+      "persistent_threshold": 0.9,
+      "min_runs": 3,
+      "cache": true
+    }
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
+
+`windows` maps each surface to the windows it shows, in days: `cli` is the
+terminal, `report` the GitHub Pages Markdown and HTML, and `slack` the
+digest. The terminal and Slack get the week; the published report adds the
+month and the quarter, where a reader has room to compare them. A table is
+built for every window any surface names, titled with its window (`Workflow
+Failures (30 days)`), and each surface draws its own. The map merges **per
+surface**, so an organisation that narrows the Slack windows keeps the
+inherited `report` ones; a list replaces the inherited list for that surface
+rather than adding to it.
+
+`retention_days` is how long the run store keeps a record and
+`backfill_days` how far back a repository never seen before is read. Both
+default to the **longest configured window** (90 days with the default
+windows), which is the most any table can use; `backfill_days` is bounded by
+the retention. A `retention_days` shorter than the longest window is
+**rejected** at load time rather than accepted: the store would prune
+records a table still shows, and the window would quietly cover less than
+its title claims.
+
+`include_dynamic` admits the GitHub-managed workflows (Dependabot updates,
+default-setup CodeQL, Copilot review), whose runs carry a `dynamic/` path
+and no file in the repository; they are left out by default because nobody
+can edit them. `exclude_workflows` is a list of globs matched against the
+workflow path (`.github/workflows/experimental-*.yaml`) for workflows whose
+failures are expected, such as a deliberately failing canary.
+`collapse_matrix` folds matrix legs (`Build (ubuntu-22.04)` and
+`Build (ubuntu-24.04)`) into one job name in the detail table.
+`persistent_threshold` and `min_runs` feed the detail table's **Pattern**
+column: a workflow failing at or above the threshold is *persistent* (fix
+the root cause), below it *intermittent* (harden the workflow), and with
+fewer than `min_runs` runs that reached a verdict *insufficient* to say. Both
+judge the same pass-or-fail population that Fail % does, so skips count
+towards neither.
+
+`cache` and `cache_dir` govern the **run store**, a SQLite file per
+organisation at
+
+```text
+$XDG_CACHE_HOME/github-security-report/<api-host>/<org>/runs.sqlite
+# or, when XDG_CACHE_HOME is unset:
+~/.cache/github-security-report/<api-host>/<org>/runs.sqlite
+```
+
+keyed by API host as well as organisation, since the same name can exist on
+github.com and on an enterprise instance. The store is a cache, never a
+source of truth: everything in it can be rebuilt from GitHub, a schema
+change between releases drops and recreates it rather than migrating it,
+and deleting the file costs exactly one backfill. `cache: false` keeps the
+store in memory for the run alone, so every window is re-read from GitHub
+and nothing is left behind; `cache_dir` relocates it.
+
+Four flags adjust this for one run, each mirrored as an action input:
+
+<!-- markdownlint-disable MD013 -->
+
+| Flag | Input | Effect |
+| ---- | ----- | ------ |
+| `--run-windows 7,30,90` | `run_windows` | Replaces the windows of **every** surface with one list, the shape a one-off investigation wants ("show me 14 days") |
+| `--no-run-cache` | `no_run_cache` | Keeps the store in memory for this run (`cache: false`) |
+| `--run-cache-dir PATH` | `run_cache_dir` | Relocates the store (`cache_dir`) |
+| `--refresh-runs` | `refresh_runs` | Ignores what the store holds and re-reads every repository for the longest window, at the cost of one backfill |
+
+<!-- markdownlint-enable MD013 -->
+
+Repo mode reads one repository's runs afresh each time into an in-memory
+store, and reads the `cli` windows alone (a week, by default) rather than the
+published report's quarter: a pull request's CI or a developer's shell should
+leave nothing behind, and a 90-day backfill for one table nobody publishes
+from that mode would be waste. `--run-windows` applies there; the three store
+flags are refused rather than accepted and ignored.
+
+In GitHub Actions the runner's home directory is discarded with the job, so
+the bundled `reporting.yaml` restores `~/.cache/github-security-report` with
+`actions/cache/restore` before the report and saves it with
+`actions/cache/save` afterwards, under a key unique to the run
+(`gsr-runs-${{ github.run_id }}`) with a `gsr-runs-` restore prefix that
+picks up the newest earlier store. A daily schedule keeps the entry inside
+GitHub's seven-day cache eviction. The save runs whatever the report step's
+outcome, because the store is written in transactions: a run that aborted
+part-way still leaves it consistent, and the repositories it did sync need
+not be re-read. A caller's own workflow needs the same two steps, or every
+scheduled run pays the backfill.
+
+The point of the store is that repeated runs are nearly free. Each sync
+presents the listing's ETag, so an unchanged repository answers `304`, which
+GitHub does not count against the rate limit; a changed one is read newest
+first down to the last run already held. Re-runs keep their original
+timestamp and so never cross that watermark, which is why each sync also
+re-reads the window's failure list (conditionally, with its own ETag) when
+the listing moved and re-reads any stored failure missing from it — a run
+leaves that list when a retry passes, and the table's **Retried** column is
+built from exactly those. Runs stored while still in progress are re-read
+until they conclude, at most fifty single-run reads per repository per sync.
+The failing jobs of each failed run come from one GraphQL query per fifty
+runs, costing a point apiece.
+
+Measured on `lfreleng-actions`, warm runs in the same hour: the full report
+cost 1,830 requests, 1,558 core rate-limit points and 116 s before this
+work; 1,130 requests, 849 points and 95 s once the code-scanning and
+repository-feature probes were consolidated onto pages the run already
+read; and 1,136 requests, 838 points and 82 s once the collection phases
+overlapped. The run store adds about one request per repository to a warm
+run, mostly free `304`s. A cold 90-day backfill, the first run against an
+organisation or any run without the cache, is about 1,500 requests, once;
+`--refresh-runs` and deleting the store each cost the same again. The store
+is about 25 MB for a 140-repository organisation.
+
 ### Pass/fail severity cutoff
 
 The severity-ranked signals (CodeQL, Scorecard, Zizmor, aislop, Dependabot
@@ -1516,6 +1692,10 @@ and the Slack **bot token** is consumed by the workflow, not the CLI.
 | `hide` | No | `""` | Category keys to suppress on every output (space- or comma-separated). Overrides config, and is one-way: it cannot re-enable a disabled category |
 | `graph_batch` | No | `""` | Repositories per batched GraphQL prefetch query (minimum `1`; default: config, else `10`). Pass a repository or organisation variable such as `${{ vars.GSR_GRAPH_BATCH }}` to adjust it from settings. A batch that still fails is halved automatically, so this sets the starting size (see [GraphQL prefetch batch size](#graphql-prefetch-batch-size)) |
 | `concurrency` | No | `""` | Concurrent GitHub API requests per organisation (`1` to `32`; default: config, else `9`). Pass a repository or organisation variable such as `${{ vars.GSR_CONCURRENCY }}` to adjust it from settings (see [Client concurrency](#client-concurrency)) |
+| `run_windows` | No | `""` | Time windows, in days, for the Workflow Failures tables on every output (comma-separated, e.g. `7,30,90`; default: config, else `7` on the terminal and Slack and `7,30,90` on GitHub Pages; see [Workflow run windows and store](#workflow-run-windows-and-store)) |
+| `run_cache_dir` | No | `""` | Directory for the workflow-run store (default: `$XDG_CACHE_HOME/github-security-report`, i.e. `~/.cache/github-security-report` on a runner). Restore and save it with `actions/cache`, as the bundled `reporting.yaml` does, so each scheduled run reads only what is new |
+| `refresh_runs` | No | `false` | Re-read every repository's workflow runs for the longest window, ignoring what the run store already holds |
+| `no_run_cache` | No | `false` | Keep the workflow-run store in memory for this run instead of on disk, so every window is re-read from GitHub and nothing is left behind |
 | `tool_version` | No | `""` | Published PyPI version to install. Empty (the default) uses the Dependabot-managed pin in `.github/runtime-pin/requirements.txt`; set a specific version to override. Ignored on pull requests or when `use_local_source` is `true` (both run from source) |
 | `use_local_source` | No | `false` | Run from the checked-out source instead of PyPI (for testing unreleased code from any event) |
 
@@ -1542,6 +1722,12 @@ uvx github-security-report report
 # Or org mode locally with a PAT:
 uvx github-security-report report --org lfreleng-actions
 ```
+
+An org-mode run keeps its workflow-run store under
+`$XDG_CACHE_HOME/github-security-report` (`~/.cache/github-security-report`
+by default), so the first run against an organisation is slower than the
+rest; see [Workflow run windows and store](#workflow-run-windows-and-store).
+Repo mode leaves nothing behind.
 
 ### GitHub Enterprise Server
 

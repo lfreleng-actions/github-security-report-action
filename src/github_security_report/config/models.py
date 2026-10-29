@@ -128,10 +128,11 @@ _NO_SLACK = OutputToggles(cli=True, slack=False, markdown=True, html=True)
 # for one of these keeps the restricted surfaces rather than silently
 # publishing it everywhere.
 #
-# The Workflow Failures detail table is collected and published to report.json
-# but rendered nowhere by default: its shape (which jobs to list, how wide a
-# row may run) is still being settled against real data, and the per-repository
-# ranking carries the actionable headline meanwhile. Setting
+# The Workflow Failures detail table is collected but rendered nowhere by
+# default (and so, like any category no published surface shows, left out of
+# report.json): its shape (which jobs to list, how wide a row may run) is still
+# being settled against real data, and the per-repository ranking carries the
+# actionable headline meanwhile. Setting
 # `categories.workflow_failures_detail.enabled: true` switches it on.
 DEFAULT_CATEGORIES: Mapping[str, CategoryToggle] = MappingProxyType(
     {
