@@ -75,9 +75,11 @@ class RemediationClient(Protocol):
 
 # Outcome states. "would <verb>" is the dry-run preview; the past participle
 # and "FAILED" are the two terminal states after an apply; "refused" is a
-# target a guard stopped, in either mode, before anything was written.
+# target a guard stopped, in either mode, before anything was written;
+# "skipped" is a target reported for a person, which nothing ever acts on.
 _FAILED = "FAILED"
 _REFUSED = "refused"
+_SKIPPED = "skipped"
 
 # The past participle of each verb a remediator acts with.
 _DONE = {"enable": "enabled", "delete": "deleted", "re-enable": "re-enabled"}
@@ -93,7 +95,7 @@ class RepoOutcome:
     """
 
     name: str
-    action: str  # "would <verb>" | past participle | "FAILED" | "refused"
+    action: str  # "would <verb>" | past participle | "FAILED" | "refused" | "skipped"
     note: str = ""
     verb: str = "enable"
 
@@ -104,6 +106,10 @@ class RepoOutcome:
     @property
     def refused(self) -> bool:
         return self.action == _REFUSED
+
+    @property
+    def skipped(self) -> bool:
+        return self.action == _SKIPPED
 
 
 @dataclass(frozen=True)
@@ -138,6 +144,9 @@ class _Target:
     verb: str = "enable"
     # Set when the plan already knows this target must not be written.
     refusal: str | None = None
+    # Set, to the reason, when the target is only reported: no guard runs and
+    # nothing is written, in either mode.
+    skipped: str | None = None
     # The CodeQL cleanup's planned item; None for a feature toggle.
     cleanup: CleanupItem | None = None
     # Every category this run plans to delete in the same repository, so the

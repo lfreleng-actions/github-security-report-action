@@ -664,3 +664,27 @@ def test_membership_gap_follows_the_config_line() -> None:
 
 def test_complete_membership_prints_no_warning() -> None:
     assert "results incomplete" not in _render(_org([]))
+
+
+def test_render_remediation_lists_skipped_targets_with_their_cause() -> None:
+    results = [
+        remediate.CategoryRemediation(
+            category=category_meta(CategoryKey.CODEQL_STALE_CONFIGURATIONS),
+            outcomes=(
+                remediate.RepoOutcome("r: /language:go", "would delete", "", "delete"),
+                remediate.RepoOutcome(
+                    "r: /language:c-cpp",
+                    "skipped",
+                    "Workflow active, not uploading",
+                    "skip",
+                ),
+            ),
+        )
+    ]
+    console = Console(record=True, width=200, no_color=True)
+    terminal.render_remediation("o", results, console, apply=False)
+    out = console.export_text()
+    assert "1 would delete: r: /language:go" in out
+    assert "r: /language:c-cpp skipped: Workflow active, not uploading" in out
+    assert "would skip" not in out
+    assert "1 to delete (dry run), 1 skipped." in out

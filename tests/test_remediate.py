@@ -562,3 +562,39 @@ async def test_cleanup_without_collected_codeql_data_has_nothing_to_do() -> None
         apply=True,
     )
     assert result.outcomes == ()
+
+
+async def test_cleanup_lists_the_configurations_it_leaves_with_their_cause() -> None:
+    # A configuration remediate will not touch is still named, with the
+    # cause the Stale Configurations table gives it, so an operator can see
+    # what remains for a person. Listing it writes and reads nothing.
+    idle = CodeQLFacts(
+        repo=_repo("idle"),
+        configurations=(_cq("python", _WORKFLOW_KEY, 60, 7),),
+        head_committed_at=_HEAD,
+        default_setup=DefaultSetup(configured=False, languages=frozenset({"python"})),
+        workflow_states=MappingProxyType({".github/workflows/codeql.yml": "active"}),
+    )
+    report = _cleanup_report()
+    health = report.codeql_health
+    assert health is not None
+    report.codeql_health = CodeQLHealth(
+        facts=(*health.facts, idle), stale_days=health.stale_days
+    )
+    client = FakeClient()
+    (result,) = await remediate.remediate_org(
+        client,
+        report,
+        categories=[CategoryKey.CODEQL_STALE_CONFIGURATIONS],
+        apply=True,
+    )
+    skipped = [(o.name, o.action, o.note) for o in result.outcomes if o.skipped]
+    assert skipped == [
+        (
+            f"idle: {_WORKFLOW_KEY}/build-mode:none/language:python",
+            "skipped",
+            "Workflow active, not uploading",
+        )
+    ]
+    assert result.failures == 0
+    assert not any(detail.startswith("idle") for _, _, detail in client.calls)

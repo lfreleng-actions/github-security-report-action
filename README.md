@@ -1961,7 +1961,7 @@ cause:
 | ----- | ------ |
 | Default setup disabled; workflow removed; superseded by default setup; superseded within its workflow; language removed from default setup | **Delete** the configuration: it can never upload again |
 | Workflow disabled after inactivity | **Re-enable** the workflow, restoring the scan |
-| Analyses failing, default setup changing state or not uploading, uploaded outside GitHub Actions, workflow disabled by hand, active but not uploading, or state unreadable | Reported only; needs a person |
+| Analyses failing, default setup changing state or not uploading, uploaded outside GitHub Actions, workflow disabled by hand, active but not uploading, or state unreadable | Listed as skipped, with its cause; needs a person |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -1980,15 +1980,16 @@ when:
   blocks nothing;
 - the repository's open alerts cannot be read.
 
-Refusals are listed beside the work done and do not fail the run. Deletion is
-paced at one request a second across the whole run, as GitHub asks of
-mutating requests, and is resumable: an interrupted run's next pass picks up
-the remaining analyses. GitHub answers requests it will not authorise with
-`404`, so a deletion's `404` counts as already done only once the analysis
-also reads back as gone; a token that may not delete fails instead of
-reporting a cleanup that never happened. The token needs the classic `repo`
-scope. See [ADR-0005](docs/adr/0005-codeql-configuration-cleanup.md) for the
-reasoning.
+Refusals are listed beside the work done and do not fail the run. So is every
+row left for a person: each is listed as skipped, with its cause, so an
+operator can see what remains. Deletion is paced at one request a second
+across the whole run, as GitHub asks of mutating requests, and is resumable:
+an interrupted run's next pass picks up the remaining analyses. GitHub answers
+requests it will not authorise with `404`, so a deletion's `404` counts as
+already done only once the analysis also reads back as gone; a token that may
+not delete fails instead of reporting a cleanup that never happened. The token
+needs the classic `repo` scope. See
+[ADR-0005](docs/adr/0005-codeql-configuration-cleanup.md) for the reasoning.
 
 ## Bulk Remediation Scripts
 

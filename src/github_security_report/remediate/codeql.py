@@ -6,12 +6,18 @@ Targets come from the report's own collected facts, planned by
 :func:`github_security_report.codeql.plan_cleanup`; a pre-write check refuses
 any deletion that could close an open alert, judged across the repository's
 whole planned deletion set; the write deletes a configuration's analyses or
-re-enables its workflow.
+re-enables its workflow. Every stale configuration it leaves alone is listed
+as skipped, with its cause, so an operator sees what remains.
 """
 
 from __future__ import annotations
 
-from github_security_report.codeql import CleanupAction, CleanupItem, plan_cleanup
+from github_security_report.codeql import (
+    CleanupAction,
+    CleanupItem,
+    plan_cleanup,
+    skipped_configurations,
+)
 from github_security_report.remediate.model import (
     RemediationClient,
     _AlertHolders,
@@ -21,7 +27,11 @@ from github_security_report.report import OrgReport
 
 
 def _cleanup_targets(report: OrgReport) -> list[_Target]:
-    """One target per stale configuration with a safe fix, from the report."""
+    """One target per stale configuration, from the report.
+
+    A configuration with a safe fix becomes work; every other one becomes a
+    skipped target carrying its cause, which is reported and never written.
+    """
     health = report.codeql_health
     if health is None:
         return []
@@ -31,7 +41,7 @@ def _cleanup_targets(report: OrgReport) -> list[_Target]:
         if item.action is CleanupAction.DELETE and item.refusal is None:
             batches.setdefault(item.repo.name, set()).add(item.config.category)
     shared: dict[str, _AlertHolders] = {}
-    return [
+    work = [
         _Target(
             item.repo,
             item.label,
@@ -43,6 +53,17 @@ def _cleanup_targets(report: OrgReport) -> list[_Target]:
         )
         for item in items
     ]
+    skipped = [
+        _Target(
+            item.repo,
+            item.label,
+            verb=item.action.value,
+            skipped=item.cause.value,
+            cleanup=item,
+        )
+        for item in skipped_configurations(health.facts, stale_days=health.stale_days)
+    ]
+    return work + skipped
 
 
 def _planned(target: _Target) -> CleanupItem:

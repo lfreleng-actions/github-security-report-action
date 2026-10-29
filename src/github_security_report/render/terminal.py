@@ -349,9 +349,9 @@ def render_remediation(
 
     Mirrors the report's inline style rather than a table: each category names
     the repositories it would enable / enabled (honouring ``top_n``) and lists
-    any failures one per line with their diagnostic. Dry run prints a leading
-    notice; apply mode prints none (the writes finish before this renders), and
-    a trailing summary totals the work across categories.
+    refusals, skips and failures one per line with the reason. Dry run prints a
+    leading notice; apply mode prints none (the writes finish before this
+    renders), and a trailing summary totals the work across categories.
     """
     console.rule(f"[bold]Remediation: {escape(org)}[/bold]")
     render_config_path(console, config_path)
@@ -371,15 +371,18 @@ def render_remediation(
     planned: dict[str, int] = {}
     changed: dict[str, int] = {}
     failed = 0
-    refused = 0
+    withheld: dict[str, int] = {}
     for result in results:
         console.print(f"[bold]{result.category.title}[/bold]")
         # Classify by run mode and each outcome's own flags rather than by the
         # action string, so the renderer owns no copy of the action vocabulary
         # defined in remediate.py.
         failures = [o for o in result.outcomes if o.failed]
-        refusals = [o for o in result.outcomes if o.refused]
-        succeeded = [o for o in result.outcomes if not (o.failed or o.refused)]
+        # Refused and skipped targets are withheld alike: named, with the reason.
+        held = [o for o in result.outcomes if o.refused or o.skipped]
+        succeeded = [
+            o for o in result.outcomes if not (o.failed or o.refused or o.skipped)
+        ]
         if not result.outcomes:
             console.print("  [green]Nothing to remediate[/green]")
         # One line per verb, in the order the verbs first appear: a category
@@ -397,11 +400,13 @@ def render_remediation(
                     f"  [yellow]→[/yellow] {len(group)} would {escape(verb)}: "
                     f"{escape(names)}"
                 )
-        for outcome in refusals:
+        for outcome in held:
             console.print(
                 f"  [yellow]{SUMMARY_EMOJI['unknown']}[/yellow] "
-                f"{escape(outcome.name)} refused: {escape(outcome.note)}"
+                f"{escape(outcome.name)} {escape(outcome.action)}: "
+                f"{escape(outcome.note)}"
             )
+            withheld[outcome.action] = withheld.get(outcome.action, 0) + 1
         for outcome in failures:
             detail = f": {escape(outcome.note)}" if outcome.note else ""
             console.print(
@@ -413,18 +418,17 @@ def render_remediation(
             label = outcome.action if apply else outcome.verb
             tally[label] = tally.get(label, 0) + 1
         failed += len(failures)
-        refused += len(refusals)
         console.print()
 
-    refused_note = f", {refused} refused" if refused else ""
+    withheld_note = "".join(f", {n} {action}" for action, n in withheld.items())
     if apply:
         done = ", ".join(f"{n} {label}" for label, n in changed.items()) or "0 changed"
-        console.print(f"[bold]Summary:[/bold] {done}, {failed} failed{refused_note}.")
+        console.print(f"[bold]Summary:[/bold] {done}, {failed} failed{withheld_note}.")
     else:
         todo = (
             ", ".join(f"{n} to {verb}" for verb, n in planned.items()) or "no changes"
         )
         console.print(
-            f"[bold]Summary:[/bold] {todo} (dry run){refused_note}. "
+            f"[bold]Summary:[/bold] {todo} (dry run){withheld_note}. "
             "Re-run with [bold]--apply[/bold] to make changes."
         )

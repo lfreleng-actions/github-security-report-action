@@ -55,8 +55,9 @@ that **deletes**: a configuration's analyses, and with them its alert history.
    disabled it for inactivity; that restores the scan rather than discarding
    it. Every other cause (analyses failing, default setup changing state or
    not uploading, an upload from outside GitHub Actions, a workflow disabled
-   by hand, one active but not uploading, an unreadable state) is reported and
-   left for a person.
+   by hand, one active but not uploading, an unreadable state) is left for a
+   person, and `remediate` lists it as skipped, with its cause, beside the
+   deletions and refusals, so an operator sees what remains.
 
 3. **Guards refuse rather than fail.** A deletion is refused when:
    - no current configuration scans its language, since the stale results are
@@ -104,8 +105,8 @@ that **deletes**: a configuration's analyses, and with them its alert history.
   fix is a workflow change in the repository, which `remediate` does not
   make; on default setup the API reports only the languages it is configured
   for, so a detected but unconfigured language is invisible to it.
-- `RepoOutcome` gains a per-outcome verb and a refused state, and remediators
-  may supply a pre-write check. Feature toggles keep their exact output.
+- `RepoOutcome` gains a per-outcome verb, a refused state and a skipped
+  state, and remediators may supply a pre-write check. Feature toggles keep their exact output.
 - Deleting a configuration removes its alert history. The guards above bound
   that to configurations whose results no longer describe the code, and to
   deletions that close no open alert: a deleted configuration may still have

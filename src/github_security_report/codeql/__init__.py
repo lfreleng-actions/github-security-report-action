@@ -15,6 +15,7 @@ from github_security_report.codeql.cleanup import (
     CleanupAction,
     CleanupItem,
     plan_cleanup,
+    skipped_configurations,
 )
 from github_security_report.codeql.facts import (
     CodeQLConfiguration,
@@ -46,5 +47,6 @@ __all__ = [
     "build_stale_configurations_table",
     "normalise_language",
     "plan_cleanup",
+    "skipped_configurations",
     "stale_cause",
 ]
