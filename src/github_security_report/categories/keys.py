@@ -41,6 +41,7 @@ class CategoryKey(str, Enum):
     GITHUB_ISSUES = "github_issues"
     PULL_REQUESTS = "pull_requests"
     PULL_REQUESTS_ASSIGNED = "pull_requests_assigned"
+    GITHUB_ISSUES_ASSIGNED = "github_issues_assigned"
 
 
 @dataclass(frozen=True)

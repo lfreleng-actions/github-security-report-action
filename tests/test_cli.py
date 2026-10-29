@@ -282,6 +282,15 @@ def _write_default_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pa
     return path
 
 
+def _lines(stdout: str) -> set[str]:
+    """Every printed line, stripped, so a section title can be matched whole.
+
+    "Assigned to Me" is also the tail of "Issues: Assigned to Me", so a
+    substring test cannot tell the two personal sections apart.
+    """
+    return {line.strip() for line in stdout.splitlines()}
+
+
 def _line_after(stdout: str, marker: str) -> str:
     """The line printed directly beneath the first line containing ``marker``."""
     lines = stdout.splitlines()
@@ -380,7 +389,7 @@ def test_hide_suppresses_a_category_the_config_enables() -> None:
     )
     shown = cli.invoke(app, ["report", "--config-data", data, "--no-color"])
     assert shown.exit_code == 0, shown.stdout
-    assert "Assigned to Me" in shown.stdout
+    assert "Assigned to Me" in _lines(shown.stdout)
 
     hidden = cli.invoke(
         app,
@@ -394,7 +403,7 @@ def test_hide_suppresses_a_category_the_config_enables() -> None:
         ],
     )
     assert hidden.exit_code == 0, hidden.stdout
-    assert "Assigned to Me" not in hidden.stdout
+    assert "Assigned to Me" not in _lines(hidden.stdout)
 
 
 @respx.mock
@@ -410,7 +419,7 @@ def test_hide_cannot_re_enable_a_disabled_category() -> None:
     )
     result = cli.invoke(app, ["report", "--config-data", data, "--no-color"])
     assert result.exit_code == 0, result.stdout
-    assert "Assigned to Me" not in result.stdout
+    assert "Assigned to Me" not in _lines(result.stdout)
 
 
 def test_unknown_hide_category_is_rejected() -> None:
@@ -1851,3 +1860,61 @@ def test_action_passes_the_concurrency_input_to_the_flag() -> None:
     )
     workflow = (root / ".github" / "workflows" / "reporting.yaml").read_text()
     assert 'concurrency: "${{ vars.GSR_CONCURRENCY }}"' in workflow
+
+
+def _issues_queue_run(tmp_path: Path, categories: dict, *extra: str) -> tuple:
+    """Run org ``o`` with ``categories`` configured; the output and report.json."""
+    _mock_org_o_r()
+    data = json.dumps(
+        {
+            "report": {"categories": categories},
+            "organizations": [{"name": "o", "token_env": "GITHUB_TOKEN"}],
+        }
+    )
+    result = cli.invoke(
+        app,
+        [
+            "report",
+            "--config-data",
+            data,
+            "--output-dir",
+            str(tmp_path),
+            "--no-color",
+            *extra,
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads((tmp_path / "o" / "report.json").read_text())
+    return result, payload
+
+
+@respx.mock
+def test_assigned_issues_default_to_the_terminal_only(tmp_path: Path) -> None:
+    result, payload = _issues_queue_run(tmp_path, {})
+    assert "Issues: Assigned to Me" in result.stdout
+    assert payload["assigned_issues"] is None
+    html = (tmp_path / "o" / "report.html").read_text()
+    assert "Issues: Assigned to Me" not in html
+    assert payload["issues"] is not None
+
+
+@respx.mock
+def test_assigned_issues_can_be_published_deliberately(tmp_path: Path) -> None:
+    _, payload = _issues_queue_run(
+        tmp_path, {"github_issues_assigned": {"outputs": {"html": True}}}
+    )
+    assert payload["assigned_issues"] is not None
+    assert "Issues: Assigned to Me" in (tmp_path / "o" / "report.html").read_text()
+
+
+@respx.mock
+def test_hide_suppresses_assigned_issues_everywhere(tmp_path: Path) -> None:
+    result, payload = _issues_queue_run(
+        tmp_path,
+        {"github_issues_assigned": {"outputs": {"html": True}}},
+        "--hide",
+        "github_issues_assigned",
+    )
+    assert "Issues: Assigned to Me" not in result.stdout
+    assert payload["assigned_issues"] is None
+    assert "Issues: Assigned to Me" not in (tmp_path / "o" / "report.html").read_text()

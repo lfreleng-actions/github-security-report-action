@@ -2264,7 +2264,7 @@ async def test_repo_graph_batch_malformed_issue_entries(client: GitHubClient) ->
     # The two dropped nodes came before any survivor, so the issue now at
     # entry 0 is only the oldest *readable* one -- its age is not the answer
     # the Oldest column asks for.
-    assert a.oldest_issue_unreadable is True
+    assert a.issue_gap == 0
 
 
 @respx.mock
@@ -2279,7 +2279,23 @@ async def test_repo_graph_batch_keeps_oldest_when_a_later_node_is_dropped(
     )
     out = await client.repo_graph_batch("o", ["a"])
 
-    assert out["a"].oldest_issue_unreadable is False
+    # The gap's position survives parsing, so a filtered table can tell
+    # whether it precedes its own first match.
+    assert out["a"].issue_gap == 1
+
+
+@respx.mock
+async def test_repo_graph_batch_records_no_gap_when_every_node_parses(
+    client: GitHubClient,
+) -> None:
+    node = _graph_repo_node()
+    node["issues"] = {"totalCount": 1, "nodes": [_issue_node(1, "only")]}
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": {"r0": node}})
+    )
+    out = await client.repo_graph_batch("o", ["a"])
+
+    assert out["a"].issue_gap is None
 
 
 @respx.mock
@@ -3961,3 +3977,38 @@ async def test_external_reads_do_not_hold_github_slots() -> None:
         finally:
             release.set()
             await external
+
+
+@respx.mock
+async def test_repo_graph_batch_parses_issue_assignees(client: GitHubClient) -> None:
+    # Lower-cased at the boundary, as for pull requests, so the Issues: Assigned
+    # to Me comparison never has to care which casing GitHub returned; an issue
+    # without the connection reads as nobody assigned.
+    node = _graph_repo_node()
+    assigned = _issue_node(1, "Assigned")
+    assigned["assignees"] = {"nodes": [{"login": "Alice"}, None, {"login": "BOB"}]}
+    node["issues"] = {"totalCount": 2, "nodes": [assigned, _issue_node(2, "Bare")]}
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(200, json={"data": {"r0": node}})
+    )
+    out = await client.repo_graph_batch("o", ["a"])
+    first, second = out["a"].issues
+    assert first.assignees == ("alice", "bob")
+    assert second.assignees == ()
+
+
+@respx.mock
+async def test_issue_window_requests_assignees(client: GitHubClient) -> None:
+    captured: list[str] = []
+
+    def _capture(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content)["query"])
+        return httpx.Response(200, json={"data": {"r0": _graph_repo_node()}})
+
+    respx.post(f"{API}/graphql").mock(side_effect=_capture)
+    await client.repo_graph_batch("o", ["a"])
+    query = captured[0]
+    issues_block = query[
+        query.index("issues(states: OPEN") : query.index("pullRequests(")
+    ]
+    assert f"assignees(first: {queries._ASSIGNEE_WINDOW})" in issues_block

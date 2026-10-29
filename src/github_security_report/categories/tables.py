@@ -333,4 +333,27 @@ TABLE_CATEGORIES: dict[CategoryKey, CategoryMeta] = {
             "omits this table rather than reporting an empty one."
         ),
     ),
+    CategoryKey.GITHUB_ISSUES_ASSIGNED: CategoryMeta(
+        key=CategoryKey.GITHUB_ISSUES_ASSIGNED,
+        title="Issues: Assigned to Me",
+        pass_label="None assigned",
+        pass_all_label="Clean",
+        fail_label="With assigned issues",
+        url="https://docs.github.com/en/issues",
+        description=(
+            "The GitHub Issues table narrowed to the issues assigned to the "
+            "account this report ran as, so it changes with the token used "
+            "rather than with any configured name. Columns carry the same "
+            "meaning as the GitHub Issues table, but every count, Total "
+            "included, covers only the oldest open issues the run collects "
+            "per repository: an issue assigned to the account beyond that "
+            "window, in a repository with a larger backlog, is not counted, "
+            "and such a repository with none of the account's issues inside "
+            "the window counts as unknown rather than clean. "
+            "A repository with open issues but none assigned to the account "
+            "is clean rather than a row of zeros; a run that authenticated "
+            "as a bot or App has no personal queue at all, and omits this "
+            "table rather than reporting an empty one."
+        ),
+    ),
 }

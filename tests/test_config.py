@@ -569,6 +569,13 @@ class TestCategoryToggles:
         for output in ("slack", "markdown", "html"):
             assert not rc.shows_category(CategoryKey.PULL_REQUESTS_ASSIGNED, output)
 
+    def test_assigned_issues_default_to_the_terminal_only(self) -> None:
+        rc = config.build_config(MINIMAL).report
+        key = CategoryKey.GITHUB_ISSUES_ASSIGNED
+        assert rc.shows_category(key, "cli")
+        for output in ("slack", "markdown", "html"):
+            assert not rc.shows_category(key, output)
+
     def test_the_shared_pull_requests_table_stays_published(self) -> None:
         # The restriction above is about one account's inbox, not about pull
         # requests. The organisation-wide table says nothing viewer-relative,

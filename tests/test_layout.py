@@ -82,6 +82,7 @@ def _report(
         (CategoryKey.MALWARE_ALERTS, "malware_alerts"),
         (CategoryKey.CODE_QUALITY, "code_quality"),
         (CategoryKey.GITHUB_ISSUES, "issues"),
+        (CategoryKey.GITHUB_ISSUES_ASSIGNED, "assigned_issues"),
         (CategoryKey.PULL_REQUESTS, "pull_requests"),
         (CategoryKey.PULL_REQUESTS_ASSIGNED, "assigned_pull_requests"),
     ):
@@ -154,6 +155,18 @@ class TestAutoBands:
         # collapses to: demoted priority, middle, demoted BAU.
         assert keys[: len(DEFAULT_PRIORITY)] == list(DEFAULT_PRIORITY)
         assert keys[-len(DEFAULT_BAU) :] == list(DEFAULT_BAU)
+
+    def test_assigned_issues_follow_github_issues_in_the_bau_band(self) -> None:
+        report = _report(
+            populated_tables={CategoryKey.GITHUB_ISSUES, CategoryKey.PULL_REQUESTS}
+        )
+        report.assigned_issues = _table(CategoryKey.GITHUB_ISSUES_ASSIGNED, rows=1)
+        keys = _resolved(report, OrderConfig())
+        assert keys[-3:] == [
+            CategoryKey.GITHUB_ISSUES,
+            CategoryKey.GITHUB_ISSUES_ASSIGNED,
+            CategoryKey.PULL_REQUESTS,
+        ]
 
     def test_populated_malware_alerts_sit_in_the_priority_band(self) -> None:
         report = _report(

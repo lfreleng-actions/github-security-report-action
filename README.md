@@ -507,7 +507,8 @@ Pages output. The valid category keys are: `codeql`,
 `dependabot_cooldown`, `releases`, `mutable_releases`,
 `private_vulnerability_reporting`, `auto_merge`, `malware_alerts`,
 `code_quality`, `workflow_failures`, `workflow_failures_detail`, `github_issues`,
-`pull_requests`, `pull_requests_assigned`. Like the other
+`github_issues_assigned`, `pull_requests`, `pull_requests_assigned`. Like the
+other
 `report` settings, `categories` can be set globally and overridden per
 organisation (overrides merge key-by-key, so flipping one output leaves the
 rest untouched). The
@@ -711,7 +712,7 @@ By default the report sorts its sections into three bands:
 | ---- | -------- | --- |
 | **Priority** | Secret Scanning, Dependabot: Malware Alerts, Dependabot: Security Alerts, CodeQL, Mutable Releases | Findings worth acting on today |
 | **Middle** | Everything else | Neither urgent nor constant |
-| **BAU** | OpenSSF Scorecard, GitHub Issues, Pull Requests, Assigned to Me | Carry data every run, so none of it is news |
+| **BAU** | OpenSSF Scorecard, GitHub Issues, Issues: Assigned to Me, Pull Requests, Assigned to Me | Carry data every run, so none of it is news |
 
 The bands are not fixed slots. **A band member with nothing to report moves
 into the middle**: a clean priority category is noise at the top of a page, and
@@ -1210,6 +1211,35 @@ name the category as well: `--hide` outranks this toggle and cannot be
 countermanded by it. The input is empty by default, so this only matters if you
 have set it.
 
+### Issues: Assigned to Me
+
+The `github_issues_assigned` category does the same for issues: the GitHub
+Issues table narrowed to the open issues assigned to the account the report ran
+as, with the same columns. Everything above applies unchanged: "mine" follows
+the token, not a configured name; a bot or App token leaves the section absent;
+and it is **terminal-only by default**, so publishing it takes the same
+deliberate opt-in:
+
+```json
+{
+  "report": {
+    "categories": {
+      "github_issues_assigned": { "outputs": { "html": true } }
+    }
+  },
+  "organizations": [{ "name": "lfreleng-actions" }]
+}
+```
+
+The table reads the same window of each repository's oldest 25 open issues as
+GitHub Issues, so an issue assigned to you beyond that window, in a repository
+with a larger backlog, is not counted. Total is therefore the count of your
+issues *within* the window rather than GitHub's exact total, and a repository
+whose backlog exceeds the window with none of yours inside it counts as unknown
+rather than clean. `Oldest` reads `unknown` when an issue the run could not read
+precedes your oldest one in the window, since the unread issue may be older and
+yours.
+
 ### Hiding a category for one run
 
 `--hide <category>` (repeatable) suppresses a category on **every** output for
@@ -1228,9 +1258,10 @@ The Action exposes the same control through a `hide` input:
 ```
 
 It is **empty by default**, and does not need setting to keep the personal
-queue out of shared artifacts — `pull_requests_assigned` already defaults to the
-terminal only, so Pages, Markdown and Slack never render it, and `report.json`
-omits it for the same reason (see below). Leaving the input empty also keeps the
+queues out of shared artifacts — `pull_requests_assigned` and
+`github_issues_assigned` already default to the terminal only, so Pages,
+Markdown and Slack never render them, and `report.json` omits them for the same
+reason (see below). Leaving the input empty also keeps the
 Action compatible with whichever published version the runtime pin installs: a
 non-empty default would be passed to releases predating the flag, which reject
 it outright.

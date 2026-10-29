@@ -112,12 +112,15 @@ _ISSUE_LABEL_WINDOW = 5
 # five-repository batch, adding this connection together with the head commit's
 # check rollup and the assignee list moved the query cost from 1 point to 4, and
 # adds no extra HTTP
-# request at all, since it rides a query the run already makes.
+# request at all, since it rides a query the run already makes. The issues'
+# assignee list, for the Issues: Assigned to Me table, adds one connection per
+# collected issue: 25 per repository, or 125 for a five-repository batch, which
+# GitHub's formula (connection requests / 100) puts at about one more point.
 _PULL_REQUEST_WINDOW = 25
 # GitHub caps an issue or pull request at 10 assignees, so this window is
 # exhaustive by construction: unlike the issue-label window, it can never
 # truncate, and the assignment breakdown is therefore exact for every collected
-# pull request.
+# issue and pull request.
 _ASSIGNEE_WINDOW = 10
 # Opinionated reviews inspected per pull request, to tell whose request for
 # changes is outstanding. ``reviewDecision`` says *that* changes are requested
@@ -199,6 +202,7 @@ fragment RepoData on Repository {{
       authorAssociation
       author {{ __typename login }}
       labels(first: {_ISSUE_LABEL_WINDOW}) {{ totalCount nodes {{ name }} }}
+      assignees(first: {_ASSIGNEE_WINDOW}) {{ nodes {{ login }} }}
     }}
   }}
   pullRequests(states: OPEN, first: {_PULL_REQUEST_WINDOW},

@@ -111,6 +111,9 @@ class OrgReport:
     # The GitHub Issues table (open issues per repository, split by label).
     # None in repo mode / when not collected.
     issues: TableSection | None = None
+    # The same table narrowed to the issues assigned to the running account.
+    # None in repo mode / when not collected.
+    assigned_issues: TableSection | None = None
     # The Pull Requests table (open pull requests per repository, split by
     # author and by what blocks them). None in repo mode / when not collected.
     pull_requests: TableSection | None = None
@@ -152,6 +155,7 @@ class OrgReport:
             self.code_quality,
             *(group[0] if group else None for group in self.windowed),
             self.issues,
+            self.assigned_issues,
             self.pull_requests,
             self.assigned_pull_requests,
         )

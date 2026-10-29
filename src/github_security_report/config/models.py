@@ -109,12 +109,12 @@ class CategoryToggle:
         return self.enabled and getattr(self.outputs, output)
 
 
-# Surfaces a personal, reader-specific category belongs on. "Assigned to Me"
-# is one account's review queue -- whichever account the run authenticated as --
-# so it belongs on that reader's own terminal and nowhere that is published. A
-# Pages site, a Markdown artifact and a Slack digest are all read by the whole
-# organisation, where one person's inbox is at best noise and at worst a
-# statement about an individual's workload.
+# Surfaces a personal, reader-specific category belongs on. The two "Assigned to
+# Me" tables are one account's queue -- whichever account the run authenticated
+# as -- so they belong on that reader's own terminal and nowhere that is
+# published. A Pages site, a Markdown artifact and a Slack digest are all read
+# by the whole organisation, where one person's inbox is at best noise and at
+# worst a statement about an individual's workload.
 _TERMINAL_ONLY = OutputToggles(cli=True, slack=False, markdown=False, html=False)
 
 # Surfaces for a table too wide and too long for a chat digest: the per-workflow
@@ -137,6 +137,9 @@ _NO_SLACK = OutputToggles(cli=True, slack=False, markdown=True, html=True)
 DEFAULT_CATEGORIES: Mapping[str, CategoryToggle] = MappingProxyType(
     {
         CategoryKey.PULL_REQUESTS_ASSIGNED.value: CategoryToggle(
+            outputs=_TERMINAL_ONLY
+        ),
+        CategoryKey.GITHUB_ISSUES_ASSIGNED.value: CategoryToggle(
             outputs=_TERMINAL_ONLY
         ),
         CategoryKey.WORKFLOW_FAILURES_DETAIL.value: CategoryToggle(

@@ -45,7 +45,7 @@ GRAPH_PREFETCH_IN_FLIGHT = 4
 class CollectExtras:
     """What an org-mode run collects beyond the signals and posture tables.
 
-    ``author_tables`` off skips the Issues, Pull Requests and Assigned to Me
+    ``author_tables`` off skips the Issues, Pull Requests and both Assigned to Me
     tables and the membership and viewer reads behind them; remediation acts
     on none of them. ``run_store`` is the workflow-run cache the Workflow
     Failures tables sync against, or ``None`` to leave them uncollected;
