@@ -3947,17 +3947,230 @@ def test_stats_summary_reads_as_one_line() -> None:
 
     stats = RequestStats(
         requests=1402,
-        by_status={200: 1402},
+        by_status={200: 1390, 304: 12},
         transport_retries=0,
         degraded_retries=0,
         bytes_received=int(41.3 * 1024 * 1024),
         points={"graphql": 64, "core": 822},
         elapsed=102.5,
+        rest_requests=1384,
+        graphql_requests=18,
+        rate_limit_events=1,
+        rate_limit_wait_seconds=41.0,
     )
+    assert stats.not_modified == 12
     assert stats.summary() == (
-        "1402 requests (0 retries), 822 core points, 64 graphql points, "
+        "1402 requests (REST 1384, GraphQL 18; 0 retries; 12 not modified), "
+        "822 core points, 64 graphql points, 1 rate-limit backoffs (41 s), "
         "41.3 MiB received, 102.5 s"
     )
+
+
+def test_stats_summary_names_external_requests_only_when_made() -> None:
+    from github_security_report.client import RequestStats
+
+    stats = RequestStats(requests=3, rest_requests=1, external_requests=2)
+    assert stats.summary().startswith("3 requests (REST 1, GraphQL 0, external 2;")
+
+
+def test_stats_low_budget_names_a_resource_under_a_tenth_of_its_limit() -> None:
+    from github_security_report.client import RequestStats
+
+    stats = RequestStats(
+        remaining={"core": 212, "graphql": 4000, "search": 1},
+        limits={"core": 5000, "graphql": 5000},
+    )
+    # ``search`` reported no limit, so it cannot be judged and is left out.
+    assert stats.low_budget() == {"core": 212}
+
+
+class _FakeClock:
+    """A monotonic clock that the stand-in for ``asyncio.sleep`` advances.
+
+    Patched over the transport's ``time`` module, so the seconds a backoff
+    reports waiting are the seconds the test let it sleep, in no real time.
+    """
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, delay: float) -> None:
+        self.now += delay
+
+
+class _RecordingSink:
+    """A sink that keeps every event, in order, for the assertions below."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[object, ...]] = []
+
+    def on_request(self, kind: str, in_flight: int) -> None:
+        self.events.append(("request", kind, in_flight))
+
+    def on_response(self, kind: str, status: int | None, in_flight: int) -> None:
+        self.events.append(("response", kind, status, in_flight))
+
+    def on_rate_limited(self, delay: float, resource: str | None) -> None:
+        self.events.append(("rate_limited", delay, resource))
+
+    def on_rate_limit_cleared(self) -> None:
+        self.events.append(("cleared",))
+
+
+@respx.mock
+async def test_sink_hears_each_request_with_its_kind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(transport_mod.asyncio, "sleep", _no_sleep)
+    respx.get(f"{API}/repos/o/a").mock(
+        return_value=httpx.Response(304, headers=_rate_headers("core", 10))
+    )
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(200, json={}, headers=_rate_headers("graphql", 5))
+    )
+    respx.get(f"{SCORECARD}/projects/github.com/o/a").mock(
+        side_effect=httpx.ConnectError("unreachable")
+    )
+    sink = _RecordingSink()
+    async with GitHubClient("t", progress=sink) as client:
+        await client._request("GET", f"{API}/repos/o/a")
+        await client._request("POST", f"{API}/graphql", json={"query": "q"})
+        await client.scorecard_score("o", "a")
+        stats = client.stats
+    assert sink.events[:4] == [
+        ("request", "rest", 1),
+        ("response", "rest", 304, 0),
+        ("request", "graphql", 1),
+        ("response", "graphql", 200, 0),
+    ]
+    # Every external attempt failed at the transport: issued, never answered.
+    assert sink.events[4:6] == [
+        ("request", "external", 1),
+        ("response", "external", None, 0),
+    ]
+    assert len(sink.events) == 4 + 2 * (API_MAX_RETRIES + 1)
+    assert (stats.rest_requests, stats.graphql_requests, stats.external_requests) == (
+        1,
+        1,
+        API_MAX_RETRIES + 1,
+    )
+    assert stats.not_modified == 1
+    assert dict(stats.remaining) == {"core": 4990, "graphql": 4995}
+
+
+@respx.mock
+async def test_sink_sees_the_in_flight_count_rise_and_fall() -> None:
+    release = asyncio.Event()
+
+    async def hold(_request: httpx.Request) -> httpx.Response:
+        await release.wait()
+        return httpx.Response(200)
+
+    respx.get(url__startswith=f"{API}/repos/o/").mock(side_effect=hold)
+    sink = _RecordingSink()
+    async with GitHubClient("t", concurrency=4, progress=sink) as client:
+        tasks = [
+            asyncio.create_task(client._request("GET", f"{API}/repos/o/{n}"))
+            for n in range(3)
+        ]
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert [e[2] for e in sink.events if e[0] == "request"] == [1, 2, 3]
+        release.set()
+        await asyncio.gather(*tasks)
+    landed = [int(e[3]) for e in sink.events if e[0] == "response"]  # type: ignore[call-overload]
+    assert sorted(landed) == [0, 1, 2]
+
+
+@respx.mock
+async def test_sink_hears_a_rate_limit_backoff_and_its_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _FakeClock()
+    monkeypatch.setattr(transport_mod, "time", clock)
+    monkeypatch.setattr(transport_mod.asyncio, "sleep", clock.sleep)
+    respx.get(f"{API}/repos/o/a").mock(
+        side_effect=[
+            httpx.Response(
+                403,
+                headers={"retry-after": "7", "x-ratelimit-resource": "core"},
+            ),
+            httpx.Response(502),
+            httpx.Response(200),
+        ]
+    )
+    sink = _RecordingSink()
+    async with GitHubClient("t", progress=sink) as client:
+        resp = await client._request("GET", f"{API}/repos/o/a")
+        stats = client.stats
+    assert resp.status_code == 200
+    events = [e for e in sink.events if e[0] in ("rate_limited", "cleared")]
+    # The 5xx retry is a backoff too, but not a rate limit: it is not reported.
+    assert events == [("rate_limited", 7.0, "core"), ("cleared",)]
+    assert stats.rate_limit_events == 1
+    assert stats.rate_limit_wait_seconds == 7.0
+    assert stats.degraded_retries == 2
+
+
+@respx.mock
+async def test_rate_limit_cleared_even_when_cancelled_mid_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parked = asyncio.Event()
+    clock = _FakeClock()
+
+    async def sleep_forever(_delay: float) -> None:
+        clock.now += 2.5  # how long the wait got before it was cut short
+        parked.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(transport_mod, "time", clock)
+    monkeypatch.setattr(transport_mod.asyncio, "sleep", sleep_forever)
+    respx.get(f"{API}/repos/o/a").mock(
+        side_effect=[httpx.Response(429, headers={"retry-after": "60"})]
+    )
+    sink = _RecordingSink()
+    async with GitHubClient("t", progress=sink) as client:
+        task = asyncio.create_task(client._request("GET", f"{API}/repos/o/a"))
+        await parked.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        stats = client.stats
+    assert sink.events[-2:] == [("rate_limited", 60.0, None), ("cleared",)]
+    # The backoff happened, but the seconds charged are the ones it waited,
+    # not the sixty it was told to wait.
+    assert stats.rate_limit_events == 1
+    assert stats.rate_limit_wait_seconds == 2.5
+
+
+@respx.mock
+async def test_external_429_is_retried_without_blaming_github(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A third-party API pushing back is retried on the shared schedule, but
+    # it is not GitHub rate limiting the run: the GitHub backoff counters and
+    # the sink's rate-limit events stay silent about it.
+    monkeypatch.setattr(transport_mod.asyncio, "sleep", _no_sleep)
+    respx.get(url__startswith=f"{SCORECARD}/projects/").mock(
+        side_effect=[
+            httpx.Response(429, headers={"retry-after": "30"}),
+            httpx.Response(404),
+        ]
+    )
+    sink = _RecordingSink()
+    async with GitHubClient("t", progress=sink) as client:
+        status, score = await client.scorecard_score("o", "a")
+        stats = client.stats
+    assert (status, score) == (404, None)
+    assert stats.degraded_retries == 1
+    assert stats.rate_limit_events == 0
+    assert stats.rate_limit_wait_seconds == 0.0
+    assert [e[0] for e in sink.events] == ["request", "response", "request", "response"]
+    assert {e[1] for e in sink.events} == {"external"}
 
 
 @respx.mock

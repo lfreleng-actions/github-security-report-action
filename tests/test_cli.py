@@ -1693,7 +1693,9 @@ class _RecordingClient:
 
     @property
     def stats(self) -> RequestStats:
-        return RequestStats(requests=3, by_status={200: 3}, elapsed=1.5)
+        return RequestStats(
+            requests=3, by_status={200: 3}, elapsed=1.5, rest_requests=3
+        )
 
 
 @pytest.fixture
@@ -1725,7 +1727,8 @@ def test_verbose_org_run_logs_the_request_accounting_once_per_org(
     assert result.exit_code == 0, result.stdout
     lines = [r.getMessage() for r in caplog.records if "GitHub API for" in r.message]
     assert lines == [
-        f"GitHub API for {org}: 3 requests (0 retries), 0.0 MiB received, 1.5 s"
+        f"GitHub API for {org}: 3 requests (REST 3, GraphQL 0; 0 retries; "
+        "0 not modified), 0 rate-limit backoffs (0 s), 0.0 MiB received, 1.5 s"
         for org in ("o", "p")
     ]
 
@@ -1754,7 +1757,8 @@ def test_verbose_org_run_logs_the_request_accounting_when_collection_aborts(
     lines = [r.getMessage() for r in caplog.records if "GitHub API for" in r.message]
     # Only the first organisation was reached before the abort.
     assert lines == [
-        "GitHub API for o: 3 requests (0 retries), 0.0 MiB received, 1.5 s"
+        "GitHub API for o: 3 requests (REST 3, GraphQL 0; 0 retries; "
+        "0 not modified), 0 rate-limit backoffs (0 s), 0.0 MiB received, 1.5 s"
     ]
 
 
