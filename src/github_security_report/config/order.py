@@ -35,11 +35,13 @@ class OrderStyle(str, Enum):
 
 
 # Findings worth acting on today, most urgent first: a leaked secret is live
-# credential exposure, a vulnerable dependency is exploitable now, a
-# code-scanning alert is a defect in code we own, and a mutable release is a
-# published artifact that can still change under its consumers.
+# credential exposure, a malicious dependency is a compromise already in the
+# tree, a vulnerable dependency is exploitable now, a code-scanning alert is a
+# defect in code we own, and a mutable release is a published artifact that
+# can still change under its consumers.
 DEFAULT_PRIORITY: tuple[CategoryKey, ...] = (
     CategoryKey.SECRET_SCANNING,
+    CategoryKey.MALWARE_ALERTS,
     CategoryKey.DEPENDABOT_ALERTS,
     CategoryKey.CODEQL,
     CategoryKey.MUTABLE_RELEASES,

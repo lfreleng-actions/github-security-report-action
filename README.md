@@ -112,6 +112,23 @@ tables (org mode):
   window a reviewed dependency update sits in while the vulnerability it fixes
   stays unpatched. Read from the batched GraphQL prefetch, so it costs no extra
   request; hide it with the `auto_merge` render toggle.
+- **Dependabot: Malware Alerts** — one row per open Dependabot alert whose
+  advisory GitHub classifies as
+  [malware](https://docs.github.com/en/code-security/concepts/supply-chain-security/malware-alerts)
+  rather than a vulnerability: a dependency to remove, not upgrade. Each row
+  names the package (linked to the alert), its ecosystem and manifest, the
+  severity and the alert's age, most severe and then oldest first. The alerts
+  come from the organisation-wide Dependabot sweep the alerts signal already
+  makes, so the table costs no extra request. The footer counts repositories:
+  a repository with Dependabot alerts off, or whose state could not be read,
+  cannot raise one and counts as **Alerts off or unreadable**, never clean.
+  When the sweep is incomplete, the malware it did return is still listed and
+  fails its repository; only the repositories with none in hand are unknown.
+  GitHub's API does not expose whether the malware alerts feature itself is
+  switched on, neither per repository nor in a code-security configuration,
+  so the table reports findings but not coverage, and `remediate` cannot
+  enable it. See [ADR-0008](docs/adr/0008-dependabot-malware-alerts.md); hide
+  it with the `malware_alerts` render toggle.
 - **Code Quality** — repositories where
   [GitHub Code Quality](https://docs.github.com/en/code-security/concepts/code-quality/code-quality)
   is **Disabled**, or **Partial**: configured, but without a language the
@@ -488,8 +505,8 @@ Pages output. The valid category keys are: `codeql`,
 `zizmor`, `aislop`, `dependabot_alerts`, `secret_scanning`,
 `dependabot_alerts_enabled`, `dependabot_updates_enabled`,
 `dependabot_cooldown`, `releases`, `mutable_releases`,
-`private_vulnerability_reporting`, `auto_merge`, `code_quality`,
-`workflow_failures`, `workflow_failures_detail`, `github_issues`,
+`private_vulnerability_reporting`, `auto_merge`, `malware_alerts`,
+`code_quality`, `workflow_failures`, `workflow_failures_detail`, `github_issues`,
 `pull_requests`, `pull_requests_assigned`. Like the other
 `report` settings, `categories` can be set globally and overridden per
 organisation (overrides merge key-by-key, so flipping one output leaves the
@@ -692,7 +709,7 @@ By default the report sorts its sections into three bands:
 
 | Band | Contains | Why |
 | ---- | -------- | --- |
-| **Priority** | Secret Scanning, Dependabot: Security Alerts, CodeQL, Mutable Releases | Findings worth acting on today |
+| **Priority** | Secret Scanning, Dependabot: Malware Alerts, Dependabot: Security Alerts, CodeQL, Mutable Releases | Findings worth acting on today |
 | **Middle** | Everything else | Neither urgent nor constant |
 | **BAU** | OpenSSF Scorecard, GitHub Issues, Pull Requests, Assigned to Me | Carry data every run, so none of it is news |
 
@@ -1849,7 +1866,10 @@ endpoint:
 | `codeql_stale_configurations` | Stale CodeQL cleanup (named only; deletes) |
 
 Qualitative findings (Scorecard, zizmor, open Dependabot alerts, cooldown,
-release freshness/mutability) are reported but not auto-remediated. Remediation
+release freshness/mutability) are reported but not auto-remediated. Dependabot
+malware alerts are not remediable either: GitHub exposes no API that reads or
+switches on the feature, so `remediate` leaves it out until one exists (see
+[ADR-0008](docs/adr/0008-dependabot-malware-alerts.md)). Remediation
 is organisation-scoped (`--scope org`, the default and only supported scope).
 
 The last two run **only when named** with `--category`, and the no-argument

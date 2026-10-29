@@ -220,6 +220,41 @@ def test_dependabot_and_releases_tables_rendered() -> None:
     assert any("Releases / Tagging" in t and "stale" in t for t in texts)
 
 
+def test_hostile_table_cell_stays_inside_its_code_fence() -> None:
+    # A manifest path is repository-controlled: a newline, a backtick run and
+    # a Slack mention must not close the fence or page the channel.
+    hostile = "a\n```\n<!channel> & <https://x|y>\n```b"
+    org = _org([], count=1)
+    org.malware_alerts = report.TableSection(
+        category=category_meta(CategoryKey.MALWARE_ALERTS),
+        columns=("Repository", "Package", "Ecosystem", "Manifest", "Severity", "Age"),
+        rows=[
+            report.TableRow(
+                repo=_repo("infected"),
+                cells=("evil", "npm", hostile, "critical", "1 day"),
+            )
+        ],
+        fail_count=1,
+    )
+    blocks = slack.render_org_blocks(org, top_n=10, pages_url=None)
+    text = next(
+        b["text"]["text"]
+        for b in blocks
+        if "Dependabot: Malware Alerts" in b.get("text", {}).get("text", "")
+    )
+    assert text.count("```") == 2  # only the table's own fence
+    fenced = text.split("```")[1].strip("\n").splitlines()
+    assert len(fenced) == 2  # the header and one row: no line break leaked
+    assert "<!channel>" not in text
+    assert "&lt;!channel&gt; &amp; &lt;https://x|y&gt;" in fenced[1]
+    # Escaping follows padding, so the columns after the cell still align.
+    header, row = (line.replace("&lt;", "<").replace("&gt;", ">") for line in fenced)
+    row = row.replace("&amp;", "&")
+    assert header.index("Severity") == row.index("critical")
+    # The value the report carries is untouched.
+    assert org.malware_alerts.rows[0].cells[2] == hostile
+
+
 def test_mutable_releases_block_shows_summary() -> None:
     org = _org([], count=84)
     org.mutable_releases = report.TableSection(

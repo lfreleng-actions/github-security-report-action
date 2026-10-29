@@ -14,6 +14,9 @@ The set of remediable categories is deliberately narrower than the report. Only
 categories that are a simple on/off feature with a documented enablement
 endpoint are here; qualitative findings (Scorecard, zizmor, open alerts,
 cooldown, release freshness/mutability) are reported but not auto-remediated.
+Dependabot malware alerts are excluded too: GitHub exposes no API that reads
+or sets whether they are switched on, so there is nothing to call until it
+does (ADR-0008).
 
 One category is destructive: stale CodeQL configurations are cleaned up by
 deleting their analyses (ADR-0005). It runs only when named explicitly, never

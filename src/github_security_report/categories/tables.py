@@ -170,6 +170,28 @@ TABLE_CATEGORIES: dict[CategoryKey, CategoryMeta] = {
             "vulnerability it fixes stays unpatched."
         ),
     ),
+    CategoryKey.MALWARE_ALERTS: CategoryMeta(
+        key=CategoryKey.MALWARE_ALERTS,
+        title="Dependabot: Malware Alerts",
+        pass_label="Clean",
+        fail_label="With malware alerts",
+        unknown_label="Alerts off or unreadable",
+        url=(
+            "https://docs.github.com/en/code-security/concepts/"
+            "supply-chain-security/malware-alerts"
+        ),
+        description=(
+            "Open Dependabot alerts for dependencies GitHub's Advisory "
+            "Database flags as malicious rather than merely vulnerable, one "
+            "row per alert. A malicious package warrants removal, not an "
+            "upgrade: there is rarely a safe version to move to, and its code "
+            "may already have run wherever it was installed. A repository with "
+            "Dependabot alerts off cannot raise one, so it counts as unknown "
+            "rather than clean. GitHub's API does not yet expose whether the "
+            "malware alerts feature is switched on, so this table shows "
+            "findings but not coverage."
+        ),
+    ),
     CategoryKey.CODE_QUALITY: CategoryMeta(
         key=CategoryKey.CODE_QUALITY,
         title="Code Quality",
