@@ -173,10 +173,11 @@ TABLE_CATEGORIES: dict[CategoryKey, CategoryMeta] = {
             "vulnerability it fixes stays unpatched."
         ),
     ),
-    CategoryKey.MALWARE_ALERTS: CategoryMeta(
-        key=CategoryKey.MALWARE_ALERTS,
-        title="Dependabot: Malware Alerts",
-        pass_label="Clean",
+    CategoryKey.MALWARE_FINDINGS: CategoryMeta(
+        key=CategoryKey.MALWARE_FINDINGS,
+        title="Dependabot: Malware Findings",
+        pass_label="No findings",
+        pass_all_label="Without findings",
         fail_label="With malware alerts",
         unknown_label="Alerts off or unreadable",
         url=(
@@ -190,9 +191,10 @@ TABLE_CATEGORIES: dict[CategoryKey, CategoryMeta] = {
             "upgrade: there is rarely a safe version to move to, and its code "
             "may already have run wherever it was installed. A repository with "
             "Dependabot alerts off cannot raise one, so it counts as unknown "
-            "rather than clean. GitHub's API does not yet expose whether the "
-            "malware alerts feature is switched on, so this table shows "
-            "findings but not coverage."
+            "rather than without findings. GitHub's API does not expose whether "
+            "the malware alerts feature is switched on, so a repository "
+            "without findings has no malicious package reported, which does "
+            "not confirm coverage: the feature may be off."
         ),
     ),
     CategoryKey.CODE_QUALITY: CategoryMeta(

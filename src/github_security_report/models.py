@@ -121,6 +121,9 @@ class Repo:
     # only when the listing left them out (``None``).
     secret_scanning: bool | None = None
     security_updates: bool | None = None
+    # Whether Dependabot malware alerts are on. GitHub's schema has no key for
+    # it yet, so this is always ``None`` today; nothing reads it (ADR-0008).
+    malware_alerts: bool | None = None
 
 
 @dataclass(frozen=True)

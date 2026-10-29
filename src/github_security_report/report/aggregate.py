@@ -90,10 +90,10 @@ class OrgReport:
     # The Auto-merge table: repositories where "Allow auto-merge" is switched
     # off. None in repo mode / when not collected.
     auto_merge: TableSection | None = None
-    # The Dependabot: Malware Alerts table: one row per open Dependabot alert
+    # The Dependabot: Malware Findings table: one row per open Dependabot alert
     # whose advisory is classified as malware. None in repo mode / when not
     # collected.
-    malware_alerts: TableSection | None = None
+    malware_findings: TableSection | None = None
     # The Code Quality table: repositories holding a language GitHub Code
     # Quality analyses with the feature off or partial. None in repo mode /
     # when not collected.
@@ -151,7 +151,7 @@ class OrgReport:
             self.mutable_releases,
             self.private_vulnerability_reporting,
             self.auto_merge,
-            self.malware_alerts,
+            self.malware_findings,
             self.code_quality,
             *(group[0] if group else None for group in self.windowed),
             self.issues,

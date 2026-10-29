@@ -48,4 +48,7 @@ def _parse_repo(raw: dict) -> Repo:
         created_at=_parse_iso(raw.get("created_at")),
         secret_scanning=_feature_status(raw, "secret_scanning"),
         security_updates=_feature_status(raw, "dependabot_security_updates"),
+        # The expected key, absent from GitHub's schema today (ADR-0008); when
+        # it appears under another name, only this string changes.
+        malware_alerts=_feature_status(raw, "dependabot_malware_alerts"),
     )

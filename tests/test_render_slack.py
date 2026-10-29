@@ -225,8 +225,8 @@ def test_hostile_table_cell_stays_inside_its_code_fence() -> None:
     # a Slack mention must not close the fence or page the channel.
     hostile = "a\n```\n<!channel> & <https://x|y>\n```b"
     org = _org([], count=1)
-    org.malware_alerts = report.TableSection(
-        category=category_meta(CategoryKey.MALWARE_ALERTS),
+    org.malware_findings = report.TableSection(
+        category=category_meta(CategoryKey.MALWARE_FINDINGS),
         columns=("Repository", "Package", "Ecosystem", "Manifest", "Severity", "Age"),
         rows=[
             report.TableRow(
@@ -240,7 +240,7 @@ def test_hostile_table_cell_stays_inside_its_code_fence() -> None:
     text = next(
         b["text"]["text"]
         for b in blocks
-        if "Dependabot: Malware Alerts" in b.get("text", {}).get("text", "")
+        if "Dependabot: Malware Findings" in b.get("text", {}).get("text", "")
     )
     assert text.count("```") == 2  # only the table's own fence
     fenced = text.split("```")[1].strip("\n").splitlines()
@@ -252,7 +252,7 @@ def test_hostile_table_cell_stays_inside_its_code_fence() -> None:
     row = row.replace("&amp;", "&")
     assert header.index("Severity") == row.index("critical")
     # The value the report carries is untouched.
-    assert org.malware_alerts.rows[0].cells[2] == hostile
+    assert org.malware_findings.rows[0].cells[2] == hostile
 
 
 def test_mutable_releases_block_shows_summary() -> None:

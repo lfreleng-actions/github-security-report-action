@@ -355,7 +355,7 @@ async def test_collect_org_degrades_failed_sweep_to_unknown() -> None:
     assert dependabot.unknown_count > 0
     # The malware table reads the same sweep and nothing came back, so it
     # asserts nothing clean either: every in-scope repository is unknown.
-    malware = report.malware_alerts
+    malware = report.malware_findings
     assert malware is not None
     assert malware.rows == []
     assert (malware.fail_count, malware.pass_count, malware.unknown_count) == (
@@ -390,7 +390,7 @@ async def test_collect_org_keeps_malware_from_a_partial_sweep() -> None:
     report = await collect.collect_org(
         PartialClient(), OrgConfig(name="o"), ReportConfig(), generated_at=WHEN
     )
-    malware = report.malware_alerts
+    malware = report.malware_findings
     assert malware is not None
     assert [(r.repo.name, r.cells[0]) for r in malware.rows] == [
         ("git-configure-action", "evil-pkg")
@@ -402,7 +402,7 @@ async def test_collect_org_keeps_malware_from_a_partial_sweep() -> None:
     )
 
 
-async def test_collect_org_attaches_malware_alerts_from_the_sweep() -> None:
+async def test_collect_org_attaches_malware_findings_from_the_sweep() -> None:
     # Malware alerts are filtered out of the Dependabot sweep the signal
     # already read; a general (vulnerability) alert is not malware.
     class MalwareClient(FakeClient):
@@ -434,9 +434,9 @@ async def test_collect_org_attaches_malware_alerts_from_the_sweep() -> None:
     report = await collect.collect_org(
         MalwareClient(), OrgConfig(name="o"), ReportConfig(), generated_at=WHEN
     )
-    malware = report.malware_alerts
+    malware = report.malware_findings
     assert malware is not None
-    assert malware.title == "Dependabot: Malware Alerts"
+    assert malware.title == "Dependabot: Malware Findings"
     assert [(r.repo.name, r.cells) for r in malware.rows] == [
         (
             "git-configure-action",
@@ -449,7 +449,7 @@ async def test_collect_org_attaches_malware_alerts_from_the_sweep() -> None:
         0,
     )
     # A populated malware table holds its priority-band slot.
-    assert report.section_order.index(CategoryKey.MALWARE_ALERTS) < (
+    assert report.section_order.index(CategoryKey.MALWARE_FINDINGS) < (
         report.section_order.index(CategoryKey.RELEASES)
     )
 
