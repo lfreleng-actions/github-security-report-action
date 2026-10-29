@@ -108,6 +108,24 @@ inputs:
     description: "Concurrent GitHub API requests per organisation (1-32; default: config, else 9). Pass a repository or organisation variable such as vars.GSR_CONCURRENCY to adjust it from settings"
     required: false
     default: ""
+  run_windows:
+    # Deliberately empty by default, for the same reason as `graph_batch`.
+    description: "Time windows, in days, for the Workflow Failures tables on every output (comma-separated, e.g. 7,30,90; default: config, else 7 on the terminal and Slack, 7,30,90 on GitHub Pages)"
+    required: false
+    default: ""
+  run_cache_dir:
+    # Deliberately empty by default, for the same reason as `graph_batch`.
+    description: "Directory for the workflow-run store the Workflow Failures tables sync against (default: $XDG_CACHE_HOME/github-security-report, i.e. ~/.cache/github-security-report on a runner). Restore and save it with actions/cache so each scheduled run reads only what is new; see .github/workflows/reporting.yaml"
+    required: false
+    default: ""
+  refresh_runs:
+    description: "Re-read every repository's workflow runs for the longest window, ignoring what the run store already holds"
+    required: false
+    default: "false"
+  no_run_cache:
+    description: "Keep the workflow-run store in memory for this run instead of on disk, so every window is re-read from GitHub and nothing is left behind"
+    required: false
+    default: "false"
   tool_version:
     description: "Published PyPI version to run; ignored on pull_request or when use_local_source is true (both run from the checked-out source). Empty (the default) uses the Dependabot-managed pin in .github/runtime-pin/requirements.txt"
     required: false
@@ -168,6 +186,10 @@ runs:
         INPUT_HIDE: ${{ inputs.hide }}
         INPUT_GRAPH_BATCH: ${{ inputs.graph_batch }}
         INPUT_CONCURRENCY: ${{ inputs.concurrency }}
+        INPUT_RUN_WINDOWS: ${{ inputs.run_windows }}
+        INPUT_RUN_CACHE_DIR: ${{ inputs.run_cache_dir }}
+        INPUT_REFRESH_RUNS: ${{ inputs.refresh_runs }}
+        INPUT_NO_RUN_CACHE: ${{ inputs.no_run_cache }}
         TOOL_VERSION: ${{ inputs.tool_version }}
         USE_LOCAL_SOURCE: ${{ inputs.use_local_source }}
         EVENT_NAME: ${{ github.event_name }}
@@ -260,6 +282,10 @@ runs:
         [ "$INPUT_FORCE_NOTIFY" = "true" ] && args+=(--force-notify)
         [ -n "$INPUT_GRAPH_BATCH" ] && args+=(--graph-batch "$INPUT_GRAPH_BATCH")
         [ -n "$INPUT_CONCURRENCY" ] && args+=(--concurrency "$INPUT_CONCURRENCY")
+        [ -n "$INPUT_RUN_WINDOWS" ] && args+=(--run-windows "$INPUT_RUN_WINDOWS")
+        [ -n "$INPUT_RUN_CACHE_DIR" ] && args+=(--run-cache-dir "$INPUT_RUN_CACHE_DIR")
+        [ "$INPUT_REFRESH_RUNS" = "true" ] && args+=(--refresh-runs)
+        [ "$INPUT_NO_RUN_CACHE" = "true" ] && args+=(--no-run-cache)
         # One --hide per category. Commas become spaces so either separator
         # works in a workflow, and the unquoted expansion is deliberate word
         # splitting; empty fields collapse, so a trailing separator cannot

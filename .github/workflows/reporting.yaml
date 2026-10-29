@@ -70,6 +70,23 @@ jobs:
           repo="${GITHUB_REPOSITORY##*/}"
           echo "url=https://${owner}.github.io/${repo}/" >> "$GITHUB_OUTPUT"
 
+      # The Workflow Failures tables sync each repository's GitHub Actions
+      # runs into a per-organisation store under this directory. With the
+      # store restored, a day's run costs one conditional request per
+      # repository (a free 304 when nothing changed); without it, every run
+      # is a 90-day backfill of ~1,500 requests. The key is unique per run
+      # so the save never collides, and the prefix restores the newest
+      # earlier one; a daily schedule keeps it inside the 7-day eviction.
+      - name: "Restore workflow-run store"
+        id: run-store
+        # yamllint disable-line rule:line-length
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/github-security-report
+          key: "gsr-runs-${{ github.run_id }}"
+          restore-keys: |
+            gsr-runs-
+
       - name: "Generate report"
         id: report
         uses: $/
@@ -101,6 +118,17 @@ jobs:
           concurrency: "${{ vars.GSR_CONCURRENCY }}"
           force_notify: "${{ inputs.force_notify || 'false' }}"
           use_local_source: "${{ inputs.use_local_source || 'false' }}"
+
+      # Saved whatever the report step's outcome: the store is written in
+      # transactions, so a run that aborted part-way still leaves it
+      # consistent, and the repositories it did sync need not be re-read.
+      - name: "Save workflow-run store"
+        if: always() && steps.run-store.outcome != 'skipped'
+        # yamllint disable-line rule:line-length
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/github-security-report
+          key: "gsr-runs-${{ github.run_id }}"
 
       - name: "Upload Pages artifact"
         # yamllint disable-line rule:line-length
