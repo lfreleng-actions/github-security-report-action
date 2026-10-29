@@ -115,7 +115,7 @@ tables (org mode):
   window a reviewed dependency update sits in while the vulnerability it fixes
   stays unpatched. Read from the batched GraphQL prefetch, so it costs no extra
   request; hide it with the `auto_merge` render toggle.
-- **Dependabot: Malware Alerts** — one row per open Dependabot alert whose
+- **Dependabot: Malware Findings** — one row per open Dependabot alert whose
   advisory GitHub classifies as
   [malware](https://docs.github.com/en/code-security/concepts/supply-chain-security/malware-alerts)
   rather than a vulnerability: a dependency to remove, not upgrade. Each row
@@ -124,14 +124,19 @@ tables (org mode):
   come from the organisation-wide Dependabot sweep the alerts signal already
   makes, so the table costs no extra request. The footer counts repositories:
   a repository with Dependabot alerts off, or whose state could not be read,
-  cannot raise one and counts as **Alerts off or unreadable**, never clean.
-  When the sweep is incomplete, the malware it did return is still listed and
-  fails its repository; only the repositories with none in hand are unknown.
-  GitHub's API does not expose whether the malware alerts feature itself is
-  switched on, neither per repository nor in a code-security configuration,
-  so the table reports findings but not coverage, and `remediate` cannot
-  enable it. See [ADR-0008](docs/adr/0008-dependabot-malware-alerts.md); hide
-  it with the `malware_alerts` render toggle.
+  cannot raise one and counts as **Alerts off or unreadable**, never as
+  **No findings**. When the sweep is incomplete, the malware it did return is
+  still listed and fails its repository; only the repositories with none in
+  hand are unknown. GitHub's API does not expose whether the malware alerts
+  feature itself is switched on, neither per repository nor in a code-security
+  configuration, so a repository without findings has no malicious package
+  reported, which does not confirm coverage: the feature may be off. The
+  footer says so on every surface, and `remediate` cannot enable it. To switch
+  it on for every repository now, create or edit a custom security
+  configuration in the organisation's settings with *Dependabot → Malware
+  alerts: Enabled* and apply it to all repositories. The report cannot verify
+  the result. See [ADR-0008](docs/adr/0008-dependabot-malware-alerts.md); hide
+  the table with the `malware_findings` render toggle.
 - **Code Quality** — repositories where
   [GitHub Code Quality](https://docs.github.com/en/code-security/concepts/code-quality/code-quality)
   is **Disabled**, or **Partial**: configured, but without a language the
@@ -508,7 +513,7 @@ Pages output. The valid category keys are: `codeql`,
 `zizmor`, `aislop`, `dependabot_alerts`, `secret_scanning`,
 `dependabot_alerts_enabled`, `dependabot_updates_enabled`,
 `dependabot_cooldown`, `releases`, `mutable_releases`,
-`private_vulnerability_reporting`, `auto_merge`, `malware_alerts`,
+`private_vulnerability_reporting`, `auto_merge`, `malware_findings`,
 `code_quality`, `workflow_failures`, `workflow_failures_detail`, `github_issues`,
 `github_issues_assigned`, `pull_requests`, `pull_requests_assigned`. Like the
 other
@@ -713,7 +718,7 @@ By default the report sorts its sections into three bands:
 
 | Band | Contains | Why |
 | ---- | -------- | --- |
-| **Priority** | Secret Scanning, Dependabot: Malware Alerts, Dependabot: Security Alerts, CodeQL, Mutable Releases | Findings worth acting on today |
+| **Priority** | Secret Scanning, Dependabot: Malware Findings, Dependabot: Security Alerts, CodeQL, Mutable Releases | Findings worth acting on today |
 | **Middle** | Everything else | Neither urgent nor constant |
 | **BAU** | OpenSSF Scorecard, GitHub Issues, Issues: Assigned to Me, Pull Requests, Assigned to Me | Carry data every run, so none of it is news |
 

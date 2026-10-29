@@ -34,7 +34,7 @@ class CategoryKey(str, Enum):
     MUTABLE_RELEASES = "mutable_releases"
     PRIVATE_VULNERABILITY_REPORTING = "private_vulnerability_reporting"
     AUTO_MERGE = "auto_merge"
-    MALWARE_ALERTS = "malware_alerts"
+    MALWARE_FINDINGS = "malware_findings"
     CODE_QUALITY = "code_quality"
     WORKFLOW_FAILURES = "workflow_failures"
     WORKFLOW_FAILURES_DETAIL = "workflow_failures_detail"

@@ -217,7 +217,7 @@ class TestPriorityDefaults:
     def test_priority_leads_with_the_most_urgent_findings(self) -> None:
         assert DEFAULT_PRIORITY == (
             CategoryKey.SECRET_SCANNING,
-            CategoryKey.MALWARE_ALERTS,
+            CategoryKey.MALWARE_FINDINGS,
             CategoryKey.DEPENDABOT_ALERTS,
             CategoryKey.CODEQL,
             CategoryKey.MUTABLE_RELEASES,

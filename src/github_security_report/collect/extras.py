@@ -235,7 +235,7 @@ async def attach_extra_tables(
     report.auto_merge = posture.build_auto_merge_table(postures)
     # Malware findings come from the Dependabot sweep already made for the
     # alerts signal, so this table costs no request of its own.
-    report.malware_alerts = malware.build_malware_alerts_table(
+    report.malware_findings = malware.build_malware_findings_table(
         in_scope,
         ctx.dependabot,
         {p.repo.name: p.dependabot_alerts for p in postures},

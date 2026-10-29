@@ -92,6 +92,7 @@ async def test_list_org_repos_reads_feature_states_when_listed(
                     "security_and_analysis": {
                         "secret_scanning": {"status": "enabled"},
                         "dependabot_security_updates": {"status": "disabled"},
+                        "dependabot_malware_alerts": {"status": "enabled"},
                     },
                 },
                 {"name": "mute", "full_name": "o/mute", "html_url": "u", "size": 1},
@@ -116,6 +117,11 @@ async def test_list_org_repos_reads_feature_states_when_listed(
         None,
     )
     assert by_name["odd"].secret_scanning is None
+    # The malware alerts key is absent from GitHub's schema today; parsed
+    # when present, None when not.
+    assert by_name["told"].malware_alerts is True
+    assert by_name["mute"].malware_alerts is None
+    assert by_name["odd"].malware_alerts is None
 
 
 @respx.mock

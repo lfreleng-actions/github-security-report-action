@@ -201,10 +201,10 @@ def test_org_mode_writes_pages(tmp_path: Path) -> None:
     # The malware table is collected on every org run and published even when
     # empty; with every priority member clean, it keeps its band order at the
     # top of the middle.
-    assert payload["malware_alerts"]["title"] == "Dependabot: Malware Alerts"
-    assert payload["malware_alerts"]["rows"] == []
+    assert payload["malware_findings"]["title"] == "Dependabot: Malware Findings"
+    assert payload["malware_findings"]["rows"] == []
     order = payload["section_order"]
-    assert order.index(CategoryKey.MALWARE_ALERTS.value) == (
+    assert order.index(CategoryKey.MALWARE_FINDINGS.value) == (
         order.index(CategoryKey.SECRET_SCANNING.value) + 1
     )
     # --slack-channel supplies the channel even though the config has none,
