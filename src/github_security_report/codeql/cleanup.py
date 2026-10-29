@@ -7,12 +7,15 @@ Stale Configurations table reports, so the plan acts on exactly the rows the
 reader was shown. Each stale configuration yields at most one item:
 
 - **Delete** an orphaned configuration: one that can never upload again (its
-  setup is gone, or blocked by default setup). Deleting removes its analyses
-  and with them the stale "results may be out of date" warning.
+  setup is gone, blocked by default setup, or replaced by another category
+  from the same workflow). Deleting removes its analyses and with them the
+  stale "results may be out of date" warning.
 - **Re-enable** the workflow behind a configuration that GitHub disabled for
   repository inactivity; that restores the scan rather than discarding it.
 
 Every other cause is left alone: it may yet resume, or it needs a person.
+:func:`skipped_configurations` names those, with their cause, so remediation
+can report what it leaves beside what it does.
 
 A deletion is *refused* while no current configuration scans its language.
 The stale results are then the only record of that language, and removing
@@ -45,6 +48,8 @@ class CleanupAction(str, Enum):
 
     DELETE = "delete"
     REENABLE_WORKFLOW = "re-enable"
+    # Reported only: the cause needs a person, so nothing is written.
+    SKIP = "skip"
 
 
 @dataclass(frozen=True)
@@ -93,7 +98,7 @@ def plan_cleanup(facts: Sequence[CodeQLFacts], *, stale_days: int) -> list[Clean
         )
         workflows_done: set[str | None] = set()
         for config in stale:
-            item = _plan_one(repo_facts, config, current)
+            item = _plan_one(repo_facts, config, current, stale_days)
             if item is None:
                 continue
             if item.action is CleanupAction.REENABLE_WORKFLOW:
@@ -104,10 +109,41 @@ def plan_cleanup(facts: Sequence[CodeQLFacts], *, stale_days: int) -> list[Clean
     return items
 
 
+def skipped_configurations(
+    facts: Sequence[CodeQLFacts], *, stale_days: int
+) -> list[CleanupItem]:
+    """The stale configurations cleanup leaves alone, each with its cause.
+
+    Everything :func:`plan_cleanup` neither deletes nor re-enables: the causes
+    that may yet resume or need a person to decide. A configuration covered by
+    a planned workflow re-enable is not skipped: the re-enable acts for it.
+    Unreadable repositories are left out, as the plan leaves them out; the
+    Stale Configurations table counts them as unknown. Ordered as the plan.
+    """
+    items: list[CleanupItem] = []
+    for repo_facts in sorted(facts, key=lambda f: f.repo.name):
+        if not repo_facts.readable:
+            continue
+        stale = sorted(
+            repo_facts.stale_configurations(stale_days),
+            key=lambda c: (c.scan_order, c.category),
+        )
+        for config in stale:
+            cause = stale_cause(config, repo_facts, stale_days=stale_days)
+            if not (cause.orphaned or cause.reenable_workflow):
+                items.append(
+                    CleanupItem(repo_facts.repo, config, cause, CleanupAction.SKIP)
+                )
+    return items
+
+
 def _plan_one(
-    facts: CodeQLFacts, config: CodeQLConfiguration, current: frozenset[str]
+    facts: CodeQLFacts,
+    config: CodeQLConfiguration,
+    current: frozenset[str],
+    stale_days: int,
 ) -> CleanupItem | None:
-    cause = stale_cause(config, facts)
+    cause = stale_cause(config, facts, stale_days=stale_days)
     if cause.reenable_workflow:
         return CleanupItem(facts.repo, config, cause, CleanupAction.REENABLE_WORKFLOW)
     if not cause.orphaned:

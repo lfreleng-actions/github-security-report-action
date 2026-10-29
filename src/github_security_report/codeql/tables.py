@@ -61,8 +61,33 @@ def _default_setup_cause(config: CodeQLConfiguration, facts: CodeQLFacts) -> Sta
     return StaleCause.DEFAULT_SETUP_IDLE
 
 
+def _superseded_in_workflow(
+    config: CodeQLConfiguration, facts: CodeQLFacts, stale_days: int
+) -> bool:
+    """Whether a current configuration from the same workflow replaced this one.
+
+    A workflow that keeps running after its job id or language matrix changes
+    uploads under new categories, and the old ones stop. Such a configuration
+    can never upload again, yet its workflow reads as active. It counts as
+    replaced only when a current configuration from the very same workflow
+    file scans its language and has scanned since: a sibling from another
+    workflow, or one as stale as this, proves nothing about this workflow.
+    """
+    head = facts.head_committed_at
+    if head is None or config.language is None:
+        return False
+    return any(
+        other.workflow_path == config.workflow_path
+        and other.category != config.category
+        and other.language == config.language
+        and other.scan_order > config.scan_order
+        and not other.is_stale(head, stale_days)
+        for other in facts.configurations
+    )
+
+
 def _advanced_setup_cause(
-    config: CodeQLConfiguration, facts: CodeQLFacts
+    config: CodeQLConfiguration, facts: CodeQLFacts, stale_days: int
 ) -> StaleCause:
     setup = facts.default_setup
     if setup is not None and setup.transitional:
@@ -85,6 +110,12 @@ def _advanced_setup_cause(
         # Actions (the CLI in another CI system, say), so there is no workflow
         # state to read and none to point the reader at.
         return StaleCause.EXTERNAL_UPLOADER
+    if (state == WORKFLOW_ACTIVE or disabled) and _superseded_in_workflow(
+        config, facts, stale_days
+    ):
+        # Running or not, the workflow no longer uploads under this category:
+        # re-enabling it would only feed the configuration that replaced it.
+        return StaleCause.SUPERSEDED_IN_WORKFLOW
     if state == WORKFLOW_DISABLED_INACTIVITY:
         # Re-enabling restores the scan only while default setup is off; if
         # its state is unknown it may be on, blocking the uploads anyway, so
@@ -99,17 +130,21 @@ def _advanced_setup_cause(
     return StaleCause.WORKFLOW_UNREADABLE
 
 
-def stale_cause(config: CodeQLConfiguration, facts: CodeQLFacts) -> StaleCause:
+def stale_cause(
+    config: CodeQLConfiguration, facts: CodeQLFacts, *, stale_days: int
+) -> StaleCause:
     """Why a stale configuration stopped scanning, as far as the API can tell.
 
     An errored newest attempt comes first: the setup still exists and still
     runs, so whatever its state, the reader's next step is its failing logs.
+    ``stale_days`` is the threshold the configuration was found stale by,
+    which also decides whether another configuration is current.
     """
     if config.failing:
         return StaleCause.ANALYSES_FAILING
     if config.setup is SetupType.DEFAULT:
         return _default_setup_cause(config, facts)
-    return _advanced_setup_cause(config, facts)
+    return _advanced_setup_cause(config, facts, stale_days)
 
 
 def build_stale_configurations_table(
@@ -150,7 +185,7 @@ def build_stale_configurations_table(
             )
             setup = _setup_cell(config)
             language = config.language or "unknown"
-            cause = stale_cause(config, repo_facts).value
+            cause = stale_cause(config, repo_facts, stale_days=stale_days).value
             rows.append(
                 TableRow(
                     repo=repo_facts.repo,

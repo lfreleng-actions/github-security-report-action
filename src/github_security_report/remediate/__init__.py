@@ -44,6 +44,7 @@ from github_security_report.remediate.model import (
     _DONE,
     _FAILED,
     _REFUSED,
+    _SKIPPED,
     CategoryRemediation,
     RemediationClient,
     RepoOutcome,
@@ -244,6 +245,8 @@ async def remediate_org(
     write's diagnostic note. A target the plan or its precheck refuses yields
     ``"refused"`` with the reason, in either mode, and is never written; the
     precheck is a read, so a dry run reports refusals exactly as an apply would.
+    A target the plan only reports yields ``"skipped"`` with its reason, and
+    is neither checked nor written.
     Categories are always represented (with an empty outcome list when they
     have no targets) so the renderer can show a selected category had nothing
     to do.
@@ -285,7 +288,9 @@ async def _remediate_target(
     *,
     apply: bool,
 ) -> RepoOutcome:
-    """Refuse, preview or write one target, and say which."""
+    """Skip, refuse, preview or write one target, and say which."""
+    if target.skipped is not None:
+        return RepoOutcome(target.name, _SKIPPED, target.skipped, target.verb)
     refusal = target.refusal
     if refusal is None and rem.precheck is not None:
         refusal = await rem.precheck(client, org, target)

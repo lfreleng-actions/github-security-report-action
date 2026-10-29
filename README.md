@@ -70,11 +70,14 @@ tables (org mode):
     repository), the language, the last *successful* scan, and the cause:
     analyses failing (a run that errors still uploads, but its results do not
     count as a scan), default setup switched off, a workflow removed or
-    disabled, or an advanced workflow
+    disabled, an advanced workflow
     **superseded** by default setup (GitHub rejects advanced CodeQL uploads
-    while default setup is on). An *orphaned* configuration will never scan
-    again; delete it from the tool status page once the live setup covers its
-    language.
+    while default setup is on), or a configuration **superseded within its
+    workflow**: the workflow file still runs, but a change to its job id or
+    language matrix moved the language to another category, which a current
+    configuration from that same file now scans. An *orphaned* configuration
+    will never scan again; delete it from the tool status page once the live
+    setup covers its language.
   - **Language Coverage** lists repositories where GitHub detects a
     CodeQL-supported language that no current configuration scans — typically
     an advanced workflow whose language matrix omits one the repository
@@ -1956,9 +1959,9 @@ cause:
 
 | Cause | Action |
 | ----- | ------ |
-| Default setup disabled; workflow removed; superseded by default setup; language removed from default setup | **Delete** the configuration: it can never upload again |
+| Default setup disabled; workflow removed; superseded by default setup; superseded within its workflow; language removed from default setup | **Delete** the configuration: it can never upload again |
 | Workflow disabled after inactivity | **Re-enable** the workflow, restoring the scan |
-| Analyses failing, default setup changing state or not uploading, uploaded outside GitHub Actions, workflow disabled by hand, active but not uploading, or state unreadable | Reported only; needs a person |
+| Analyses failing, default setup changing state or not uploading, uploaded outside GitHub Actions, workflow disabled by hand, active but not uploading, or state unreadable | Listed as skipped, with its cause; needs a person |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -1977,15 +1980,16 @@ when:
   blocks nothing;
 - the repository's open alerts cannot be read.
 
-Refusals are listed beside the work done and do not fail the run. Deletion is
-paced at one request a second across the whole run, as GitHub asks of
-mutating requests, and is resumable: an interrupted run's next pass picks up
-the remaining analyses. GitHub answers requests it will not authorise with
-`404`, so a deletion's `404` counts as already done only once the analysis
-also reads back as gone; a token that may not delete fails instead of
-reporting a cleanup that never happened. The token needs the classic `repo`
-scope. See [ADR-0005](docs/adr/0005-codeql-configuration-cleanup.md) for the
-reasoning.
+Refusals are listed beside the work done and do not fail the run. So is every
+row left for a person: each is listed as skipped, with its cause, so an
+operator can see what remains. Deletion is paced at one request a second
+across the whole run, as GitHub asks of mutating requests, and is resumable:
+an interrupted run's next pass picks up the remaining analyses. GitHub answers
+requests it will not authorise with `404`, so a deletion's `404` counts as
+already done only once the analysis also reads back as gone; a token that may
+not delete fails instead of reporting a cleanup that never happened. The token
+needs the classic `repo` scope. See
+[ADR-0005](docs/adr/0005-codeql-configuration-cleanup.md) for the reasoning.
 
 ## Bulk Remediation Scripts
 

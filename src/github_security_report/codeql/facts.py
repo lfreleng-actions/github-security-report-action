@@ -23,6 +23,7 @@ these types (see ``client.codeql_parsers``), and the tables classify them.
 from __future__ import annotations
 
 import datetime as dt
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
@@ -33,7 +34,19 @@ from github_security_report.models import Repo
 # Analysis-key prefix of every analysis uploaded by GitHub-managed default
 # setup. Advanced setup keys start with the workflow path instead.
 _DEFAULT_SETUP_KEY_PREFIX = "dynamic/github-code-scanning/"
-_WORKFLOW_DIR = ".github/workflows/"
+# The workflow file an advanced analysis key starts with: one file directly
+# under .github/workflows, up to the colon after its extension. A file name may
+# hold a colon, and GitHub sometimes records the whole category as the key
+# (".github/workflows/codeql.yml:actions/build-mode:none/language:actions"),
+# so neither the first nor the last colon is safe to split at. The colon must
+# be followed by a valid job id (a letter or underscore, then letters, digits,
+# "-" or "_") ending the key or followed by "/". A job id holds no "." or ":",
+# so in ".github/workflows/codeql.yml:nightly.yaml:analyze" the file is
+# "codeql.yml:nightly.yaml", not "codeql.yml". A key fitting no such split
+# yields no path, never one whose absence would read as a removed workflow.
+_WORKFLOW_PATH = re.compile(
+    r"\.github/workflows/[^/]+?\.ya?ml(?=:[A-Za-z_][A-Za-z0-9_-]*(?:/|\Z))"
+)
 
 # The default-setup API lists some languages individually that CodeQL analyses
 # as one extractor (and a configuration names by the combined identifier), so
@@ -90,6 +103,9 @@ class StaleCause(str, Enum):
     # Neither on nor off: GitHub is evaluating a change, or failed to make one.
     DEFAULT_SETUP_TRANSITIONAL = "Default setup changing state; recheck later"
     WORKFLOW_REMOVED = "Workflow removed; orphaned"
+    # The workflow still runs, but its job or matrix changed: it now uploads
+    # this language under another category, which replaces this one.
+    SUPERSEDED_IN_WORKFLOW = "Superseded within its workflow; orphaned"
     SUPERSEDED = "Superseded by default setup"
     SUPERSEDED_DISABLED = "Superseded by default setup; workflow disabled"
     WORKFLOW_INACTIVE = "Workflow disabled after inactivity"
@@ -104,9 +120,10 @@ class StaleCause(str, Enum):
         """Whether the configuration can never upload again as things stand.
 
         Its setup is gone (default setup off, workflow file removed), blocked
-        (advanced uploads are rejected while default setup is on), or no
-        longer covers its language. Only these are safe to delete: every other
-        cause may yet resume, or needs a person to decide.
+        (advanced uploads are rejected while default setup is on), replaced
+        by another category from the same workflow, or no longer covers its
+        language. Only these are safe to delete: every other cause may yet
+        resume, or needs a person to decide.
         """
         return self in _ORPHANED_CAUSES
 
@@ -126,6 +143,7 @@ _ORPHANED_CAUSES = frozenset(
         StaleCause.DEFAULT_SETUP_DISABLED,
         StaleCause.LANGUAGE_REMOVED,
         StaleCause.WORKFLOW_REMOVED,
+        StaleCause.SUPERSEDED_IN_WORKFLOW,
         StaleCause.SUPERSEDED,
         StaleCause.SUPERSEDED_DISABLED,
     }
@@ -163,10 +181,8 @@ class CodeQLConfiguration:
         """The advanced workflow file behind this configuration, if any."""
         if self.setup is SetupType.DEFAULT:
             return None
-        # The key is "<workflow path>:<job id>". A job id cannot contain a
-        # colon but a file name can, so split at the last one.
-        path = self.analysis_key.rpartition(":")[0]
-        return path if path.startswith(_WORKFLOW_DIR) else None
+        match = _WORKFLOW_PATH.match(self.analysis_key)
+        return match.group(0) if match else None
 
     def is_stale(self, head_committed_at: dt.datetime, stale_days: int) -> bool:
         """Whether the last scan trails the branch head by over ``stale_days``.
