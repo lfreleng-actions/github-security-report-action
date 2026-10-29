@@ -10,6 +10,7 @@ assembly and the per-organisation layout stay in :mod:`.slack`.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 
 from github_security_report.models import RepoSignal, SignalType
@@ -21,6 +22,28 @@ from github_security_report.report import (
     section_shows_informational,
     truncate,
 )
+
+# The characters Slack's mrkdwn treats as control syntax: ``<...>`` is a link
+# or a mention (``<!channel>`` pages everyone) and ``&`` starts an entity.
+# Text from the API (workflow names, manifest paths) is escaped as Slack
+# documents before it enters a block.
+_MRKDWN_ESCAPES = str.maketrans({"&": "&amp;", "<": "&lt;", ">": "&gt;"})
+
+# Line breaks and other control characters in a table cell would split its
+# row, and a backtick run could close the code fence the table sits in.
+_CELL_CONTROLS = re.compile(r"[\x00-\x1f\x7f\u2028\u2029]+")
+# U+02CB MODIFIER LETTER GRAVE ACCENT looks like a backtick but closes no fence.
+_FENCE_SAFE = str.maketrans({"`": "\u02cb"})
+
+
+def _mrkdwn(text: str) -> str:
+    """``text`` made inert for a Slack mrkdwn block."""
+    return text.translate(_MRKDWN_ESCAPES)
+
+
+def _fenced_cell(text: str) -> str:
+    """A table cell made safe to sit on one line inside a code fence."""
+    return _CELL_CONTROLS.sub(" ", text).translate(_FENCE_SAFE)
 
 
 def _plain_columns(signal: SignalType, *, informational: bool = False) -> list[str]:
@@ -179,14 +202,20 @@ def _name_cap(lines: Sequence[SummaryLine], top_n: int) -> int:
 
 
 def _fixed_table_generic(columns: tuple[str, ...], rows: list[list[str]]) -> str:
-    """Fixed-width text table for a generic posture/freshness table."""
-    widths = [len(c) for c in columns]
-    for row in rows:
+    """Fixed-width text table for a generic posture/freshness table.
+
+    Cells can carry repository-controlled text (a manifest path), so each is
+    kept to one line and unable to close the surrounding code fence, and the
+    padded line is mrkdwn-escaped last so the entities keep columns aligned.
+    """
+    grid = [[_fenced_cell(cell) for cell in row] for row in [list(columns), *rows]]
+    widths = [len(c) for c in grid[0]]
+    for row in grid[1:]:
         for i, cell in enumerate(row):
             widths[i] = max(widths[i], len(cell))
 
     def fmt(row: list[str]) -> str:
-        return "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row))
+        line = "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row))
+        return _mrkdwn(line)
 
-    lines = [fmt(list(columns))] + [fmt(row) for row in rows]
-    return "\n".join(lines)
+    return "\n".join(fmt(row) for row in grid)

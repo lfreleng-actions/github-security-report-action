@@ -34,6 +34,7 @@ from github_security_report.render.slack_limits import (
 from github_security_report.render.slack_text import (
     _fixed_table,
     _fixed_table_generic,
+    _mrkdwn,
     _name_breaks,
     _name_cap,
     _summary_text,
@@ -57,17 +58,6 @@ from github_security_report.report import (
     truncate,
     window_shown,
 )
-
-# The characters Slack's mrkdwn treats as control syntax: ``<...>`` is a link
-# or a mention (``<!channel>`` pages everyone) and ``&`` starts an entity. A
-# digest carries workflow names straight from the run API, so each is
-# escaped as Slack documents before it enters a block.
-_MRKDWN_ESCAPES = str.maketrans({"&": "&amp;", "<": "&lt;", ">": "&gt;"})
-
-
-def _mrkdwn(text: str) -> str:
-    """``text`` made inert for a Slack mrkdwn block."""
-    return text.translate(_MRKDWN_ESCAPES)
 
 
 def _table_block(
