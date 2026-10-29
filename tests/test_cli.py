@@ -592,6 +592,16 @@ def test_repo_mode_fail_threshold(tmp_path: Path) -> None:
         ],
     )
     assert ok.exit_code == 0, ok.stdout
+    # Repo mode reads the terminal's week, not the published report's quarter:
+    # one listing walk back seven days, never a 90-day backfill for one repo.
+    assert "Workflow Failures (7 days)" in ok.stdout
+    assert "(90 days)" not in ok.stdout
+    runs = [
+        c.request.url.params.get("created")
+        for c in respx.calls
+        if "/actions/runs" in str(c.request.url)
+    ]
+    assert runs and all(created is None for created in runs)
 
     # --hide promises suppression on "every output", so it has to reach repo
     # mode too. A flag accepted and validated but then ignored is worse than

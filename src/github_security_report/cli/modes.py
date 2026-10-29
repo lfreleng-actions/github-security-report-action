@@ -240,8 +240,14 @@ async def _run_repo(
     cfg = report_cfg if report_cfg is not None else ReportConfig()
     # One repository's runs are read afresh each time rather than cached: a
     # single listing is cheap, and a repo-mode run (a pull request's CI, a
-    # developer's shell) should leave nothing behind.
-    runs_cfg = ReportOverrides(run_windows=run_windows, run_cache=False).apply_runs(cfg)
+    # developer's shell) should leave nothing behind. For the same reason it
+    # reads the terminal's windows alone -- a week, by default -- rather than
+    # the published report's quarter, which would be a 90-day backfill for
+    # one table nobody publishes from this mode.
+    days = (
+        run_windows if run_windows is not None else cfg.workflow_runs.windows_for("cli")
+    )
+    runs_cfg = ReportOverrides(run_windows=days, run_cache=False).apply_runs(cfg)
     cfg = replace(cfg, workflow_runs=runs_cfg)
     caps = limits if limits is not None else TopNLimits()
     token = os.environ.get(token_env, "").strip()
