@@ -466,7 +466,7 @@ class TestBuildIssuesTable:
             a=RepoGraphData(
                 open_issues=2,
                 issues=(_issue(2, "bug", age_days=3),),
-                oldest_issue_unreadable=True,
+                issue_gap=0,
             )
         )
         table = _build(graph, ["a"])
@@ -597,3 +597,163 @@ class TestCellLevels:
         table = _build(graph, ["a", "b"])
         assert self._levels(table, 0)[issues.OLDEST_COLUMN] == CELL_GOOD
         assert self._levels(table, 1)[issues.OLDEST_COLUMN] is None
+
+
+def _assigned_issue(
+    number: int, *labels: str, assignees: tuple[str, ...], age_days: int = 0
+) -> IssueRef:
+    return IssueRef(
+        number=number,
+        title=f"issue {number}",
+        labels=labels,
+        created_at=WHEN - dt.timedelta(days=age_days),
+        assignees=assignees,
+    )
+
+
+def _build_assigned(
+    graph: dict[str, RepoGraphData], names: list[str], viewer: str = "me"
+) -> TableSection:
+    return issues.build_assigned_issues_table(
+        graph,
+        [_repo(n) for n in names],
+        generated_at=WHEN,
+        label_columns=DEFAULT_ISSUE_LABELS,
+        age_warn_days=_DEFAULTS.issue_age_warn_days,
+        age_error_days=_DEFAULTS.issue_age_error_days,
+        members=frozenset(),
+        viewer=viewer,
+    )
+
+
+class TestBuildAssignedIssuesTable:
+    def test_filters_by_assignee_case_insensitively(self) -> None:
+        graph = _graph(
+            a=RepoGraphData(
+                open_issues=3,
+                issues=(
+                    _assigned_issue(1, "bug", assignees=("me",)),
+                    _assigned_issue(2, "bug", assignees=("someone",)),
+                    _assigned_issue(3, assignees=("someone", "me")),
+                ),
+            )
+        )
+        table = _build_assigned(graph, ["a"], viewer="Me")
+        assert table.category.key is CategoryKey.GITHUB_ISSUES_ASSIGNED
+        assert table.category.title == "Issues: Assigned to Me"
+        (row,) = table.rows
+        cells = dict(zip(table.columns[1:], row.cells, strict=True))
+        # Total counts the assigned issues, not the repository's totalCount.
+        assert cells[issues.TOTAL_COLUMN] == "2"
+        assert cells["Bug"] == "1"
+        assert cells[issues.UNTRIAGED_COLUMN] == "1"
+
+    def test_shares_columns_with_the_issues_table(self) -> None:
+        graph = _graph(
+            a=RepoGraphData(
+                open_issues=1, issues=(_assigned_issue(1, assignees=("me",)),)
+            )
+        )
+        assert _build_assigned(graph, ["a"]).columns == _build(graph, ["a"]).columns
+
+    def test_a_repository_with_none_assigned_is_clean(self) -> None:
+        graph = _graph(
+            a=RepoGraphData(
+                open_issues=2,
+                issues=(
+                    _assigned_issue(1, assignees=("someone",)),
+                    _assigned_issue(2, assignees=()),
+                ),
+            ),
+            b=RepoGraphData(
+                open_issues=1, issues=(_assigned_issue(3, assignees=("me",)),)
+            ),
+        )
+        table = _build_assigned(graph, ["a", "b"])
+        assert [row.repo.name for row in table.rows] == ["b"]
+        assert (table.fail_count, table.pass_count) == (1, 1)
+        assert table.unknown_count == 0
+
+    def test_none_assigned_in_a_truncated_window_is_unknown(self) -> None:
+        # A match may sit beyond the window, so "none of yours" is a claim the
+        # run cannot support.
+        graph = _graph(
+            a=RepoGraphData(
+                open_issues=40, issues=(_assigned_issue(1, assignees=("someone",)),)
+            )
+        )
+        table = _build_assigned(graph, ["a"])
+        assert table.rows == []
+        assert (table.pass_count, table.unknown_count) == (0, 1)
+
+    def test_a_truncated_window_explains_the_partial_total(self) -> None:
+        graph = _graph(
+            a=RepoGraphData(
+                open_issues=40, issues=(_assigned_issue(1, assignees=("me",)),)
+            )
+        )
+        table = _build_assigned(graph, ["a"])
+        (row,) = table.rows
+        assert row.cells[-1].endswith(issues.TRUNCATED_MARKER)
+        assert "Total, too, counts only the assigned issues" in table.description
+        assert "Total stays exact" not in table.description
+
+    def test_empty_viewer_yields_an_empty_table(self) -> None:
+        graph = _graph(
+            a=RepoGraphData(
+                open_issues=1, issues=(_assigned_issue(1, assignees=("me",)),)
+            ),
+            b=RepoGraphData(open_issues=None),
+        )
+        table = _build_assigned(graph, ["a", "b"], viewer="")
+        assert table.rows == []
+        assert (table.pass_count, table.unknown_count) == (2, 0)
+
+    def test_oldest_covers_the_assigned_subset_only(self) -> None:
+        graph = _graph(
+            a=RepoGraphData(
+                open_issues=2,
+                issues=(
+                    _assigned_issue(1, assignees=("someone",), age_days=90),
+                    _assigned_issue(2, assignees=("me",), age_days=10),
+                ),
+            )
+        )
+        (row,) = _build_assigned(graph, ["a"]).rows
+        assert row.cells[-1] == "10 days"
+        assert _build(graph, ["a"]).rows[0].cells[-1] == "90 days"
+
+    def test_a_gap_before_the_first_match_makes_its_age_unknown(self) -> None:
+        # The unreadable node sits after an unassigned issue but before the
+        # first match, so it may be an older assigned issue: the match's age is
+        # not the answer, and must not be coloured as if it were.
+        graph = _graph(
+            a=RepoGraphData(
+                open_issues=3,
+                issues=(
+                    _assigned_issue(1, assignees=("someone",), age_days=90),
+                    _assigned_issue(3, assignees=("me",), age_days=10),
+                ),
+                issue_gap=1,
+            )
+        )
+        (row,) = _build_assigned(graph, ["a"]).rows
+        assert row.cells[-1].startswith(issues.UNKNOWN_AGE)
+        assert row.cell_levels[-1] is None
+        # The whole-backlog table's oldest issue preceded the gap, so its age
+        # stays exact.
+        assert _build(graph, ["a"]).rows[0].cells[-1].startswith("90 days")
+
+    def test_a_gap_after_the_first_match_keeps_its_age(self) -> None:
+        graph = _graph(
+            a=RepoGraphData(
+                open_issues=3,
+                issues=(
+                    _assigned_issue(1, assignees=("me",), age_days=90),
+                    _assigned_issue(3, assignees=("me",), age_days=10),
+                ),
+                issue_gap=1,
+            )
+        )
+        (row,) = _build_assigned(graph, ["a"]).rows
+        assert row.cells[-1].startswith("90 days")

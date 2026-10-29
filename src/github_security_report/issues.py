@@ -23,67 +23,58 @@ Two accuracy notes, both stemming from the bounded GraphQL window
   columns can sum to less than ``Total``; and an issue may carry labels beyond
   the per-issue label window. The row is marked so the table never implies a
   breakdown it did not actually see.
+
+The same table narrowed to the issues assigned to the running account (Issues:
+Assigned to Me) shares the columns, but its ``Total`` counts the matches in the
+window, since ``totalCount`` knows nothing of assignees.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Mapping, Set
+from dataclasses import dataclass
 
 from github_security_report.authors import is_external_author
 from github_security_report.categories import CategoryKey, category_meta
-from github_security_report.models import IssueRef, Repo, RepoGraphData
-from github_security_report.report import (
-    CELL_BAD,
-    CELL_GOOD,
-    CELL_WARN,
-    TableRow,
-    TableSection,
-)
-
-# Columns appended after the configured label classes. ``Other`` is "labelled,
-# but not as anything we were asked about"; ``Untriaged`` is "not labelled at
-# all". They are deliberately distinct: the first is a classification gap, the
-# second a triage gap.
-OTHER_COLUMN = "Other"
-UNTRIAGED_COLUMN = "Untriaged"
-
-# The remaining fixed headers, framing the configured ones.
-REPOSITORY_COLUMN = "Repository"
-TOTAL_COLUMN = "Total"
-EXTERNAL_COLUMN = "Ext"
-OLDEST_COLUMN = "Oldest"
-
-# Every header the table supplies itself. A configured column may not reuse one:
-# it would either share a counter with the implicit column (breaking the sum) or
-# duplicate a header and make a ``sort`` term naming it ambiguous.
-RESERVED_COLUMNS = (
-    REPOSITORY_COLUMN,
-    OTHER_COLUMN,
-    UNTRIAGED_COLUMN,
-    TOTAL_COLUMN,
+from github_security_report.issue_presentation import (
     EXTERNAL_COLUMN,
     OLDEST_COLUMN,
+    OTHER_COLUMN,
+    REPOSITORY_COLUMN,
+    RESERVED_COLUMNS,
+    TOTAL_COLUMN,
+    TRUNCATED_MARKER,
+    UNKNOWN_AGE,
+    UNTRIAGED_COLUMN,
+    _cell_levels,
+    _describe,
+    _oldest_age,
+    _oldest_cell,
+    age_level,
 )
+from github_security_report.models import IssueRef, Repo, RepoGraphData
+from github_security_report.report import TableRow, TableSection
 
-# Marker appended to a repository's oldest-issue cell when its open issues
-# exceed the collected window, so a partial label breakdown is visible as such.
-TRUNCATED_MARKER = "+"
-
-# Stands in for an age GitHub did not give us a usable creation date for. Kept
-# distinct from an absent backlog: the repository has open issues either way.
-UNKNOWN_AGE = "unknown"
-
-# Emphasis for the count columns, keyed case-insensitively by header so it
-# follows ``Bug`` and ``Docs`` into an ``issue_labels`` that keeps those names,
-# and simply does not apply to one that renames them. Untriaged is the triage
-# gap the table exists to surface, and Bug the class most likely to hurt a
-# user, so both are red; documentation work is a healthy backlog, so green.
-_COLUMN_LEVELS: Mapping[str, str] = {
-    "bug": CELL_BAD,
-    "docs": CELL_GOOD,
-    UNTRIAGED_COLUMN.casefold(): CELL_BAD,
-}
+# The presentation names are re-exported so the category keeps one import
+# site: the configuration validates against ``RESERVED_COLUMNS`` and the tests
+# read the markers and headers from here.
+__all__ = [
+    "EXTERNAL_COLUMN",
+    "OLDEST_COLUMN",
+    "OTHER_COLUMN",
+    "REPOSITORY_COLUMN",
+    "RESERVED_COLUMNS",
+    "TOTAL_COLUMN",
+    "TRUNCATED_MARKER",
+    "UNKNOWN_AGE",
+    "UNTRIAGED_COLUMN",
+    "age_level",
+    "build_assigned_issues_table",
+    "build_issues_table",
+    "classify_issue",
+    "is_assigned",
+]
 
 
 def classify_issue(
@@ -143,107 +134,187 @@ def _is_external(issue: IssueRef, members: Set[str] | None) -> bool:
     )
 
 
-def _age_days(when: dt.datetime | None, now: dt.datetime) -> int | None:
-    """Whole days between ``when`` and ``now`` (>= 0), or None when absent."""
-    if when is None:
-        return None
-    return max((now - when).days, 0)
+def is_assigned(issue: IssueRef, viewer: str) -> bool:
+    """Whether ``viewer`` is among an issue's assignees, ignoring case.
 
-
-def _oldest_age(data: RepoGraphData, now: dt.datetime) -> int | None:
-    """Age in days of the oldest open issue, or None when it cannot be known.
-
-    The window is ordered oldest-first, so entry 0 *is* the oldest open issue,
-    however short the window is relative to the backlog. That ordering is the
-    only evidence of which issue is oldest, so the age is unknown whenever
-    entry 0 is missing (dropped in parsing) or carries no usable date: falling
-    through to the next entry would report a newer issue's age as the oldest,
-    which is worse than admitting the age is unknown.
+    An empty ``viewer`` is nobody, so a run that could not identify its own
+    account never claims somebody else's issue as the reader's.
     """
-    if data.oldest_issue_unreadable or not data.issues:
-        return None
-    return _age_days(data.issues[0].created_at, now)
+    mine = viewer.casefold()
+    return bool(mine) and any(login.casefold() == mine for login in issue.assignees)
 
 
-def _oldest_cell(age: int | None, truncated: bool) -> str:
-    """Render the oldest-issue age, marked when the window truncated.
-
-    An unknown age still carries the marker: the label breakdown behind it is
-    just as partial, and dropping the marker would present it as complete.
-    """
-    if age is None:
-        return f"{UNKNOWN_AGE} {TRUNCATED_MARKER}" if truncated else UNKNOWN_AGE
-    text = "today" if age == 0 else "1 day" if age == 1 else f"{age} days"
-    return f"{text} {TRUNCATED_MARKER}" if truncated else text
-
-
-def age_level(age: int | None, *, warn_days: int, error_days: int) -> str | None:
-    """Emphasis for an oldest open issue that is ``age`` days old.
-
-    Both thresholds read "older than": warning once the age exceeds
-    ``warn_days``, error once it exceeds ``error_days``, and good at or below
-    every active threshold. Either may be ``0`` to turn that level off, matching
-    the ``0 = no limit`` idiom used elsewhere; with both off the column is left
-    plain rather than painted uniformly green. An unknown age has nothing to
-    measure, so it is never coloured.
-    """
-    if age is None or not (warn_days or error_days):
-        return None
-    if error_days and age > error_days:
-        return CELL_BAD
-    if warn_days and age > warn_days:
-        return CELL_WARN
-    return CELL_GOOD
-
-
-def _cell_levels(
+def _count(
+    selected: tuple[IssueRef, ...],
     columns: tuple[str, ...],
-    counts: Mapping[str, int],
-    age: str | None,
-) -> tuple[str | None, ...]:
-    """Semantic emphasis for one row's cells, parallel to its columns.
+    label_columns: Mapping[str, tuple[str, ...]],
+    members: Set[str] | None,
+) -> tuple[dict[str, int], int, bool]:
+    """Label-class counts, the external count and whether either is partial."""
+    counts = dict.fromkeys(columns, 0)
+    external = 0
+    partial = False
+    for issue in selected:
+        if _is_external(issue, members):
+            external += 1
+        if issue.labels_truncated and not issue.labels:
+            # Not one label was readable, so there is nothing to classify on.
+            # Counting it as Untriaged would invent a triage gap out of data
+            # the run never saw; the class columns omit it instead and the row
+            # is marked partial to explain the shortfall.
+            partial = True
+            continue
+        column = classify_issue(issue, label_columns)
+        counts[column] += 1
+        if not _classification_is_certain(issue, column, label_columns):
+            partial = True
+    return counts, external, partial
 
-    Only *non-zero* counts are emphasised, as in the Pull Requests table: a
-    column of red zeros trains the reader to ignore the colour. Total and Ext
-    carry none -- Total sums classes that disagree about what good looks like.
-    """
-    counted = (
-        _COLUMN_LEVELS.get(column.casefold()) if counts[column] else None
-        for column in columns
+
+@dataclass(frozen=True)
+class _TableSpec:
+    """The settings every row of one issues table is built under."""
+
+    generated_at: dt.datetime
+    label_columns: Mapping[str, tuple[str, ...]]
+    age_warn_days: int
+    age_error_days: int
+    members: Set[str] | None
+
+    @property
+    def columns(self) -> tuple[str, ...]:
+        """The count columns: the configured label classes, then the implicit."""
+        return (*self.label_columns, OTHER_COLUMN, UNTRIAGED_COLUMN)
+
+
+def _row(
+    repo: Repo,
+    data: RepoGraphData,
+    selected: tuple[IssueRef, ...],
+    total: int,
+    spec: _TableSpec,
+) -> TableRow:
+    """One repository's row over the ``selected`` issues, totalling ``total``."""
+    columns = spec.columns
+    counts, external, partial = _count(
+        selected, columns, spec.label_columns, spec.members
     )
-    return (*counted, None, None, age)
+    partial = partial or (data.open_issues or 0) > len(data.issues)
+    oldest = _oldest_age(data, selected, spec.generated_at)
+    cells = (
+        *(str(counts[column]) for column in columns),
+        str(total),
+        # Ext is window-scoped like the label classes, so it carries the same
+        # partial-breakdown marker: without it an undercount reads as an exact
+        # zero.
+        f"{external} {TRUNCATED_MARKER}" if partial else str(external),
+        _oldest_cell(oldest, partial),
+    )
+    # An unknown age has no value to rank on, so it is published as None: the
+    # ordering layer keeps such rows last in either direction rather than
+    # treating "unknown" as younger than "today".
+    sort_values: tuple[float | str | None, ...] = (
+        *(float(counts[column]) for column in columns),
+        float(total),
+        float(external),
+        float(oldest) if oldest is not None else None,
+    )
+    return TableRow(
+        repo=repo,
+        cells=cells,
+        sort_values=sort_values,
+        cell_levels=_cell_levels(
+            columns,
+            counts,
+            age_level(
+                oldest, warn_days=spec.age_warn_days, error_days=spec.age_error_days
+            ),
+        ),
+    )
 
 
-def _describe(base: str, age_cells: list[str], members: Set[str] | None) -> str:
-    """Extend the category description with the caveats the table earned.
+def _build_table(
+    graph: Mapping[str, RepoGraphData],
+    repos: list[Repo],
+    spec: _TableSpec,
+    *,
+    category: CategoryKey,
+    viewer: str | None = None,
+) -> TableSection:
+    """Assemble an issues table, optionally over a subset of each backlog.
 
-    Each caveat is appended only when a row actually shows it, so a report with
-    complete data carries no unexplained qualifications -- and, conversely, an
-    unknown age is never described as exact.
+    A ``viewer`` narrows the issues a row counts to those assigned to that
+    account; ``None`` counts them all. With no filter the row total is the
+    authoritative ``totalCount``, exact at any size; with one it can only be
+    the number of matches *in the collected window*, since GitHub was never
+    asked how many matches exist beyond it. A filtered repository with no match
+    in a truncated window is unknown rather than clean: a match may sit in the
+    issues this run never collected.
     """
-    description = base
-    if any(cell.endswith(TRUNCATED_MARKER) for cell in age_cells):
-        description += (
-            f" A trailing '{TRUNCATED_MARKER}' marks a repository whose "
-            "window-scoped columns are partial -- its open issues exceed the "
-            "collected window, or an issue carries more labels than were "
-            "fetched -- so the label classes and Ext each describe only the "
-            "issues collected, and Ext in particular can undercount. Total "
-            "stays exact either way, as does Oldest wherever an age is shown."
+    rows: list[tuple[int, int, str, TableRow]] = []
+    clean_count = 0
+    unknown_count = 0
+    for repo in repos:
+        data = graph.get(repo.name, RepoGraphData())
+        if viewer == "":
+            # No account to match, so nothing can be assigned to the caller in
+            # this repository or any other. That is certain whatever was
+            # collected, so a direct caller gets an empty, clean table rather
+            # than a wall of unknowns.
+            clean_count += 1
+            continue
+        if data.open_issues is None:
+            # The issues connection could not be read for this repository, so
+            # its backlog is unknown -- never "none open".
+            unknown_count += 1
+            continue
+        selected = (
+            data.issues
+            if viewer is None
+            else tuple(issue for issue in data.issues if is_assigned(issue, viewer))
         )
-    if any(cell.startswith(UNKNOWN_AGE) for cell in age_cells):
-        description += (
-            f" An Oldest of '{UNKNOWN_AGE}' means the oldest open issue came "
-            "back unreadable or undated, so its age could not be determined."
-        )
-    if members is None:
-        description += (
-            " Organisation membership could not be read for this run, so an "
-            "author can only be placed outside the organisation when GitHub "
-            "says so unambiguously; Ext therefore undercounts and should be "
-            "read as a lower bound."
-        )
-    return description
+        total = data.open_issues if viewer is None else len(selected)
+        if total <= 0:
+            if viewer is not None and data.open_issues > len(data.issues):
+                unknown_count += 1
+            else:
+                clean_count += 1
+            continue
+        row = _row(repo, data, selected, total, spec)
+        untriaged = int(row.cells[len(spec.columns) - 1])
+        rows.append((total, untriaged, repo.name, row))
+    # Negated numerics so the whole sort runs ascending, keeping the name
+    # tiebreaker correctly ascending even when one name prefixes another.
+    rows.sort(key=lambda item: (-item[0], -item[1], item[2]))
+
+    meta = category_meta(category)
+    all_columns = (
+        REPOSITORY_COLUMN,
+        *spec.columns,
+        TOTAL_COLUMN,
+        EXTERNAL_COLUMN,
+        OLDEST_COLUMN,
+    )
+    description = _describe(
+        meta.description,
+        [row.cells[-1] for *_, row in rows],
+        spec.members,
+        filtered=viewer is not None,
+    )
+    return TableSection(
+        category=meta,
+        columns=all_columns,
+        rows=[row for _, _, _, row in rows],
+        # Every column except the repository and the trailing age is a count.
+        sum_columns=frozenset(range(1, len(all_columns) - 1)),
+        # Every column but the repository sorts numerically, including the age:
+        # its cells render as text but its sort values are days.
+        numeric_columns=frozenset(range(1, len(all_columns))),
+        pass_count=clean_count,
+        fail_count=len(rows),
+        unknown_count=unknown_count,
+        description=description,
+    )
 
 
 def build_issues_table(
@@ -268,103 +339,42 @@ def build_issues_table(
     raised from outside it (see :mod:`authors`). ``age_warn_days`` and
     ``age_error_days`` colour the Oldest column (see :func:`age_level`).
     """
-    columns = (*label_columns, OTHER_COLUMN, UNTRIAGED_COLUMN)
-    rows: list[tuple[int, int, str, TableRow]] = []
-    clean_count = 0
-    unknown_count = 0
-    for repo in repos:
-        data = graph.get(repo.name, RepoGraphData())
-        if data.open_issues is None:
-            # The issues connection could not be read for this repository, so
-            # its backlog is unknown -- never "none open".
-            unknown_count += 1
-            continue
-        if data.open_issues <= 0:
-            clean_count += 1
-            continue
-        counts = dict.fromkeys(columns, 0)
-        external = 0
-        partial = data.open_issues > len(data.issues)
-        for issue in data.issues:
-            if _is_external(issue, members):
-                external += 1
-            if issue.labels_truncated and not issue.labels:
-                # Not one label was readable, so there is nothing to classify
-                # on. Counting it as Untriaged would invent a triage gap out of
-                # data the run never saw; the class columns omit it instead and
-                # the row is marked partial to explain the shortfall.
-                partial = True
-                continue
-            column = classify_issue(issue, label_columns)
-            counts[column] += 1
-            if not _classification_is_certain(issue, column, label_columns):
-                partial = True
-        oldest = _oldest_age(data, generated_at)
-        cells = (
-            *(str(counts[column]) for column in columns),
-            str(data.open_issues),
-            # Ext is window-scoped like the label classes, so it carries the
-            # same partial-breakdown marker: without it an undercount reads as
-            # an exact zero.
-            f"{external} {TRUNCATED_MARKER}" if partial else str(external),
-            _oldest_cell(oldest, partial),
-        )
-        # An unknown age has no value to rank on, so it is published as None:
-        # the ordering layer keeps such rows last in either direction rather
-        # than treating "unknown" as younger than "today".
-        sort_values: tuple[float | str | None, ...] = (
-            *(float(counts[column]) for column in columns),
-            float(data.open_issues),
-            float(external),
-            float(oldest) if oldest is not None else None,
-        )
-        rows.append(
-            (
-                data.open_issues,
-                counts[UNTRIAGED_COLUMN],
-                repo.name,
-                TableRow(
-                    repo=repo,
-                    cells=cells,
-                    sort_values=sort_values,
-                    cell_levels=_cell_levels(
-                        columns,
-                        counts,
-                        age_level(
-                            oldest,
-                            warn_days=age_warn_days,
-                            error_days=age_error_days,
-                        ),
-                    ),
-                ),
-            )
-        )
-    # Negated numerics so the whole sort runs ascending, keeping the name
-    # tiebreaker correctly ascending even when one name prefixes another.
-    rows.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    spec = _TableSpec(
+        generated_at, label_columns, age_warn_days, age_error_days, members
+    )
+    return _build_table(graph, repos, spec, category=CategoryKey.GITHUB_ISSUES)
 
-    meta = category_meta(CategoryKey.GITHUB_ISSUES)
-    all_columns = (
-        REPOSITORY_COLUMN,
-        *columns,
-        TOTAL_COLUMN,
-        EXTERNAL_COLUMN,
-        OLDEST_COLUMN,
+
+def build_assigned_issues_table(
+    graph: Mapping[str, RepoGraphData],
+    repos: list[Repo],
+    *,
+    generated_at: dt.datetime,
+    label_columns: Mapping[str, tuple[str, ...]],
+    age_warn_days: int,
+    age_error_days: int,
+    members: Set[str] | None = frozenset(),
+    viewer: str = "",
+) -> TableSection:
+    """The GitHub Issues table narrowed to the running account's own issues.
+
+    The same columns over the same data, so the two tables read alike; only the
+    population differs. A repository with open issues but none assigned to the
+    account counts as clean here rather than as a row of zeros.
+
+    An empty ``viewer`` yields an empty table: a run that could not identify
+    its own account has no personal queue, and guessing at one would put
+    somebody else's work under the reader's name. Collection skips the table
+    entirely in that case, so the empty result is a safety net for a direct
+    caller rather than something a report renders.
+    """
+    spec = _TableSpec(
+        generated_at, label_columns, age_warn_days, age_error_days, members
     )
-    description = _describe(
-        meta.description, [row.cells[-1] for *_, row in rows], members
-    )
-    return TableSection(
-        category=meta,
-        columns=all_columns,
-        rows=[row for _, _, _, row in rows],
-        # Every column except the repository and the trailing age is a count.
-        sum_columns=frozenset(range(1, len(all_columns) - 1)),
-        # Every column but the repository sorts numerically, including the age:
-        # its cells render as text but its sort values are days.
-        numeric_columns=frozenset(range(1, len(all_columns))),
-        pass_count=clean_count,
-        fail_count=len(rows),
-        unknown_count=unknown_count,
-        description=description,
+    return _build_table(
+        graph,
+        repos,
+        spec,
+        category=CategoryKey.GITHUB_ISSUES_ASSIGNED,
+        viewer=viewer,
     )

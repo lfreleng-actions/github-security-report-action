@@ -30,7 +30,10 @@ from github_security_report.collect.context import (
 )
 from github_security_report.collect.workflow_runs import attach_workflow_failures
 from github_security_report.config import OrgConfig, ReportConfig
-from github_security_report.issues import build_issues_table
+from github_security_report.issues import (
+    build_assigned_issues_table,
+    build_issues_table,
+)
 from github_security_report.models import Repo, SignalType
 from github_security_report.ordering import (
     apply_configured_order,
@@ -125,7 +128,7 @@ async def _attach_author_tables(
     ctx: OrgCollectContext,
     report_cfg: ReportConfig,
 ) -> None:
-    """Attach Issues, Pull Requests and Assigned to Me, and their identity reads."""
+    """Attach Issues, Pull Requests, both Assigned to Me tables and their reads."""
     # Organisation membership is collected once and reused by both author-aware
     # tables, so classifying contributions costs one query rather than a probe
     # per author. It is the token-independent basis for "outside the
@@ -160,11 +163,21 @@ async def _attach_author_tables(
         error_threshold=report_cfg.dependabot_error_threshold,
         viewer=viewer,
     )
-    # A personal review queue needs a person. Without one the table would be
+    # A personal queue needs a person. Without one both tables would be
     # unconditionally empty, and an "Assigned to Me" section reporting every
     # repository clean reassures the reader about an inbox that does not exist,
-    # so the category is left uncollected and no surface renders it.
+    # so both categories are left uncollected and no surface renders them.
     if viewer:
+        report.assigned_issues = build_assigned_issues_table(
+            ctx.graph,
+            in_scope,
+            generated_at=report.generated_at,
+            label_columns=report_cfg.issue_labels,
+            age_warn_days=report_cfg.issue_age_warn_days,
+            age_error_days=report_cfg.issue_age_error_days,
+            members=members,
+            viewer=viewer,
+        )
         report.assigned_pull_requests = build_assigned_pull_requests_table(
             ctx.graph,
             in_scope,
@@ -187,7 +200,7 @@ async def attach_extra_tables(
     """Probe posture for every repository and attach the derived tables.
 
     ``extras`` (see :class:`CollectExtras`) switches the author tables off,
-    which leaves the Issues, Pull Requests and Assigned to Me tables
+    which leaves the Issues, Pull Requests and both Assigned to Me tables
     uncollected and with them the membership and viewer reads they alone
     need, and names the run store the Workflow Failures tables sync against.
     """

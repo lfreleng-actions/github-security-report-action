@@ -227,6 +227,7 @@ class TestPriorityDefaults:
         assert DEFAULT_BAU == (
             CategoryKey.SCORECARD,
             CategoryKey.GITHUB_ISSUES,
+            CategoryKey.GITHUB_ISSUES_ASSIGNED,
             CategoryKey.PULL_REQUESTS,
             CategoryKey.PULL_REQUESTS_ASSIGNED,
         )

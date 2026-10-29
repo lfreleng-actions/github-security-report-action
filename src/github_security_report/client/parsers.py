@@ -220,10 +220,13 @@ def _issue_ref(node: object) -> IssueRef | None:
         labels_truncated=labels_truncated,
         created_at=_parse_iso(node.get("createdAt")),
         author=_author_ref(node),
+        assignees=_assignee_logins(node),
     )
 
 
-def _issue_refs(issues: object) -> tuple[int | None, tuple[IssueRef, ...], bool]:
+def _issue_refs(
+    issues: object,
+) -> tuple[int | None, tuple[IssueRef, ...], int | None]:
     """Open-issue total and window from an ``issues`` connection node.
 
     Returns the authoritative ``totalCount`` alongside the bounded window of
@@ -241,12 +244,13 @@ def _issue_refs(issues: object) -> tuple[int | None, tuple[IssueRef, ...], bool]
     reading at all rather than a reading of zero, so it is preserved as
     indeterminate too -- a repository whose nodes came back cannot be clean.
 
-    The third element reports whether the leading (oldest) node was dropped.
-    Skipping it silently would promote a newer issue to entry 0, whose age the
-    report would then present as the oldest -- plausible, and wrong.
+    The third element is how many parsed issues precede the first dropped node
+    (None when none was dropped). Skipping it silently would promote a newer
+    issue to the oldest of its kind, whose age the report would then present
+    as the oldest -- plausible, and wrong.
     """
     if not isinstance(issues, dict):
-        return None, (), False
+        return None, (), None
     raw_total = issues.get("totalCount")
     # ``bool`` is an ``int`` subclass; a boolean here would be a schema
     # violation, so reject it rather than silently counting it as 0/1.
@@ -256,17 +260,16 @@ def _issue_refs(issues: object) -> tuple[int | None, tuple[IssueRef, ...], bool]
         else None
     )
     refs: list[IssueRef] = []
-    lead_unreadable = False
+    gap: int | None = None
     for node in issues.get("nodes") or []:
         ref = _issue_ref(node)
         if ref is None:
-            # Only a gap *before* the first survivor changes which issue ends
-            # up at entry 0; a later gap costs detail, not the oldest-issue
-            # answer.
-            lead_unreadable = lead_unreadable or not refs
+            # Only the first gap matters: it bounds which survivors are known
+            # to be older than everything unread.
+            gap = len(refs) if gap is None else gap
             continue
         refs.append(ref)
-    return total, tuple(refs), lead_unreadable
+    return total, tuple(refs), gap
 
 
 def _check_rollup_failed(node: dict) -> bool | None:
@@ -304,7 +307,7 @@ def _check_rollup_failed(node: dict) -> bool | None:
 
 
 def _assignee_logins(node: dict) -> tuple[str, ...]:
-    """Lower-cased logins a pull request is assigned to.
+    """Lower-cased logins an issue or pull request is assigned to.
 
     Lower-cased at the boundary so the "is this mine?" comparison never has to
     worry about the casing GitHub happened to return for either side.
@@ -403,7 +406,7 @@ def _parse_repo_node(node: dict) -> RepoGraphData:
     candidates = list(window)
     if latest is not None and all(r.tag != latest.tag for r in candidates):
         candidates.append(latest)
-    open_issues, issues, oldest_unreadable = _issue_refs(node.get("issues"))
+    open_issues, issues, issue_gap = _issue_refs(node.get("issues"))
     open_pulls, pulls = _pull_request_refs(node.get("pullRequests"))
     head_target = (node.get("defaultBranchRef") or {}).get("target") or {}
     return RepoGraphData(
@@ -418,7 +421,7 @@ def _parse_repo_node(node: dict) -> RepoGraphData:
         dependabot_config=config_text,
         open_issues=open_issues,
         issues=issues,
-        oldest_issue_unreadable=oldest_unreadable,
+        issue_gap=issue_gap,
         open_pull_requests=open_pulls,
         pull_requests=pulls,
     )

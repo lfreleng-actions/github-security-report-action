@@ -850,6 +850,37 @@ async def test_collect_org_attaches_the_personal_queue_for_a_person() -> None:
     assert report.pull_requests.footer_labels == pulls.ASSIGNMENT_ROWS
 
 
+async def test_collect_org_attaches_both_personal_queues_for_a_person() -> None:
+    report = await collect.collect_org(
+        FakeClient(), OrgConfig(name="o"), ReportConfig(), generated_at=WHEN
+    )
+    assert report.assigned_issues is not None
+    assert report.assigned_issues.category.key is CategoryKey.GITHUB_ISSUES_ASSIGNED
+    assert report.assigned_pull_requests is not None
+
+
+async def test_collect_org_omits_both_personal_queues_without_a_person() -> None:
+    client = FakeClient()
+    client.viewer = ""
+    report = await collect.collect_org(
+        client, OrgConfig(name="o"), ReportConfig(), generated_at=WHEN
+    )
+    assert report.assigned_issues is None
+    assert report.assigned_pull_requests is None
+    assert report.issues is not None
+
+
+async def test_collect_org_without_author_tables_skips_assigned_issues() -> None:
+    report = await collect.collect_org(
+        FakeClient(),
+        OrgConfig(name="o"),
+        ReportConfig(),
+        generated_at=WHEN,
+        extras=collect.CollectExtras(author_tables=False),
+    )
+    assert report.assigned_issues is None
+
+
 async def test_collect_org_carries_no_gap_for_a_complete_membership() -> None:
     report = await collect.collect_org(
         FakeClient(), OrgConfig(name="o"), ReportConfig(), generated_at=WHEN

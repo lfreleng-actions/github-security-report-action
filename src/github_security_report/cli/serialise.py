@@ -143,6 +143,7 @@ def _org_to_dict(org: OrgReport, hidden: Collection[CategoryKey] = ()) -> dict:
             if (entry := table(t)) is not None
         ],
         "issues": table(org.issues),
+        "assigned_issues": table(org.assigned_issues),
         "pull_requests": table(org.pull_requests),
         "assigned_pull_requests": table(org.assigned_pull_requests),
     }

@@ -179,6 +179,10 @@ class IssueRef:
     # None when GitHub returned no usable author (a deleted account renders the
     # ``author`` field null), which is distinct from a known insider.
     author: AuthorRef | None = None
+    # Logins of everyone the issue is assigned to, lower-cased. GitHub caps
+    # assignees at 10, so the collected window is exhaustive and an empty tuple
+    # genuinely means "nobody is assigned" rather than "not read".
+    assignees: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -292,11 +296,11 @@ class RepoGraphData:
     # and the oldest-issue age. May be shorter than ``open_issues`` on a
     # repository with a very large backlog.
     issues: tuple[IssueRef, ...] = ()
-    # True when the leading (oldest) entry of that window could not be parsed.
-    # The oldest-first ordering is the only evidence of which issue is oldest,
-    # so once entry 0 is lost ``issues[0]`` is merely the oldest *readable*
-    # one, and reporting its age would name a newer issue as the oldest.
-    oldest_issue_unreadable: bool = False
+    # How many readable issues precede the window's first unreadable node, or
+    # None when every node parsed. Oldest-first order is the only evidence of
+    # age, so an issue at or after that position is merely the oldest readable
+    # one: the lost node may be older, and may match any filter applied.
+    issue_gap: int | None = None
     # Total open pull requests, with the same semantics as ``open_issues``:
     # ``None`` means the connection could not be read at all, never zero.
     open_pull_requests: int | None = None
