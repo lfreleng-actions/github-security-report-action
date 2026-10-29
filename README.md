@@ -720,7 +720,7 @@ By default the report sorts its sections into three bands:
 | ---- | -------- | --- |
 | **Priority** | Secret Scanning, Dependabot: Malware Findings, Dependabot: Security Alerts, CodeQL, Mutable Releases | Findings worth acting on today |
 | **Middle** | Everything else | Neither urgent nor constant |
-| **BAU** | OpenSSF Scorecard, GitHub Issues, Issues: Assigned to Me, Pull Requests, Assigned to Me | Carry data every run, so none of it is news |
+| **BAU** | OpenSSF Scorecard, GitHub Issues, GitHub Issues: Assigned to Me, Pull Requests, Pull Requests: Assigned to Me | Carry data every run, so none of it is news |
 
 The bands are not fixed slots. **A band member with nothing to report moves
 into the middle**: a clean priority category is noise at the top of a page, and
@@ -1179,7 +1179,7 @@ scheduled run publishes this to Pages, whatever token it holds:
 This is not a configurable toggle. A published `Mine` is not a preference but a
 false statement, so there is nothing to opt into.
 
-### Assigned to Me
+### Pull Requests: Assigned to Me
 
 The `pull_requests_assigned` category repeats the Pull Requests table narrowed
 to pull requests assigned to the account the report ran as — the same columns
@@ -1219,7 +1219,7 @@ name the category as well: `--hide` outranks this toggle and cannot be
 countermanded by it. The input is empty by default, so this only matters if you
 have set it.
 
-### Issues: Assigned to Me
+### GitHub Issues: Assigned to Me
 
 The `github_issues_assigned` category does the same for issues: the GitHub
 Issues table narrowed to the open issues assigned to the account the report ran

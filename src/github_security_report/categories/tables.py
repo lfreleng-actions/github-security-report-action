@@ -324,7 +324,7 @@ TABLE_CATEGORIES: dict[CategoryKey, CategoryMeta] = {
     ),
     CategoryKey.PULL_REQUESTS_ASSIGNED: CategoryMeta(
         key=CategoryKey.PULL_REQUESTS_ASSIGNED,
-        title="Assigned to Me",
+        title="Pull Requests: Assigned to Me",
         pass_label="None assigned",
         pass_all_label="Clean",
         fail_label="With assigned pull requests",
@@ -340,7 +340,7 @@ TABLE_CATEGORIES: dict[CategoryKey, CategoryMeta] = {
     ),
     CategoryKey.GITHUB_ISSUES_ASSIGNED: CategoryMeta(
         key=CategoryKey.GITHUB_ISSUES_ASSIGNED,
-        title="Issues: Assigned to Me",
+        title="GitHub Issues: Assigned to Me",
         pass_label="None assigned",
         pass_all_label="Clean",
         fail_label="With assigned issues",

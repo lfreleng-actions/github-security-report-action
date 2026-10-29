@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Collection
 
 import pytest
@@ -344,14 +345,21 @@ class TestEverySurfaceAgrees:
         """``titles`` in the order their *headings* appear in ``text``.
 
         Matched as headings rather than bare titles: "Pull Requests" also
-        occurs inside the "Assigned to Me" description, and "CodeQL" inside
-        its own, so a substring search would order sections by whichever
-        paragraph happened to mention them first.
+        occurs inside the "Pull Requests: Assigned to Me" description, and
+        "CodeQL" inside its own, so a substring search would order sections by
+        whichever paragraph happened to mention them first. A heading must
+        also not run on into a colon: "GitHub Issues" heads the "GitHub
+        Issues: Assigned to Me" heading, which would otherwise count as its
+        own.
         """
         found = [
-            (text.index(heading), title)
+            (match.start(), title)
             for title in titles
-            if (heading := pattern.format(title=title)) in text
+            if (
+                match := re.search(
+                    re.escape(pattern.format(title=title)) + "(?!:)", text
+                )
+            )
         ]
         return [title for _, title in sorted(found)]
 

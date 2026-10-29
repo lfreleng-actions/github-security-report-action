@@ -113,9 +113,10 @@ _ISSUE_LABEL_WINDOW = 5
 # check rollup and the assignee list moved the query cost from 1 point to 4, and
 # adds no extra HTTP
 # request at all, since it rides a query the run already makes. The issues'
-# assignee list, for the Issues: Assigned to Me table, adds one connection per
-# collected issue: 25 per repository, or 125 for a five-repository batch, which
-# GitHub's formula (connection requests / 100) puts at about one more point.
+# assignee list, for the GitHub Issues: Assigned to Me table, adds one
+# connection per collected issue: 25 per repository, or 125 for a
+# five-repository batch, which GitHub's formula (connection requests / 100)
+# puts at about one more point.
 _PULL_REQUEST_WINDOW = 25
 # GitHub caps an issue or pull request at 10 assignees, so this window is
 # exhaustive by construction: unlike the issue-label window, it can never

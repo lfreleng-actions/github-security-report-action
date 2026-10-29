@@ -288,10 +288,10 @@ def write_org_files(
     #
     #  * an explicit ``--hide``, whose whole purpose is keeping a category out
     #    of shared output for this run; and
-    #  * a category no published surface carries at all. "Assigned to Me" is
-    #    terminal-only by default, so serialising it here would publish one
-    #    account's review queue through the back door while every rendered
-    #    surface correctly omitted it.
+    #  * a category no published surface carries at all. "Pull Requests:
+    #    Assigned to Me" is terminal-only by default, so serialising it here
+    #    would publish one account's review queue through the back door while
+    #    every rendered surface correctly omitted it.
     #
     # A category shown on *any* published surface stays in the JSON, so this
     # subtracts only what is genuinely local-only.

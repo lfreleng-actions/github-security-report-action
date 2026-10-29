@@ -24,9 +24,9 @@ Two accuracy notes, both stemming from the bounded GraphQL window
   the per-issue label window. The row is marked so the table never implies a
   breakdown it did not actually see.
 
-The same table narrowed to the issues assigned to the running account (Issues:
-Assigned to Me) shares the columns, but its ``Total`` counts the matches in the
-window, since ``totalCount`` knows nothing of assignees.
+The same table narrowed to the issues assigned to the running account (GitHub
+Issues: Assigned to Me) shares the columns, but its ``Total`` counts the matches
+in the window, since ``totalCount`` knows nothing of assignees.
 """
 
 from __future__ import annotations
