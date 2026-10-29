@@ -22,7 +22,10 @@ from github_security_report.client import GITHUB_API, GraphBatchError
 from github_security_report.client.workflow_runs import RunDrillDown
 from github_security_report.collect.context import (
     CollectExtras,
+    CollectProgress,
+    NullProgress,
     OrgCollectContext,
+    RunSyncSummary,
     batched,
     gather_in_batches,
 )
@@ -150,6 +153,46 @@ async def _enrich(
         )
 
 
+def _cold(in_scope: list[Repo], store: RunStore) -> bool:
+    """Whether ``store`` holds none of ``in_scope``: a first-time build.
+
+    A store that merely lacks a few new repositories is the ordinary case
+    and is not cold. Nor is a store in memory: it is empty on every run, so
+    there is no one-off to announce and no first run to report.
+    """
+    if not in_scope or not store.persistent:
+        return False
+    synced = set(store.synced_repos())
+    return not any(repo.name in synced for repo in in_scope)
+
+
+def _cold_start_notice(
+    in_scope: list[Repo], options: RunSyncOptions, *, cold: bool
+) -> str | None:
+    """Why this sync will take minutes rather than seconds, if it will.
+
+    A ``cold`` store is being built for the first time, and ``refresh``
+    re-reads every repository as if it were: either costs a backfill per
+    repository, which is when the operator decides whether to wait.
+    """
+    if not in_scope:
+        return None
+    count = len(in_scope)
+    noun = "repository" if count == 1 else "repositories"
+    if options.refresh:
+        return (
+            f"re-reading every repository's workflow runs "
+            f"({options.backfill_days} days, {count} {noun})"
+        )
+    if not cold:
+        return None
+    return (
+        f"building the workflow-run store for the first time "
+        f"({options.backfill_days} days, {count} {noun}); "
+        "this one-off takes several minutes"
+    )
+
+
 async def collect_workflow_runs(
     in_scope: list[Repo],
     ctx: OrgCollectContext,
@@ -157,14 +200,26 @@ async def collect_workflow_runs(
     *,
     now: dt.datetime,
     options: RunSyncOptions,
+    progress: CollectProgress | None = None,
 ) -> WorkflowRunsResult:
-    """Sync, enrich, prune, and load the longest window's records."""
-    syncs = await gather_in_batches(
-        in_scope,
-        lambda repo: RepoSync(
-            ctx.client, store, ctx.org, repo, now=now, options=options
-        ).run(),
-    )
+    """Sync, enrich, prune, and load the longest window's records.
+
+    ``progress`` is told, for as long as the sync lasts, when it is a
+    first-time build or a forced re-read: the one case in which this step
+    dominates the run. Once the sync is over it hears what the sync did.
+    """
+    shown = progress if progress is not None else NullProgress()
+    cold = _cold(in_scope, store)
+    shown.notice(_cold_start_notice(in_scope, options, cold=cold))
+    try:
+        syncs = await gather_in_batches(
+            in_scope,
+            lambda repo: RepoSync(
+                ctx.client, store, ctx.org, repo, now=now, options=options
+            ).run(),
+        )
+    finally:
+        shown.notice(None)
     names = frozenset(repo.name for repo in in_scope)
     since = now - dt.timedelta(days=options.window_days)
     await _enrich(
@@ -176,17 +231,26 @@ async def collect_workflow_runs(
     )
     pruned = store.prune(now - dt.timedelta(days=options.retention_days))
     unknown = frozenset(sync.repo for sync in syncs if not sync.readable)
+    summary = RunSyncSummary(
+        cold=cold,
+        repos=len(syncs),
+        unchanged=sum(1 for sync in syncs if sync.status == 304),
+        unreadable=len(unknown),
+        written=sum(sync.written for sync in syncs),
+        pruned=pruned,
+    )
     log.info(
         "workflow runs for %s: %d repositories synced (%d unchanged, %d "
         "unreadable), %d records written, %d re-read, %d pruned",
         ctx.org,
-        len(syncs),
-        sum(1 for sync in syncs if sync.status == 304),
-        len(unknown),
-        sum(sync.written for sync in syncs),
+        summary.repos,
+        summary.unchanged,
+        summary.unreadable,
+        summary.written,
         sum(sync.rereads for sync in syncs),
         pruned,
     )
+    shown.store_synced(summary)
     return WorkflowRunsResult(
         records=tuple(r for r in store.records(since=since) if r.repo in names),
         unknown=unknown,
@@ -234,6 +298,7 @@ async def attach_workflow_failures(
             include_dynamic=cfg.include_dynamic,
             refresh=extras.refresh_runs,
         ),
+        progress=extras.progress,
     )
     report.workflow_failures, report.workflow_failures_detail = (
         build_workflow_failure_tables(

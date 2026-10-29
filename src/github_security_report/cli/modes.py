@@ -35,6 +35,8 @@ from github_security_report.cli.outputs import (
     show,
     windows,
 )
+from github_security_report.cli.progress import make_tracker
+from github_security_report.cli.summary import RunSummary, print_run_summary
 from github_security_report.client import AuthError, GitHubClient, NetworkError
 from github_security_report.collect.context import CollectExtras
 from github_security_report.collect.workflow_runs import (
@@ -132,8 +134,13 @@ async def _collect_reports(
     console: Console,
     now: dt.datetime,
     options: OrgRunOptions,
-) -> list[OrgPair] | None:
+) -> list[tuple[OrgPair, RunSummary]] | None:
     """Collect every configured org's report, or None if a token is missing.
+
+    Each report comes with its run summary (see
+    :mod:`~github_security_report.cli.summary`), captured while the
+    organisation's store is still open; the caller prints it just above
+    that organisation's report, which is where its figures belong.
 
     Once each organisation's client closes, what its requests cost is logged
     at INFO: visible with ``--verbose``, which is how a run is measured, and
@@ -143,8 +150,12 @@ async def _collect_reports(
     timing figures are wanted, so the exit path logs them before the error
     propagates. The organisation's run store is opened for the collection and
     closed with the client, so an aborted run still leaves it consistent.
+
+    On an interactive terminal a live line tracks each organisation's
+    collection (see :mod:`~github_security_report.cli.progress`); it comes
+    down, and the warnings it held are replayed, before anything else prints.
     """
-    pairs: list[OrgPair] = []
+    collected: list[tuple[OrgPair, RunSummary]] = []
     for org_cfg in cfg.organizations:
         token = config.resolve_token(org_cfg)
         if not token:
@@ -157,42 +168,61 @@ async def _collect_reports(
         # surfaces render with the same windows and thresholds it was built
         # with rather than the ones a flag overrode.
         effective_cfg = replace(effective_cfg, report=report_cfg)
-        client = GitHubClient(token, concurrency=report_cfg.concurrency)
+        tracker = make_tracker(console, no_progress=options.no_progress)
+        client = GitHubClient(
+            token, concurrency=report_cfg.concurrency, progress=tracker
+        )
         store = open_run_store(report_cfg.workflow_runs, org_cfg.name)
         try:
             async with client:
                 with store:
-                    pairs.append(
-                        (
+                    tracker.start(org_cfg.name)
+                    try:
+                        report = await collect.collect_org(
+                            client,
                             effective_cfg,
-                            await collect.collect_org(
-                                client,
-                                effective_cfg,
-                                report_cfg,
-                                generated_at=now,
-                                extras=CollectExtras(
-                                    run_store=store,
-                                    refresh_runs=options.refresh_runs,
-                                ),
+                            report_cfg,
+                            generated_at=now,
+                            extras=CollectExtras(
+                                run_store=store,
+                                refresh_runs=options.refresh_runs,
+                                progress=tracker,
                             ),
                         )
+                    finally:
+                        tracker.stop()
+                    summary = RunSummary.capture(
+                        org=org_cfg.name,
+                        stats=client.stats,
+                        store=store,
+                        cached=report_cfg.workflow_runs.cache,
+                        sync=tracker.sync,
                     )
+                    collected.append(((effective_cfg, report), summary))
         finally:
             # After the context has closed the client, so the elapsed time
             # covers the whole run; the error, if any, carries on from here.
             log.info("GitHub API for %s: %s", org_cfg.name, client.stats.summary())
-    return pairs
+    return collected
 
 
 async def _run_org(cfg: Config, options: OrgRunOptions, *, console: Console) -> int:
-    """Collect every configured org, then render, publish and notify."""
+    """Collect every configured org, then render, publish and notify.
+
+    Each organisation's run summary prints immediately above its own report:
+    the collection of every organisation is over by now, so printing the
+    summaries as the collections ended would have stacked them all above the
+    first report.
+    """
     now = dt.datetime.now(dt.timezone.utc)
-    pairs = await _collect_reports(cfg, console=console, now=now, options=options)
-    if pairs is None:
+    collected = await _collect_reports(cfg, console=console, now=now, options=options)
+    if collected is None:
         return 2
 
     limits = options.limits
-    for org_cfg, org_report in pairs:
+    pairs = [pair for pair, _summary in collected]
+    for (org_cfg, org_report), summary in collected:
+        print_run_summary(console, summary)
         term_render.render_org(
             org_report,
             console,
@@ -232,6 +262,7 @@ async def _run_repo(
     hidden: frozenset[CategoryKey] = frozenset(),
     config_path: Path | None = None,
     run_windows: tuple[int, ...] | None = None,
+    no_progress: bool = False,
 ) -> int:
     # Repo mode has no per-org block, so the report config is whatever a
     # supplied --config carried globally, falling back to the built-in
@@ -255,23 +286,34 @@ async def _run_repo(
         console.print(f"[red]No token in ${token_env}[/red]")
         return 2
     now = dt.datetime.now(dt.timezone.utc)
-    async with GitHubClient(token, concurrency=cfg.concurrency) as client:
-        repo, signals = await collect.collect_repo(
-            client, owner, repo_name, ruleset_workflows=cfg.ruleset_workflows
-        )
-        if repo is None:
-            return 2
-        org = build_org_report(
-            f"{owner}/{repo_name}", signals, repo_count=1, generated_at=now
-        )
-        with open_run_store(runs_cfg, owner) as store:
-            await attach_workflow_failures(
-                org,
-                [repo],
-                collect.repo_context(client, owner),
-                cfg,
-                CollectExtras(run_store=store),
+    # One repository, so the live line has no counter to drive; the spinner
+    # and the request counts still cover the probes and the run listing.
+    tracker = make_tracker(console, no_progress=no_progress)
+    async with GitHubClient(
+        token, concurrency=cfg.concurrency, progress=tracker
+    ) as client:
+        tracker.start(f"{owner}/{repo_name}")
+        try:
+            tracker.phase("probing repository")
+            repo, signals = await collect.collect_repo(
+                client, owner, repo_name, ruleset_workflows=cfg.ruleset_workflows
             )
+            if repo is None:
+                return 2
+            org = build_org_report(
+                f"{owner}/{repo_name}", signals, repo_count=1, generated_at=now
+            )
+            tracker.phase("syncing workflow runs")
+            with open_run_store(runs_cfg, owner) as store:
+                await attach_workflow_failures(
+                    org,
+                    [repo],
+                    collect.repo_context(client, owner),
+                    cfg,
+                    CollectExtras(run_store=store, progress=tracker),
+                )
+        finally:
+            tracker.stop()
 
     # Repo mode renders the same categories, so it resolves the same ordering.
     # The other generic tables are never collected here, and the layout skips

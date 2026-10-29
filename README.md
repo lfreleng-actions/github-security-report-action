@@ -1518,13 +1518,20 @@ one line of what the run cost, for example
 <!-- markdownlint-disable MD013 -->
 
 ```text
-GitHub API for lfreleng-actions: 1402 requests (0 retries), 822 core points, 64 graphql points, 41.3 MiB received, 102.5 s
+GitHub API for lfreleng-actions: 1402 requests (REST 1338, GraphQL 64; 0 retries; 0 not modified), 822 core points, 64 graphql points, 0 rate-limit backoffs (0 s), 41.3 MiB received, 102.5 s
 ```
 
 <!-- markdownlint-enable MD013 -->
 
 The request count is every request the tool issued, including retries and
-attempts that never got an answer. The points come from GitHub's own
+attempts that never got an answer; the split names what was asked (a REST
+endpoint, the GraphQL endpoint, or the external Scorecard API), and `not
+modified` is how many conditional reads the run store made that GitHub
+answered `304` at no cost. The backoffs are the pauses GitHub's rate limiting
+forced, with the seconds slept for them. The same figures appear in the run
+summary printed before each report (see
+[Progress and run summary](#progress-and-run-summary)). The points come from
+GitHub's own
 `x-ratelimit-*` response headers rather than from counting: GitHub meters a
 token across more than one bucket per resource (alike requests seconds apart
 can carry different `x-ratelimit-reset` values with independent counters), so
@@ -1763,6 +1770,7 @@ and the Slack **bot token** is consumed by the workflow, not the CLI.
 | `run_cache_dir` | No | `""` | Directory for the workflow-run store (default: `$XDG_CACHE_HOME/github-security-report`, i.e. `~/.cache/github-security-report` on a runner). Restore and save it with `actions/cache`, as the bundled `reporting.yaml` does, so each scheduled run reads only what is new |
 | `refresh_runs` | No | `false` | Re-read every repository's workflow runs for the longest window, ignoring what the run store already holds |
 | `no_run_cache` | No | `false` | Keep the workflow-run store in memory for this run instead of on disk, so every window is re-read from GitHub and nothing is left behind |
+| `no_progress` | No | `false` | Do not show the live progress line while collecting. The action runs under `CI`, where the line is already off; set this when running the CLI from the action's source on a terminal (see [Progress and run summary](#progress-and-run-summary)) |
 | `tool_version` | No | `""` | Published PyPI version to install. Empty (the default) uses the Dependabot-managed pin in `.github/runtime-pin/requirements.txt`; set a specific version to override. Ignored on pull requests or when `use_local_source` is `true` (both run from source) |
 | `use_local_source` | No | `false` | Run from the checked-out source instead of PyPI (for testing unreleased code from any event) |
 
@@ -1795,6 +1803,53 @@ An org-mode run keeps its workflow-run store under
 by default), so the first run against an organisation is slower than the
 rest; see [Workflow run windows and store](#workflow-run-windows-and-store).
 Repo mode leaves nothing behind.
+
+### Progress and run summary
+
+On an interactive terminal an org-mode run keeps one live line at the bottom
+of the screen while it collects: the organisation, the phase it is in, the
+repository count where the phase works per repository, the REST and GraphQL
+request counts with how many are in flight, and the elapsed time. A second
+line appears while GitHub has the run paused for a rate limit, and while the
+workflow-run store is being built for the first time, since that one-off
+dominates a cold run. Warnings logged in the meantime are held and replayed,
+in order, once the line comes down.
+
+<!-- markdownlint-disable MD013 -->
+
+```text
+⠧ lfreleng-actions · probing repositories · 41/120 repos · REST 812 (9 in flight) · GraphQL 24 · 38.2 s
+⏳ rate limited by GitHub (core); resuming in 42 s
+```
+
+<!-- markdownlint-enable MD013 -->
+
+Before each organisation's report, a dim three-line summary says what the
+run cost and what the store holds, so a slow run explains itself without
+`--verbose`:
+
+<!-- markdownlint-disable MD013 -->
+
+```text
+Run summary for lfreleng-actions
+  requests: 1 234 requests (REST 1 100 · GraphQL 120 · external 14 · 300 not modified) · 12.3 MiB · 95.2 s
+  rate limit: 980 core points · 230 graphql points · 0 backoffs
+  workflow-run store: 4.2 MiB · 12 340 runs · 180 repositories · this run: 180 synced, 160 unchanged, 340 written
+```
+
+<!-- markdownlint-enable MD013 -->
+
+The rate-limit line turns yellow when a backoff happened or a resource's
+remaining budget fell under a tenth of its limit. A first-time build of the
+store on disk is marked `built (first run)`; a run with `--no-run-cache`
+reads `in memory (not cached)` and, since its store is empty every time, is
+never a first run. The summary is for the terminal only: nothing of it
+reaches the Markdown, HTML, JSON or Slack output.
+
+The live line is off under `--no-progress`, when `CI` is set, when stdout is
+not a terminal, and with `--verbose`, whose log lines would fight it for the
+screen. The summary prints in every case. The same figures reach the log at
+`INFO` under `--verbose`.
 
 ### GitHub Enterprise Server
 

@@ -345,7 +345,9 @@ async def collect_org(
     org = org_cfg.name
     log.info("collecting %s", org)
     wanted = extras if extras is not None else CollectExtras()
+    progress = wanted.progress
 
+    progress.phase("listing repositories")
     scoped = (
         selected_scope(selected)
         if selected is not None
@@ -354,7 +356,9 @@ async def collect_org(
     # The GraphQL prefetch depends on nothing but the scope, and the sweeps
     # and gating on nothing but each other, so the two chains run together:
     # the prefetch's seconds-long queries no longer hold the whole run while
-    # the rest of the semaphore sits idle.
+    # the rest of the semaphore sits idle. One phase name covers both, since
+    # two chains racing to name the phase would only flicker.
+    progress.phase("sweeping alerts, gating signals and prefetching (GraphQL)")
     evidence, graph = await gather_all(
         _sweep_and_gate(client, org, scoped.in_scope, report_cfg),
         collect_graph(client, org, scoped.in_scope, batch_size=report_cfg.graph_batch),
@@ -362,8 +366,9 @@ async def collect_org(
     skipped = evidence[1]
     ctx = _build_context(client, org, scoped.in_scope, report_cfg, evidence, graph)
 
+    progress.phase("probing repositories", repos=len(scoped.in_scope))
     facts = await gather_in_batches(
-        scoped.in_scope, lambda repo: _facts_for_repo(repo, ctx)
+        scoped.in_scope, lambda repo: _facts_for_repo(repo, ctx), progress=progress
     )
     report = build_org_report(
         org,

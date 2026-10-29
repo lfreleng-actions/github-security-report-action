@@ -28,7 +28,7 @@ from test_collect_run_sync import (
 
 from github_security_report.client import GraphBatchError
 from github_security_report.client.workflow_runs import RunDrillDown
-from github_security_report.collect.context import OrgCollectContext
+from github_security_report.collect.context import OrgCollectContext, RunSyncSummary
 from github_security_report.collect.run_sync import RunSyncOptions, _merge
 from github_security_report.collect.workflow_runs import (
     DRILL_DOWN_BATCH,
@@ -68,6 +68,26 @@ def _ctx(fake: FakeRunsClient) -> OrgCollectContext:
     )
 
 
+class _Notices:
+    """A CollectProgress that keeps the notices and sync summary it heard."""
+
+    def __init__(self) -> None:
+        self.shown: list[str | None] = []
+        self.sync: RunSyncSummary | None = None
+
+    def phase(self, name: str, *, repos: int | None = None) -> None:
+        return None
+
+    def repo_done(self) -> None:
+        return None
+
+    def notice(self, text: str | None) -> None:
+        self.shown.append(text)
+
+    def store_synced(self, summary: RunSyncSummary) -> None:
+        self.sync = summary
+
+
 async def _collect(
     fake: FakeRunsClient,
     store: RunStore,
@@ -76,9 +96,10 @@ async def _collect(
     options: RunSyncOptions = RunSyncOptions(
         window_days=30, retention_days=60, backfill_days=60
     ),
+    progress: _Notices | None = None,
 ) -> WorkflowRunsResult:
     return await collect_workflow_runs(
-        repos, _ctx(fake), store, now=NOW, options=options
+        repos, _ctx(fake), store, now=NOW, options=options, progress=progress
     )
 
 
@@ -104,6 +125,72 @@ async def test_collection_reports_the_window_of_in_scope_repos(
     assert result.oldest == {"a": NOW - 60 * DAY, "b": None}
     assert sorted(sync.repo for sync in result.syncs) == ["a", "b"]
     assert store.count("a") == 2  # the window bounds the result, not the store
+
+
+async def test_a_first_time_build_is_announced_for_as_long_as_it_lasts(
+    store: RunStore,
+) -> None:
+    fake = FakeRunsClient()
+    fake.runs["a"] = [_rec(id=1, repo="a")]
+    progress = _Notices()
+    await _collect(fake, store, [_repo("a"), _repo("b")], progress=progress)
+    assert progress.shown == [
+        "building the workflow-run store for the first time (60 days, 2 "
+        "repositories); this one-off takes several minutes",
+        None,
+    ]
+    assert progress.sync == RunSyncSummary(
+        cold=True, repos=2, unchanged=0, unreadable=0, written=1, pruned=0
+    )
+    # Warm now: the next sync says nothing and writes nothing new.
+    progress.shown.clear()
+    await _collect(fake, store, [_repo("a"), _repo("b")], progress=progress)
+    assert progress.shown == [None, None]
+    assert progress.sync is not None
+    assert not progress.sync.cold
+    assert (progress.sync.repos, progress.sync.written) == (2, 0)
+
+
+async def test_a_store_lacking_only_a_new_repository_is_not_cold(
+    store: RunStore,
+) -> None:
+    fake = FakeRunsClient()
+    await _collect(fake, store, [_repo("a")])
+    progress = _Notices()
+    await _collect(fake, store, [_repo("a"), _repo("new")], progress=progress)
+    assert progress.shown == [None, None]
+
+
+async def test_an_in_memory_store_is_never_a_first_time_build() -> None:
+    # --no-run-cache and repo mode start from an empty store every time, so
+    # announcing a one-off there would announce it on every run.
+    fake = FakeRunsClient()
+    fake.runs["a"] = [_rec(id=1, repo="a")]
+    progress = _Notices()
+    with RunStore(Path(":memory:")) as store:
+        assert not store.persistent
+        await _collect(fake, store, [_repo("a"), _repo("b")], progress=progress)
+    assert progress.shown == [None, None]
+    assert progress.sync is not None
+    assert not progress.sync.cold
+
+
+async def test_a_forced_refresh_is_announced_too(store: RunStore) -> None:
+    fake = FakeRunsClient()
+    await _collect(fake, store, [_repo("a")])
+    progress = _Notices()
+    await _collect(
+        fake,
+        store,
+        [_repo("a")],
+        options=RunSyncOptions(
+            window_days=30, retention_days=60, backfill_days=60, refresh=True
+        ),
+        progress=progress,
+    )
+    assert progress.shown[0] == (
+        "re-reading every repository's workflow runs (60 days, 1 repository)"
+    )
 
 
 async def test_enrichment_names_the_failing_jobs_in_batches(store: RunStore) -> None:

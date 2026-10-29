@@ -148,6 +148,15 @@ class RunStore:
         """Where the SQLite file lives."""
         return self._path
 
+    @property
+    def persistent(self) -> bool:
+        """Whether the store outlives the run: a file on disk, not memory.
+
+        An in-memory store starts empty every time, so what would be a
+        first-time build on disk is the ordinary cost of running uncached.
+        """
+        return str(self._path) != ":memory:"
+
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
         self._conn.execute("BEGIN")

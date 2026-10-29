@@ -15,8 +15,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
-from dataclasses import dataclass
-from typing import Any, TypeVar
+from dataclasses import dataclass, field
+from typing import Any, Protocol, TypeVar
 
 from github_security_report.client import GraphBatchError
 from github_security_report.collect.protocols import ClientProtocol
@@ -42,6 +42,65 @@ GRAPH_PREFETCH_IN_FLIGHT = 4
 
 
 @dataclass(frozen=True)
+class RunSyncSummary:
+    """What one organisation's workflow-run sync did, for the run summary.
+
+    ``cold`` is whether a store on disk held none of the in-scope
+    repositories before the sync: a first-time build, which is when a run
+    takes minutes it will not take again. A store in memory is never cold,
+    since it is rebuilt on every run. The counts are this run's:
+    repositories whose listing was read (``repos``), of which ``unchanged``
+    answered 304 and ``unreadable`` could not be read; records ``written``
+    and ``pruned``.
+    """
+
+    cold: bool
+    repos: int
+    unchanged: int
+    unreadable: int
+    written: int
+    pruned: int
+
+
+class CollectProgress(Protocol):
+    """What a collection tells a display about where it has got to.
+
+    The collectors call these between awaits and expect them to return at
+    once without raising; they import no display code, so the terminal's
+    tracker implements this and the default, :class:`NullProgress`, does
+    nothing.
+    """
+
+    def phase(self, name: str, *, repos: int | None = None) -> None:
+        """Enter a named phase; ``repos`` starts a per-repository counter."""
+
+    def repo_done(self) -> None:
+        """One repository of the current phase's counter has finished."""
+
+    def notice(self, text: str | None) -> None:
+        """Show ``text`` while something exceptional lasts; ``None`` clears it."""
+
+    def store_synced(self, summary: RunSyncSummary) -> None:
+        """The workflow-run sync finished and did ``summary``."""
+
+
+class NullProgress:
+    """Progress nobody is watching: the default."""
+
+    def phase(self, name: str, *, repos: int | None = None) -> None:
+        return None
+
+    def repo_done(self) -> None:
+        return None
+
+    def notice(self, text: str | None) -> None:
+        return None
+
+    def store_synced(self, summary: RunSyncSummary) -> None:
+        return None
+
+
+@dataclass(frozen=True)
 class CollectExtras:
     """What an org-mode run collects beyond the signals and posture tables.
 
@@ -50,12 +109,13 @@ class CollectExtras:
     on none of them. ``run_store`` is the workflow-run cache the Workflow
     Failures tables sync against, or ``None`` to leave them uncollected;
     ``refresh_runs`` re-reads every repository's runs regardless of what the
-    store holds.
+    store holds. ``progress`` hears which phase the collection is in.
     """
 
     author_tables: bool = True
     run_store: RunStore | None = None
     refresh_runs: bool = False
+    progress: CollectProgress = field(default_factory=NullProgress)
 
 
 @dataclass(frozen=True)
@@ -147,19 +207,30 @@ async def gather_all(*aws: Awaitable[Any]) -> list[Any]:
 
 
 async def gather_in_batches(
-    repos: list[Repo], probe: Callable[[Repo], Awaitable[_T]]
+    repos: list[Repo],
+    probe: Callable[[Repo], Awaitable[_T]],
+    *,
+    progress: CollectProgress | None = None,
 ) -> list[_T]:
     """Run ``probe`` for every repository, creating tasks in bounded batches.
 
     The client semaphore caps real HTTP concurrency; chunking the gather also
     bounds task creation so very large orgs (hundreds or thousands of repos) do
     not allocate every task at once. A failing probe cancels its batch before
-    the error propagates (see :func:`gather_all`).
+    the error propagates (see :func:`gather_all`). ``progress``, when given,
+    is told as each repository's probe completes.
     """
+
+    async def ticking(repo: Repo) -> _T:
+        result = await probe(repo)
+        if progress is not None:
+            progress.repo_done()
+        return result
+
     results: list[_T] = []
     for start in range(0, len(repos), REPO_BATCH):
         batch = repos[start : start + REPO_BATCH]
-        results.extend(await gather_all(*(probe(repo) for repo in batch)))
+        results.extend(await gather_all(*(ticking(repo) for repo in batch)))
     return results
 
 
