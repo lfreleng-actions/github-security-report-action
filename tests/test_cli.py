@@ -198,6 +198,15 @@ def test_org_mode_writes_pages(tmp_path: Path) -> None:
     # naming an uncollected category is skipped rather than invented.
     assert payload["section_order"][-1] == CategoryKey.PULL_REQUESTS.value
     assert CategoryKey.PULL_REQUESTS_ASSIGNED.value not in payload["section_order"]
+    # The malware table is collected on every org run and published even when
+    # empty; with every priority member clean, it keeps its band order at the
+    # top of the middle.
+    assert payload["malware_alerts"]["title"] == "Dependabot: Malware Alerts"
+    assert payload["malware_alerts"]["rows"] == []
+    order = payload["section_order"]
+    assert order.index(CategoryKey.MALWARE_ALERTS.value) == (
+        order.index(CategoryKey.SECRET_SCANNING.value) + 1
+    )
     # --slack-channel supplies the channel even though the config has none,
     # so a payload is written for that channel.
     assert (out / "slack-payload-CTEST123.json").exists()

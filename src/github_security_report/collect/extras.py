@@ -3,13 +3,15 @@
 """Reporting categories outside the four-state per-signal model.
 
 Dependabot configuration posture, release/tag freshness, release mutability,
-private vulnerability reporting, the auto-merge setting, Code Quality, CodeQL
-scan health and Workflow Failures are rendered as tables rather than as
-pass/fail signals, so they are assembled here once the signal report exists. The Dependabot alerts
-enablement flag, the auto-merge flag, the Linguist languages, the default
-branch head and the release/tag data are reused from the batched GraphQL
-prefetch; the security-updates, private-vulnerability-reporting, Code Quality
-setup and CodeQL reads are still per-repo REST calls.
+private vulnerability reporting, the auto-merge setting, Dependabot malware
+alerts, Code Quality, CodeQL scan health and Workflow Failures are rendered as
+tables rather than as pass/fail signals, so they are assembled here once the
+signal report exists. The malware alerts come from the Dependabot alert sweep
+already made for the signals. The Dependabot alerts enablement flag, the
+auto-merge flag, the Linguist languages, the default branch head and the
+release/tag data are reused from the batched GraphQL prefetch; the
+security-updates, private-vulnerability-reporting, Code Quality setup and
+CodeQL reads are still per-repo REST calls.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from github_security_report import codeql, layout, posture
+from github_security_report import codeql, layout, malware, posture
 from github_security_report.code_quality import CodeQualitySetup, applicable_languages
 from github_security_report.collect.codeql import collect_codeql_facts
 from github_security_report.collect.context import (
@@ -218,6 +220,15 @@ async def attach_extra_tables(
     report.mutable_releases = posture.build_mutable_releases_table(postures)
     report.private_vulnerability_reporting = posture.build_pvr_table(postures)
     report.auto_merge = posture.build_auto_merge_table(postures)
+    # Malware findings come from the Dependabot sweep already made for the
+    # alerts signal, so this table costs no request of its own.
+    report.malware_alerts = malware.build_malware_alerts_table(
+        in_scope,
+        ctx.dependabot,
+        {p.repo.name: p.dependabot_alerts for p in postures},
+        sweep_readable=ctx.sweep_status.get("dependabot") == 200,
+        generated_at=report.generated_at,
+    )
     report.code_quality = posture.build_code_quality_table(postures)
     report.code_quality_writes = posture.code_quality_writes(postures)
     report.codeql_tables = codeql.build_codeql_tables(

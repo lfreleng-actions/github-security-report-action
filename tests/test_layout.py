@@ -79,6 +79,7 @@ def _report(
             "private_vulnerability_reporting",
         ),
         (CategoryKey.AUTO_MERGE, "auto_merge"),
+        (CategoryKey.MALWARE_ALERTS, "malware_alerts"),
         (CategoryKey.CODE_QUALITY, "code_quality"),
         (CategoryKey.GITHUB_ISSUES, "issues"),
         (CategoryKey.PULL_REQUESTS, "pull_requests"),
@@ -153,6 +154,24 @@ class TestAutoBands:
         # collapses to: demoted priority, middle, demoted BAU.
         assert keys[: len(DEFAULT_PRIORITY)] == list(DEFAULT_PRIORITY)
         assert keys[-len(DEFAULT_BAU) :] == list(DEFAULT_BAU)
+
+    def test_populated_malware_alerts_sit_in_the_priority_band(self) -> None:
+        report = _report(
+            offenders={SignalType.SECRET_SCANNING, SignalType.DEPENDABOT},
+            populated_tables={CategoryKey.MALWARE_ALERTS},
+        )
+        keys = _resolved(report, OrderConfig())
+        assert keys[:3] == [
+            CategoryKey.SECRET_SCANNING,
+            CategoryKey.MALWARE_ALERTS,
+            CategoryKey.DEPENDABOT_ALERTS,
+        ]
+
+    def test_empty_malware_alerts_demote_into_the_middle(self) -> None:
+        report = _report(offenders={SignalType.DEPENDABOT, SignalType.CODEQL})
+        keys = _resolved(report, OrderConfig())
+        assert keys[:2] == [CategoryKey.DEPENDABOT_ALERTS, CategoryKey.CODEQL]
+        assert keys.index(CategoryKey.MALWARE_ALERTS) > 1
 
     def test_demoted_members_bound_the_middle_from_each_side(self) -> None:
         # One populated member in each band, one empty. The empty ones must

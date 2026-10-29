@@ -353,6 +353,105 @@ async def test_collect_org_degrades_failed_sweep_to_unknown() -> None:
     assert dependabot.offenders == []
     assert dependabot.clean_count == 0  # nothing is asserted clean
     assert dependabot.unknown_count > 0
+    # The malware table reads the same sweep and nothing came back, so it
+    # asserts nothing clean either: every in-scope repository is unknown.
+    malware = report.malware_alerts
+    assert malware is not None
+    assert malware.rows == []
+    assert (malware.fail_count, malware.pass_count, malware.unknown_count) == (
+        0,
+        0,
+        2,
+    )
+
+
+async def test_collect_org_keeps_malware_from_a_partial_sweep() -> None:
+    # A later page of the Dependabot sweep failed: the pager keeps the alerts
+    # from earlier pages under the failing status. The malware among them is
+    # still listed and fails its repository; the rest are unknown, not clean.
+    class PartialClient(FakeClient):
+        async def org_bulk_alerts(self, org: str, kind: str) -> tuple[int, list[dict]]:
+            if kind == "dependabot":
+                return 502, [
+                    {
+                        "repository": {"name": "git-configure-action"},
+                        "dependency": {"package": {"name": "evil-pkg"}},
+                        "security_advisory": {
+                            "classification": "malware",
+                            "severity": "critical",
+                        },
+                    }
+                ]
+            return 200, self.bulk[kind]
+
+        async def dependabot_enabled(self, org: str, repo: str) -> bool | None:
+            return True
+
+    report = await collect.collect_org(
+        PartialClient(), OrgConfig(name="o"), ReportConfig(), generated_at=WHEN
+    )
+    malware = report.malware_alerts
+    assert malware is not None
+    assert [(r.repo.name, r.cells[0]) for r in malware.rows] == [
+        ("git-configure-action", "evil-pkg")
+    ]
+    assert (malware.fail_count, malware.pass_count, malware.unknown_count) == (
+        1,
+        0,
+        1,
+    )
+
+
+async def test_collect_org_attaches_malware_alerts_from_the_sweep() -> None:
+    # Malware alerts are filtered out of the Dependabot sweep the signal
+    # already read; a general (vulnerability) alert is not malware.
+    class MalwareClient(FakeClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.bulk["dependabot"] = [
+                {
+                    "repository": {"name": "dependamerge"},
+                    "security_advisory": {
+                        "classification": "general",
+                        "severity": "high",
+                    },
+                },
+                {
+                    "repository": {"name": "git-configure-action"},
+                    "html_url": "https://github.com/o/git-configure-action/security/dependabot/1",
+                    "created_at": "2026-06-06T09:00:00Z",
+                    "dependency": {
+                        "package": {"name": "evil-pkg", "ecosystem": "npm"},
+                        "manifest_path": "package-lock.json",
+                    },
+                    "security_advisory": {
+                        "classification": "malware",
+                        "severity": "critical",
+                    },
+                },
+            ]
+
+    report = await collect.collect_org(
+        MalwareClient(), OrgConfig(name="o"), ReportConfig(), generated_at=WHEN
+    )
+    malware = report.malware_alerts
+    assert malware is not None
+    assert malware.title == "Dependabot: Malware Alerts"
+    assert [(r.repo.name, r.cells) for r in malware.rows] == [
+        (
+            "git-configure-action",
+            ("evil-pkg", "npm", "package-lock.json", "critical", "10 days"),
+        )
+    ]
+    assert (malware.fail_count, malware.pass_count, malware.unknown_count) == (
+        1,
+        1,
+        0,
+    )
+    # A populated malware table holds its priority-band slot.
+    assert report.section_order.index(CategoryKey.MALWARE_ALERTS) < (
+        report.section_order.index(CategoryKey.RELEASES)
+    )
 
 
 async def test_collect_org_flags_incomplete_repo_listing() -> None:
