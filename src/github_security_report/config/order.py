@@ -50,8 +50,9 @@ DEFAULT_PRIORITY: tuple[CategoryKey, ...] = (
 # Business as usual: categories that carry data on essentially every run. A
 # healthy organisation still has open issues, open pull requests and a Scorecard
 # score, so none of them is news, and leading with them buries whatever is.
-# "Assigned to Me" follows Pull Requests, and "Issues: Assigned to Me" follows
-# GitHub Issues, because each is the same backlog narrowed to one reader.
+# "Pull Requests: Assigned to Me" follows Pull Requests, and "GitHub Issues:
+# Assigned to Me" follows GitHub Issues, because each is the same backlog
+# narrowed to one reader.
 DEFAULT_BAU: tuple[CategoryKey, ...] = (
     CategoryKey.SCORECARD,
     CategoryKey.GITHUB_ISSUES,

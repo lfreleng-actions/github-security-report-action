@@ -640,7 +640,7 @@ class TestBuildAssignedIssuesTable:
         )
         table = _build_assigned(graph, ["a"], viewer="Me")
         assert table.category.key is CategoryKey.GITHUB_ISSUES_ASSIGNED
-        assert table.category.title == "Issues: Assigned to Me"
+        assert table.category.title == "GitHub Issues: Assigned to Me"
         (row,) = table.rows
         cells = dict(zip(table.columns[1:], row.cells, strict=True))
         # Total counts the assigned issues, not the repository's totalCount.
