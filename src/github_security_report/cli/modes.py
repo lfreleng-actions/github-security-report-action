@@ -13,7 +13,6 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import os
-from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import NoReturn
@@ -21,8 +20,7 @@ from typing import NoReturn
 import typer
 from rich.console import Console
 
-from github_security_report import collect, config, layout, runner, scope
-from github_security_report import remediate as remediate_mod
+from github_security_report import collect, config, layout, runner
 from github_security_report.categories import CategoryKey
 from github_security_report.cli import publish
 from github_security_report.cli.options import (
@@ -35,11 +33,15 @@ from github_security_report.cli.outputs import (
     footer,
     repo_outputs,
     show,
+    windows,
 )
 from github_security_report.client import AuthError, GitHubClient, NetworkError
-from github_security_report.collect.protocols import ClientProtocol
+from github_security_report.collect.context import CollectExtras
+from github_security_report.collect.workflow_runs import (
+    attach_workflow_failures,
+    open_run_store,
+)
 from github_security_report.config import Config, OrgConfig, ReportConfig
-from github_security_report.models import Repo
 from github_security_report.render import markdown as md_render
 from github_security_report.render import terminal as term_render
 from github_security_report.report import build_org_report
@@ -129,7 +131,7 @@ async def _collect_reports(
     *,
     console: Console,
     now: dt.datetime,
-    overrides: ReportOverrides,
+    options: OrgRunOptions,
 ) -> list[OrgPair] | None:
     """Collect every configured org's report, or None if a token is missing.
 
@@ -139,7 +141,8 @@ async def _collect_reports(
     whether or not the collection finished: a run that aborts on a rate limit,
     an outage or a rejected token is exactly the run whose request, retry and
     timing figures are wanted, so the exit path logs them before the error
-    propagates.
+    propagates. The organisation's run store is opened for the collection and
+    closed with the client, so an aborted run still leaves it consistent.
     """
     pairs: list[OrgPair] = []
     for org_cfg in cfg.organizations:
@@ -149,18 +152,31 @@ async def _collect_reports(
                 f"[red]No token in ${org_cfg.token_env} for {org_cfg.name}[/red]"
             )
             return None
-        effective_cfg, report_cfg = overrides.apply(org_cfg)
+        effective_cfg, report_cfg = options.overrides.apply(org_cfg)
+        # The pair carries the configuration the collection ran under, so the
+        # surfaces render with the same windows and thresholds it was built
+        # with rather than the ones a flag overrode.
+        effective_cfg = replace(effective_cfg, report=report_cfg)
         client = GitHubClient(token, concurrency=report_cfg.concurrency)
+        store = open_run_store(report_cfg.workflow_runs, org_cfg.name)
         try:
             async with client:
-                pairs.append(
-                    (
-                        org_cfg,
-                        await collect.collect_org(
-                            client, effective_cfg, report_cfg, generated_at=now
-                        ),
+                with store:
+                    pairs.append(
+                        (
+                            effective_cfg,
+                            await collect.collect_org(
+                                client,
+                                effective_cfg,
+                                report_cfg,
+                                generated_at=now,
+                                extras=CollectExtras(
+                                    run_store=store,
+                                    refresh_runs=options.refresh_runs,
+                                ),
+                            ),
+                        )
                     )
-                )
         finally:
             # After the context has closed the client, so the elapsed time
             # covers the whole run; the error, if any, carries on from here.
@@ -171,9 +187,7 @@ async def _collect_reports(
 async def _run_org(cfg: Config, options: OrgRunOptions, *, console: Console) -> int:
     """Collect every configured org, then render, publish and notify."""
     now = dt.datetime.now(dt.timezone.utc)
-    pairs = await _collect_reports(
-        cfg, console=console, now=now, overrides=options.overrides
-    )
+    pairs = await _collect_reports(cfg, console=console, now=now, options=options)
     if pairs is None:
         return 2
 
@@ -186,6 +200,7 @@ async def _run_org(cfg: Config, options: OrgRunOptions, *, console: Console) -> 
             show=show(org_cfg.report, "cli", options.hidden),
             limit=limits.resolver(org_cfg.report, "cli"),
             footer=footer(org_cfg.report),
+            windows=windows(org_cfg.report, "cli"),
             config_path=options.config_path,
         )
     if options.output_dir:
@@ -216,31 +231,51 @@ async def _run_repo(
     limits: TopNLimits | None = None,
     hidden: frozenset[CategoryKey] = frozenset(),
     config_path: Path | None = None,
+    run_windows: tuple[int, ...] | None = None,
 ) -> int:
     # Repo mode has no per-org block, so the report config is whatever a
     # supplied --config carried globally, falling back to the built-in
     # defaults. Threading it through is what makes the per-category toggles,
     # row limits and ruleset keywords mean the same thing in both modes.
     cfg = report_cfg if report_cfg is not None else ReportConfig()
+    # One repository's runs are read afresh each time rather than cached: a
+    # single listing is cheap, and a repo-mode run (a pull request's CI, a
+    # developer's shell) should leave nothing behind. For the same reason it
+    # reads the terminal's windows alone -- a week, by default -- rather than
+    # the published report's quarter, which would be a 90-day backfill for
+    # one table nobody publishes from this mode.
+    days = (
+        run_windows if run_windows is not None else cfg.workflow_runs.windows_for("cli")
+    )
+    runs_cfg = ReportOverrides(run_windows=days, run_cache=False).apply_runs(cfg)
+    cfg = replace(cfg, workflow_runs=runs_cfg)
     caps = limits if limits is not None else TopNLimits()
     token = os.environ.get(token_env, "").strip()
     if not token:
         console.print(f"[red]No token in ${token_env}[/red]")
         return 2
+    now = dt.datetime.now(dt.timezone.utc)
     async with GitHubClient(token, concurrency=cfg.concurrency) as client:
         repo, signals = await collect.collect_repo(
             client, owner, repo_name, ruleset_workflows=cfg.ruleset_workflows
         )
-    if repo is None:
-        return 2
+        if repo is None:
+            return 2
+        org = build_org_report(
+            f"{owner}/{repo_name}", signals, repo_count=1, generated_at=now
+        )
+        with open_run_store(runs_cfg, owner) as store:
+            await attach_workflow_failures(
+                org,
+                [repo],
+                collect.repo_context(client, owner),
+                cfg,
+                CollectExtras(run_store=store),
+            )
 
-    now = dt.datetime.now(dt.timezone.utc)
-    org = build_org_report(
-        f"{owner}/{repo_name}", signals, repo_count=1, generated_at=now
-    )
     # Repo mode renders the same categories, so it resolves the same ordering.
-    # The generic tables are never collected here, and the layout skips keys
-    # naming a section this report does not carry.
+    # The other generic tables are never collected here, and the layout skips
+    # keys naming a section this report does not carry.
     org.section_order = layout.resolve(org, cfg.order)
     # Every flag that survives into repo mode is applied here. A flag accepted,
     # validated and then ignored is worse than one rejected, because nothing
@@ -253,6 +288,7 @@ async def _run_repo(
         show=show(cfg, "cli", hidden),
         limit=caps.resolver(cfg, "cli"),
         footer=footer(cfg),
+        windows=windows(cfg, "cli"),
         config_path=config_path,
     )
 
@@ -263,6 +299,7 @@ async def _run_repo(
             show=show(cfg, "markdown", hidden),
             limit=caps.resolver(cfg, "report"),
             footer=footer(cfg),
+            windows=windows(cfg, "report"),
         )
     )
     outputs = repo_outputs(signals, fail_threshold)
@@ -277,134 +314,20 @@ async def _run_repo(
     return 0
 
 
-# --------------------------------------------------------------------------- #
-# Remediation
-# --------------------------------------------------------------------------- #
-async def _run_remediate(
-    cfg: Config,
-    *,
-    console: Console,
-    token: str,
-    categories: Sequence[CategoryKey],
-    apply: bool,
-    repos: Sequence[scope.RepoRef] = (),
-    config_path: Path | None = None,
-) -> int:
-    """Collect each org's posture and enable (or preview enabling) features.
+# The remediate mode lives in its own module; re-exported so the command and
+# the tests keep importing it from here.
+from github_security_report.cli.remediation import (  # noqa: E402
+    _check_selection,
+    _run_remediate,
+)
 
-    A single write-capable token drives both the read (collection) and the
-    writes for every configured org, so the per-org read ``token_env`` in the
-    config is intentionally bypassed. ``repos``, when given, limits every
-    category to those repositories; the selection is checked against every
-    org before anything is read or written, and a name that matches nothing,
-    or only an excluded repository, stops the run. ``config_path`` is the
-    auto-discovered config file, printed under each org's divider. Returns 2
-    for a bad selection, 1 when any write failed, else 0.
-    """
-    now = dt.datetime.now(dt.timezone.utc)
-    failures = 0
-    async with GitHubClient(token) as client:
-        selected = await _check_selection(client, cfg, repos, console=console)
-        if selected is None:
-            return 2
-        for index, org_cfg in enumerate(cfg.organizations):
-            if repos and index not in selected:
-                continue  # none of the named repositories live here
-            # The validated repositories themselves, so collection cannot
-            # silently lose one to a second, incomplete listing.
-            report = await collect.collect_org(
-                client,
-                org_cfg,
-                org_cfg.report,
-                generated_at=now,
-                selected=selected[index] if repos else None,
-                # No remediation acts on the author-aware tables, so their
-                # membership and viewer reads would only cost requests.
-                author_tables=False,
-            )
-            results = await remediate_mod.remediate_org(
-                client, report, categories=categories, apply=apply
-            )
-            # Honour the org's configured terminal offender limit, the same
-            # cap the report's CLI output uses, so large orgs stay readable.
-            term_render.render_remediation(
-                report.org,
-                results,
-                console,
-                apply=apply,
-                top_n=org_cfg.report.cli_top_n,
-                # This entry's own validated repositories, not every selector:
-                # in a multi-org run each org names only what it collected.
-                limited_to=[r.name for r in selected[index]] if repos else [],
-                config_path=config_path,
-            )
-            failures += sum(result.failures for result in results)
-    return 1 if failures else 0
-
-
-async def _check_selection(
-    client: ClientProtocol,
-    cfg: Config,
-    repos: Sequence[scope.RepoRef],
-    *,
-    console: Console,
-) -> dict[int, tuple[Repo, ...]] | None:
-    """Each org entry's repositories a selection names, or None to stop.
-
-    Keyed by the entry's position in the configuration, holding only entries
-    with a match: a run collects exactly these, so an entry the selection
-    never touches is skipped. Keyed by position rather than name because the
-    configuration may list one organisation twice with different scoping;
-    each entry must act only on what its own configuration allows.
-
-    Every name must match a repository some configured org has in scope. A
-    name matching nothing is almost always a typo, and one matching only an
-    excluded repository (the exclude list, archived, fork, template, test)
-    must not bypass that exclusion, so both stop the run. So does any org
-    whose listing came back incomplete, since it may hide a repository a
-    selector names. Every problem is reported at once. An empty selection
-    returns an empty mapping, which callers read as "no selection".
-    """
-    if not repos:
-        return {}
-    usable: dict[scope.RepoRef, bool] = dict.fromkeys(repos, False)
-    excluded: dict[scope.RepoRef, list[str]] = {ref: [] for ref in repos}
-    touched: dict[int, tuple[Repo, ...]] = {}
-    problems: list[str] = []
-    for index, org_cfg in enumerate(cfg.organizations):
-        named = await collect.check_named_repos(client, org_cfg, org_cfg.report, repos)
-        if named.partial:
-            # A narrowed run must validate its whole target set, and an
-            # incomplete listing may hide a repository a selector names (a
-            # bare name can match in any org), so it cannot proceed on the
-            # matches it happened to see.
-            problems.append(
-                f"the repository listing for {org_cfg.name} was incomplete, so "
-                "the selection cannot be checked in full; try again"
-            )
-        for ref in repos:
-            if any(ref.matches(org_cfg.name, r.name) for r in named.in_scope):
-                usable[ref] = True
-            excluded[ref].extend(
-                f"{r.full_name} is excluded ({reason})"
-                for r, reason in named.excluded
-                if ref.matches(org_cfg.name, r.name)
-            )
-        if named.in_scope:
-            touched[index] = named.in_scope
-    # A bare name may be usable in one org and excluded in another: only a
-    # name with no usable match anywhere is a problem, so the run acts on the
-    # usable match and never on the excluded one.
-    for ref in repos:
-        if not usable[ref]:
-            problems.extend(excluded[ref])
-    unknown = [str(ref) for ref in repos if not usable[ref] and not excluded[ref]]
-    if unknown:
-        where = ", ".join(org_cfg.name for org_cfg in cfg.organizations)
-        problems.append(f"no repository named {', '.join(unknown)} in {where}")
-    if problems:
-        # markup=False: repository names come from the command line and the API.
-        for problem in problems:
-            console.print(f"--repos: {problem}", style="red", markup=False)
-        return None
-    return touched
+__all__ = [
+    "_abort_auth",
+    "_abort_network",
+    "_check_selection",
+    "_collect_reports",
+    "_load_config",
+    "_run_org",
+    "_run_remediate",
+    "_run_repo",
+]

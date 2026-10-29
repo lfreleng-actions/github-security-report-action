@@ -35,6 +35,8 @@ class CategoryKey(str, Enum):
     PRIVATE_VULNERABILITY_REPORTING = "private_vulnerability_reporting"
     AUTO_MERGE = "auto_merge"
     CODE_QUALITY = "code_quality"
+    WORKFLOW_FAILURES = "workflow_failures"
+    WORKFLOW_FAILURES_DETAIL = "workflow_failures_detail"
     GITHUB_ISSUES = "github_issues"
     PULL_REQUESTS = "pull_requests"
     PULL_REQUESTS_ASSIGNED = "pull_requests_assigned"

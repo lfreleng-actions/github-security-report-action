@@ -14,6 +14,7 @@ from github_security_report import collect, layout, pulls, scope
 from github_security_report.authors import MembershipGap, OrgMembership
 from github_security_report.categories import CategoryKey
 from github_security_report.client import GraphBatchError
+from github_security_report.client.workflow_runs import RunDrillDown, RunListing
 from github_security_report.code_quality import CodeQualitySetup
 from github_security_report.codeql import CodeQLConfiguration, DefaultSetup
 from github_security_report.collect.graph import (
@@ -23,6 +24,7 @@ from github_security_report.collect.graph import (
 from github_security_report.config import OrgConfig, ReportConfig
 from github_security_report.models import Repo, RepoGraphData, RepoState, SignalType
 from github_security_report.report import OrgReport, SignalSection
+from github_security_report.workflow_runs import WorkflowRunRecord
 
 WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.timezone.utc)
 
@@ -185,6 +187,30 @@ class FakeClient:
 
     async def latest_tag_at(self, org: str, repo: str) -> dt.datetime | None:
         return None
+
+    async def workflow_runs(
+        self,
+        org: str,
+        repo: str,
+        *,
+        default_branch: str,
+        params: dict[str, object] | None = None,
+        stop_before: dt.datetime | None = None,
+        etag: str | None = None,
+    ) -> RunListing:
+        # No runs anywhere: the Workflow Failures tables are exercised by
+        # their own tests with a scripted listing.
+        return RunListing(status=200)
+
+    async def workflow_run(
+        self, org: str, repo: str, run_id: int, *, default_branch: str
+    ) -> WorkflowRunRecord | None:
+        return None
+
+    async def workflow_run_jobs(
+        self, org: str, node_ids: list[str]
+    ) -> dict[str, RunDrillDown]:
+        return {}
 
     async def repo_graph_batch(
         self, org: str, names: list[str]
@@ -754,7 +780,7 @@ async def test_collect_org_without_author_tables_skips_identity_reads() -> None:
         OrgConfig(name="o"),
         ReportConfig(),
         generated_at=WHEN,
-        author_tables=False,
+        extras=collect.CollectExtras(author_tables=False),
     )
     assert client.identity_reads == []
     assert report.issues is None
@@ -798,6 +824,95 @@ async def test_collect_org_releases_exclude_and_min_age() -> None:
     assert report.releases is not None
     # dependamerge is name-excluded; git-configure-action is too young -> empty.
     assert report.releases.rows == []
+
+
+# --------------------------------------------------------------------------- #
+# Fan-out that fails leaves nothing running
+# --------------------------------------------------------------------------- #
+async def test_gather_all_cancels_siblings_when_one_fails() -> None:
+    # asyncio.gather would propagate the error while the slow sibling kept
+    # running, so the caller could close the client and the run store under
+    # it. The failing fan-out must take its siblings down first.
+    cancelled = asyncio.Event()
+    started = asyncio.Event()
+
+    async def slow() -> str:
+        started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return "never"
+
+    async def failing() -> str:
+        await started.wait()
+        raise GraphBatchError("boom", status=500, splittable=False)
+
+    with pytest.raises(GraphBatchError):
+        await collect.gather_all(slow(), failing())
+    assert cancelled.is_set()
+
+
+async def test_gather_all_keeps_argument_order() -> None:
+    async def value(v: int, delay: float) -> int:
+        await asyncio.sleep(delay)
+        return v
+
+    assert await collect.gather_all(value(1, 0.02), value(2, 0.0)) == [1, 2]
+
+
+# --------------------------------------------------------------------------- #
+# Feature states the listing already carried
+# --------------------------------------------------------------------------- #
+class ProbeCountingClient(FakeClient):
+    """Records which repositories the two listing-replaceable probes reach."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.secret_probed: list[str] = []
+        self.updates_probed: list[str] = []
+
+    async def secret_scanning_status(self, org: str, repo: str) -> int:
+        self.secret_probed.append(repo)
+        return 404
+
+    async def automated_security_fixes(self, org: str, repo: str) -> bool | None:
+        self.updates_probed.append(repo)
+        return False
+
+
+async def test_listing_feature_states_replace_the_probes() -> None:
+    # A repository the listing described is never probed, and the report
+    # reads the listing's answer; one it did not describe is probed as before.
+    client = ProbeCountingClient()
+    told = Repo(
+        "told",
+        "o/told",
+        "https://github.com/o/told",
+        secret_scanning=True,
+        security_updates=True,
+    )
+    mute = _repo("mute")
+    report = await collect.collect_org(
+        client,
+        OrgConfig(name="o"),
+        ReportConfig(),
+        generated_at=WHEN,
+        selected=[told, mute],
+    )
+    assert client.secret_probed == ["mute"]
+    assert client.updates_probed == ["mute"]
+    secret = next(s for s in report.sections if s.signal is SignalType.SECRET_SCANNING)
+    # "told" has secret scanning on (clean); "mute" was probed and found off.
+    assert [r.name for r in secret.nag_repos] == ["mute"]
+    updates = next(
+        t
+        for t in report.dependabot_tables
+        if t.category.key is CategoryKey.DEPENDABOT_UPDATES_ENABLED
+    )
+    assert [row.repo.name for row in updates.rows] == ["mute"]
+    assert [r.name for r in updates.pass_repos] == ["told"]
 
 
 # --------------------------------------------------------------------------- #
@@ -878,7 +993,7 @@ async def _learning(
     client: BatchLimitedClient, *, batch_size: int
 ) -> dict[str, RepoGraphData]:
     """Run the prefetch with every learned batch size recorded in ``events``."""
-    logger = logging.getLogger("github_security_report.collect.graph")
+    logger = logging.getLogger("github_security_report.collect.context")
     handler = _Learned(client.events)
     logger.addHandler(handler)
     try:
@@ -933,7 +1048,7 @@ async def test_graph_batch_halves_on_a_server_error_and_stays_halved(
     # of the one batch that happened to hit it first.
     client = BatchLimitedClient(23, limit=5)
     with caplog.at_level(
-        logging.WARNING, logger="github_security_report.collect.graph"
+        logging.WARNING, logger="github_security_report.collect.context"
     ):
         graph = await _learning(client, batch_size=10)
     assert sorted(client.batches) == [3, 5, 5, 5, 5, 10, 10]
@@ -1018,7 +1133,7 @@ async def test_graph_batch_log_names_the_reason_the_client_gave(
         4, limit=2, status=200, reason="resource limits exceeded"
     )
     with caplog.at_level(
-        logging.WARNING, logger="github_security_report.collect.graph"
+        logging.WARNING, logger="github_security_report.collect.context"
     ):
         await _collect_graph(client, batch_size=4)
     assert "failed (resource limits exceeded)" in caplog.records[0].getMessage()

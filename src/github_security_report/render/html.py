@@ -32,12 +32,14 @@ from github_security_report.report import (
     SignalSection,
     SummaryLine,
     TableSection,
+    WindowsFor,
     build_summary,
     limit_resolver,
     section_shows_informational,
     table_column_totals,
     table_footer_rows,
     truncate,
+    window_shown,
 )
 
 # Pinned, not @latest (a security tool must not load a floating CDN asset).
@@ -174,7 +176,13 @@ def _table_context(
         "numeric": bool(section.sum_columns),
         "columns": list(section.columns),
         "rows": [
-            {"name": row.repo.name, "url": row.repo.html_url, "cells": list(row.cells)}
+            {
+                "name": row.repo.name,
+                "url": row.repo.html_url,
+                "cells": list(row.cells),
+                # A link per cell where the builder gave one, else None.
+                "urls": [row.url(i) for i in range(len(row.cells))],
+            }
             for row in rows
         ],
         "total_cells": list(totals) if totals is not None else None,
@@ -260,6 +268,7 @@ def render_org_html(
     show: Callable[[CategoryKey], bool] | None = None,
     limit: LimitFor | None = None,
     footer: FooterOptions = DEFAULT_FOOTER,
+    windows: WindowsFor | None = None,
 ) -> str:
     visible = show or (lambda _key: True)
     limit_for = limit_resolver(top_n, limit)
@@ -268,6 +277,8 @@ def render_org_html(
     def table(section: TableSection | None) -> dict | None:
         """Context for one extra table, honouring its visibility and limit."""
         if section is None or not visible(section.category.key):
+            return None
+        if not window_shown(windows, section):
             return None
         key = section.category.key
         return _table_context(
@@ -281,8 +292,15 @@ def render_org_html(
     for item in layout.plan(org):
         if isinstance(item.section, TableSection):
             ctx = table(item.section)
+            siblings = [c for t in item.children if (c := table(t)) is not None]
             if ctx is not None:
+                # A windowed category's later windows render inside the
+                # first window's card; without it they stand on their own.
+                if siblings:
+                    ctx["extra_tables"] = siblings
                 sections.append(ctx)
+            else:
+                sections.extend(siblings)
             continue
         key = item.section.signal.category_key
         children = [ctx for t in item.children if (ctx := table(t)) is not None]

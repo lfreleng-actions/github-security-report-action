@@ -57,6 +57,16 @@ class TableRow:
     cells: tuple[str, ...]
     sort_values: tuple[float | str | None, ...] = ()
     cell_levels: tuple[str | None, ...] = ()
+    # Optional link per cell, parallel to ``cells`` (``None`` for none), so a
+    # job name can link to its failed run. Consumed by the HTML and Markdown
+    # surfaces; the terminal and Slack show the text alone. Empty means no
+    # cell links anywhere. Column 0, the repository, links via ``repo``.
+    cell_urls: tuple[str | None, ...] = ()
+    # A one-line rendering of the row for the brevity-first surface (Slack),
+    # where a table of this row's width would not fit a digest. Empty means
+    # the row has none and Slack draws the table. Only the Workflow Failures
+    # tables set it today.
+    digest: str = ""
     # This row's contribution to each of its table's ``footer_labels``, in the
     # same order. Summed over the *displayed* rows at render time, exactly like
     # the column totals, so a truncated table's footer describes what is on
@@ -67,6 +77,12 @@ class TableRow:
         """The emphasis for cell ``index``, or ``None`` when it has none."""
         if index < len(self.cell_levels):
             return self.cell_levels[index]
+        return None
+
+    def url(self, index: int) -> str | None:
+        """The link for cell ``index``, or ``None`` when it has none."""
+        if index < len(self.cell_urls):
+            return self.cell_urls[index]
         return None
 
 
@@ -131,10 +147,18 @@ class TableSection:
     # everywhere else: a qualitative table's passing repositories carry nothing
     # a reader would act on.
     pass_repos: tuple[Repo, ...] = ()
+    # The time window this table covers, in days, for a category that shows
+    # one table per window (Workflow Failures). ``None`` for every other
+    # table. Sibling windows of one category render beneath the first as
+    # children, and each surface shows the windows it is configured for.
+    window_days: int | None = None
 
     @property
     def title(self) -> str:
-        return self.category.title
+        """The heading, naming the window for a windowed table."""
+        if self.window_days is None:
+            return self.category.title
+        return f"{self.category.title} ({self.window_days} days)"
 
     @property
     def lists_repos(self) -> bool:

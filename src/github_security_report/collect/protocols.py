@@ -11,12 +11,15 @@ built entirely from per-repository endpoints.
 
 from __future__ import annotations
 
+import datetime as dt
 from typing import Protocol
 
 from github_security_report.authors import OrgMembership
+from github_security_report.client.workflow_runs import RunDrillDown, RunListing
 from github_security_report.code_quality import CodeQualitySetup
 from github_security_report.codeql.facts import CodeQLConfiguration, DefaultSetup
 from github_security_report.models import Repo, RepoGraphData
+from github_security_report.workflow_runs import WorkflowRunRecord
 
 
 class ClientProtocol(Protocol):
@@ -100,6 +103,31 @@ class ClientProtocol(Protocol):
         self, org: str, names: list[str]
     ) -> dict[str, RepoGraphData]:
         """Fetch batched per-repo GraphQL data keyed by repository name."""
+        raise NotImplementedError
+
+    async def workflow_runs(
+        self,
+        org: str,
+        repo: str,
+        *,
+        default_branch: str,
+        params: dict[str, object] | None = None,
+        stop_before: dt.datetime | None = None,
+        etag: str | None = None,
+    ) -> RunListing:
+        """Walk a repository's workflow-run listing into parsed records."""
+        raise NotImplementedError
+
+    async def workflow_run(
+        self, org: str, repo: str, run_id: int, *, default_branch: str
+    ) -> WorkflowRunRecord | None:
+        """Re-read one workflow run, or None when it could not be read."""
+        raise NotImplementedError
+
+    async def workflow_run_jobs(
+        self, org: str, node_ids: list[str]
+    ) -> dict[str, RunDrillDown]:
+        """The failing jobs of many runs in one GraphQL query, by node id."""
         raise NotImplementedError
 
 

@@ -70,6 +70,65 @@ jobs:
           repo="${GITHUB_REPOSITORY##*/}"
           echo "url=https://${owner}.github.io/${repo}/" >> "$GITHUB_OUTPUT"
 
+      # The Workflow Failures tables sync each repository's GitHub Actions
+      # runs into a per-organisation store under ~/.cache/github-security-
+      # report. With the store restored, a day's run costs one conditional
+      # request per repository (a free 304 when nothing changed); without
+      # it, every run is a 90-day backfill of ~1,500 requests.
+      #
+      # The store names private repositories' branches, workflow files and
+      # failing jobs, and a cache saved on the default branch can be restored
+      # by a fork's pull-request job, so it is cached only encrypted, with a
+      # key held in this job's environment (GSR_RUN_STORE_KEY: any long
+      # random string). Without the key the store is neither restored nor
+      # saved and each run backfills; a notice says so. The cache key is
+      # unique per run so the save never collides, and the prefix restores
+      # the newest earlier one; a daily schedule keeps it inside the 7-day
+      # eviction.
+      - name: "Check run-store cache key"
+        id: run-store-key
+        shell: bash
+        env:
+          GSR_RUN_STORE_KEY: "${{ secrets.GSR_RUN_STORE_KEY }}"
+        run: |
+          if [ -n "$GSR_RUN_STORE_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::GSR_RUN_STORE_KEY is not set; the workflow-run" \
+              "store is not cached between runs, so each run re-reads the" \
+              "windows from GitHub"
+          fi
+
+      - name: "Restore workflow-run store"
+        id: run-store
+        if: steps.run-store-key.outputs.configured == 'true'
+        # yamllint disable-line rule:line-length
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/gsr-run-store.tar.enc
+          key: "gsr-runs-${{ github.run_id }}"
+          restore-keys: |
+            gsr-runs-
+
+      - name: "Decrypt workflow-run store"
+        if: steps.run-store.outputs.cache-matched-key != ''
+        shell: bash
+        env:
+          GSR_RUN_STORE_KEY: "${{ secrets.GSR_RUN_STORE_KEY }}"
+        run: |
+          # A store that does not decrypt (a rotated key) is discarded, not
+          # fatal: the run backfills and saves a fresh one under the new key.
+          if openssl enc -d -aes-256-cbc -pbkdf2 -pass env:GSR_RUN_STORE_KEY \
+              -in ~/gsr-run-store.tar.enc -out ~/gsr-run-store.tar; then
+            mkdir -p ~/.cache
+            tar -xf ~/gsr-run-store.tar -C ~/.cache
+          else
+            echo "::warning::the cached workflow-run store did not decrypt" \
+              "(rotated key?); starting from an empty store"
+          fi
+          rm -f ~/gsr-run-store.tar ~/gsr-run-store.tar.enc
+
       - name: "Generate report"
         id: report
         uses: $/
@@ -101,6 +160,34 @@ jobs:
           concurrency: "${{ vars.GSR_CONCURRENCY }}"
           force_notify: "${{ inputs.force_notify || 'false' }}"
           use_local_source: "${{ inputs.use_local_source || 'false' }}"
+
+      # Saved whatever the report step's outcome: the store is written in
+      # transactions, so a run that aborted part-way still leaves it
+      # consistent, and the repositories it did sync need not be re-read.
+      - name: "Encrypt workflow-run store"
+        id: run-store-pack
+        if: always() && steps.run-store-key.outputs.configured == 'true'
+        shell: bash
+        env:
+          GSR_RUN_STORE_KEY: "${{ secrets.GSR_RUN_STORE_KEY }}"
+        run: |
+          if [ -d ~/.cache/github-security-report ]; then
+            tar -cf ~/gsr-run-store.tar -C ~/.cache github-security-report
+            openssl enc -e -aes-256-cbc -pbkdf2 -pass env:GSR_RUN_STORE_KEY \
+              -in ~/gsr-run-store.tar -out ~/gsr-run-store.tar.enc
+            rm -f ~/gsr-run-store.tar
+            echo "packed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "packed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: "Save workflow-run store"
+        if: always() && steps.run-store-pack.outputs.packed == 'true'
+        # yamllint disable-line rule:line-length
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/gsr-run-store.tar.enc
+          key: "gsr-runs-${{ github.run_id }}"
 
       - name: "Upload Pages artifact"
         # yamllint disable-line rule:line-length

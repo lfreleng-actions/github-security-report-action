@@ -74,7 +74,7 @@
       {% for row in item.rows %}
       <tr>
         <td><a href="{{ row.url }}">{{ row.name }}</a></td>
-        {% for cell in row.cells %}<td class="{{ 'num' if item.numeric else '' }}">{{ cell }}</td>{% endfor %}
+        {% for cell in row.cells %}{% set link = row.urls[loop.index0] if row.urls else none %}<td class="{{ 'num' if item.numeric else '' }}">{% if link %}<a href="{{ link }}">{{ cell }}</a>{% else %}{{ cell }}{% endif %}</td>{% endfor %}
       </tr>
       {% endfor %}
     </tbody>

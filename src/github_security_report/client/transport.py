@@ -38,7 +38,7 @@ from github_security_report.client.failures import (
     _auth_error,
     _transport_failure_result,
 )
-from github_security_report.client.parsers import _next_page_url, _parse_retry_after
+from github_security_report.client.parsers import _parse_retry_after
 
 log = logging.getLogger(__name__)
 
@@ -315,36 +315,3 @@ class Transport:
             )
         else:
             log.log(level, "rate limited on %s; backing off %.0fs", url, plan.delay)
-
-    async def _get_list(self, url: str, **params: object) -> tuple[int, list[dict]]:
-        """GET a paginated list, returning (status, items collected).
-
-        The status is itself a signal for these endpoints (404 = feature
-        disabled). If a *later* page fails, the partial items gathered so far
-        are returned alongside that failing status (not 200): the data is
-        incomplete, so callers must be able to degrade to UNKNOWN rather than
-        treat an undercount as authoritative. The failed response is closed to
-        avoid leaking a pooled connection (its body is never read).
-        """
-        resp = await self._request("GET", url, params={**params, "per_page": 100})
-        if resp.status_code != 200:
-            status = resp.status_code
-            await resp.aclose()  # unread body would leak a pooled connection
-            return status, []
-        items = list(resp.json())
-        next_url = _next_page_url(resp)
-        await resp.aclose()  # release the connection once body/links are read
-        while next_url:
-            resp = await self._request("GET", next_url)
-            if resp.status_code != 200:
-                log.warning(
-                    "pagination stopped early: %s -> %s (results may be partial)",
-                    next_url,
-                    resp.status_code,
-                )
-                await resp.aclose()
-                return resp.status_code, items
-            items.extend(resp.json())
-            next_url = _next_page_url(resp)
-            await resp.aclose()
-        return 200, items

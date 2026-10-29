@@ -73,6 +73,52 @@ async def test_list_org_repos_skips_disabled_and_empty(client: GitHubClient) -> 
 
 
 @respx.mock
+async def test_list_org_repos_reads_feature_states_when_listed(
+    client: GitHubClient,
+) -> None:
+    # GitHub includes security_and_analysis for a token with admin or
+    # security-manager rights. Its two states spare a probe each per repo;
+    # a repository listed without the block, or with an unexpected status,
+    # leaves them None so the probes still run.
+    respx.get(f"{API}/orgs/o/repos").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "name": "told",
+                    "full_name": "o/told",
+                    "html_url": "u",
+                    "size": 1,
+                    "security_and_analysis": {
+                        "secret_scanning": {"status": "enabled"},
+                        "dependabot_security_updates": {"status": "disabled"},
+                    },
+                },
+                {"name": "mute", "full_name": "o/mute", "html_url": "u", "size": 1},
+                {
+                    "name": "odd",
+                    "full_name": "o/odd",
+                    "html_url": "u",
+                    "size": 1,
+                    "security_and_analysis": {"secret_scanning": {"status": "???"}},
+                },
+            ],
+        )
+    )
+    _status, repos = await client.list_org_repos("o")
+    by_name = {r.name: r for r in repos}
+    assert (by_name["told"].secret_scanning, by_name["told"].security_updates) == (
+        True,
+        False,
+    )
+    assert (by_name["mute"].secret_scanning, by_name["mute"].security_updates) == (
+        None,
+        None,
+    )
+    assert by_name["odd"].secret_scanning is None
+
+
+@respx.mock
 async def test_list_org_repos_keeps_each_default_branch(client: GitHubClient) -> None:
     # Every per-branch read follows Repo.default_branch, so a repository on
     # "master" must not silently become "main" and query the wrong ref.
@@ -163,41 +209,148 @@ async def test_get_list_later_page_failure_returns_partial_and_status(
 
 
 @respx.mock
-async def test_code_scanning_tools(client: GitHubClient) -> None:
-    # Each signal tool is probed via the analyses tool_name filter; CodeQL and
-    # Scorecard have analyses, zizmor does not.
-    def _side(request: httpx.Request) -> httpx.Response:
-        tool = request.url.params.get("tool_name")
-        if tool in ("CodeQL", "Scorecard"):
-            return httpx.Response(200, json=[{"tool": {"name": tool}}])
-        return httpx.Response(200, json=[])
+async def test_paginate_stop_predicate_ends_walk_on_first_match(
+    client: GitHubClient,
+) -> None:
+    # The first item the predicate accepts, and everything after it, is
+    # dropped, and no further page is requested: an incremental read of a
+    # newest-first list costs one page once it meets data it already holds.
+    page1 = httpx.Response(
+        200,
+        json={"total_count": 5, "workflow_runs": [{"n": 5}, {"n": 4}, {"n": 3}]},
+        headers={
+            "Link": f'<{API}/repos/o/r/actions/runs?page=2>; rel="next"',
+            "ETag": 'W/"abc"',
+        },
+    )
+    route = respx.get(url__startswith=f"{API}/repos/o/r/actions/runs")
+    route.side_effect = [page1, httpx.Response(500)]
+    result = await client._paginate(
+        f"{API}/repos/o/r/actions/runs",
+        items_key="workflow_runs",
+        stop=lambda item: item["n"] <= 3,
+    )
+    assert result.status == 200
+    assert [item["n"] for item in result.items] == [5, 4]
+    assert result.stopped is True
+    assert result.etag == 'W/"abc"'
+    assert route.call_count == 1
 
-    respx.get(url__startswith=f"{API}/repos/o/r/code-scanning/analyses").mock(
-        side_effect=_side
+
+@respx.mock
+async def test_paginate_presents_etag_and_reads_304_as_unchanged(
+    client: GitHubClient,
+) -> None:
+    route = respx.get(f"{API}/repos/o/r/actions/runs").mock(
+        return_value=httpx.Response(304)
+    )
+    result = await client._paginate(
+        f"{API}/repos/o/r/actions/runs", items_key="workflow_runs", etag='W/"abc"'
+    )
+    assert result.status == 304
+    assert result.items == []
+    assert result.stopped is False
+    assert route.calls.last.request.headers["If-None-Match"] == 'W/"abc"'
+
+
+@respx.mock
+async def test_paginate_walks_every_page_without_a_stop(
+    client: GitHubClient,
+) -> None:
+    # Without a predicate the walk reaches the last page; an enveloped page
+    # that lacks the items key reads as empty rather than failing the walk.
+    page1 = httpx.Response(
+        200,
+        json={"workflow_runs": [{"n": 2}]},
+        headers={"Link": f'<{API}/repos/o/r/actions/runs?page=2>; rel="next"'},
+    )
+    page2 = httpx.Response(
+        200,
+        json={"total_count": 0},
+        headers={"Link": f'<{API}/repos/o/r/actions/runs?page=3>; rel="next"'},
+    )
+    page3 = httpx.Response(200, json={"workflow_runs": [{"n": 1}]})
+    route = respx.get(url__startswith=f"{API}/repos/o/r/actions/runs")
+    route.side_effect = [page1, page2, page3]
+    result = await client._paginate(
+        f"{API}/repos/o/r/actions/runs", items_key="workflow_runs"
+    )
+    assert result.status == 200
+    assert [item["n"] for item in result.items] == [2, 1]
+    assert result.stopped is False
+    assert route.call_count == 3
+
+
+def _tool_analysis(tool: str, **extra: object) -> dict:
+    """A code-scanning analysis entry uploaded by ``tool``."""
+    return {"tool": {"name": tool}, "created_at": "2026-10-01T00:00:00Z", **extra}
+
+
+@respx.mock
+async def test_code_scanning_tools_reads_one_unfiltered_page(
+    client: GitHubClient,
+) -> None:
+    # A history that fits one page answers every tool from that page alone:
+    # CodeQL and Scorecard are named, zizmor and aislop are absent, and no
+    # per-tool probe is spent.
+    route = respx.get(url__startswith=f"{API}/repos/o/r/code-scanning/analyses").mock(
+        return_value=httpx.Response(
+            200, json=[_tool_analysis("CodeQL"), _tool_analysis("Scorecard")]
+        )
     )
     status, tools = await client.code_scanning_tools("o", "r")
     assert status == 200
     assert tools == {"CodeQL", "Scorecard"}
+    assert route.call_count == 1
+    params = route.calls.last.request.url.params
+    assert params["per_page"] == "100" and "tool_name" not in params
 
 
 @respx.mock
-async def test_code_scanning_tools_detects_low_frequency_tool(
+async def test_code_scanning_tools_probes_tools_a_full_page_omits(
     client: GitHubClient,
 ) -> None:
-    # A tool the page-by-page scan could have missed (only zizmor present) is
-    # detected definitively via its tool_name filter.
+    # A full page may hide an older, low-frequency tool beneath the busy
+    # ones, so each tool it does not name is probed with the tool_name
+    # filter -- and only those, so a page naming a tool never re-asks for it.
     def _side(request: httpx.Request) -> httpx.Response:
         tool = request.url.params.get("tool_name")
-        if tool == "zizmor":
-            return httpx.Response(200, json=[{"tool": {"name": "zizmor"}}])
-        return httpx.Response(200, json=[])
+        if tool is None:
+            return httpx.Response(200, json=[_tool_analysis("CodeQL")] * 100)
+        return httpx.Response(
+            200, json=[_tool_analysis(tool)] if tool == "zizmor" else []
+        )
 
-    respx.get(url__startswith=f"{API}/repos/o/r/code-scanning/analyses").mock(
+    route = respx.get(url__startswith=f"{API}/repos/o/r/code-scanning/analyses").mock(
         side_effect=_side
     )
     status, tools = await client.code_scanning_tools("o", "r")
     assert status == 200
-    assert tools == {"zizmor"}
+    assert tools == {"CodeQL", "zizmor"}
+    probed = sorted(
+        c.request.url.params["tool_name"]
+        for c in route.calls
+        if "tool_name" in c.request.url.params
+    )
+    assert probed == ["Scorecard", "aislop", "zizmor"]
+
+
+@respx.mock
+async def test_code_scanning_page_is_read_once_per_repository(
+    client: GitHubClient,
+) -> None:
+    # Gating, the enablement probes and the CodeQL walk all consult the same
+    # page, and concurrent askers share one request.
+    route = respx.get(url__startswith=f"{API}/repos/o/r/code-scanning/analyses").mock(
+        return_value=httpx.Response(200, json=[_tool_analysis("zizmor")])
+    )
+    present, (status, tools), again = await asyncio.gather(
+        client.code_scanning_tool_present("o", "r", "zizmor"),
+        client.code_scanning_tools("o", "r"),
+        client.code_scanning_tool_present("o", "r", "CodeQL"),
+    )
+    assert (present, status, tools, again) == (True, 200, {"zizmor"}, False)
+    assert route.call_count == 1
 
 
 @respx.mock
@@ -1536,6 +1689,15 @@ async def test_codeql_configurations_walks_the_whole_history(
     base = f"{API}/repos/o/r/code-scanning/analyses"
     route = respx.get(base).mock(
         side_effect=[
+            # The unfiltered first page is full, so it cannot answer alone.
+            httpx.Response(
+                200,
+                json=[
+                    _analysis(_ADVANCED_CATEGORY, _ADVANCED_KEY, "2026-09-24T07:27:48Z")
+                ]
+                * 100,
+                headers={"link": f'<{base}?page=2>; rel="next"'},
+            ),
             httpx.Response(
                 200,
                 json=[
@@ -1563,8 +1725,8 @@ async def test_codeql_configurations_walks_the_whole_history(
     )
     status, configs = await client.codeql_configurations("o", "r", "main")
 
-    first = route.calls[0].request.url.params
-    assert (first["tool_name"], first["ref"]) == ("CodeQL", "refs/heads/main")
+    walk = route.calls[1].request.url.params
+    assert (walk["tool_name"], walk["ref"]) == ("CodeQL", "refs/heads/main")
     assert status == 200
     by_language = {c.language: c for c in configs}
     assert set(by_language) == {"python", "actions"}
@@ -1587,6 +1749,13 @@ async def test_codeql_configurations_partial_walk_reports_failure(
                 200,
                 json=[
                     _analysis("/language:python", _DEFAULT_KEY, "2026-09-01T00:00:00Z")
+                ]
+                * 100,
+            ),
+            httpx.Response(
+                200,
+                json=[
+                    _analysis("/language:python", _DEFAULT_KEY, "2026-09-01T00:00:00Z")
                 ],
                 headers={"link": f'<{base}?page=2>; rel="next"'},
             ),
@@ -1595,6 +1764,43 @@ async def test_codeql_configurations_partial_walk_reports_failure(
     )
     status, _configs = await client.codeql_configurations("o", "r", "main")
     assert status == 403
+
+
+@respx.mock
+async def test_codeql_configurations_answered_from_a_complete_page(
+    client: GitHubClient,
+) -> None:
+    # A history that fits the cached page is filtered in memory to CodeQL
+    # analyses of the branch: no filtered walk is issued at all.
+    base = f"{API}/repos/o/r/code-scanning/analyses"
+    route = respx.get(base).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    **_analysis(
+                        "/language:python", _DEFAULT_KEY, "2026-09-01T00:00:00Z"
+                    ),
+                    "tool": {"name": "CodeQL"},
+                    "ref": "refs/heads/main",
+                },
+                {
+                    **_analysis("/language:go", _DEFAULT_KEY, "2026-09-01T00:00:00Z"),
+                    "tool": {"name": "CodeQL"},
+                    "ref": "refs/heads/feature",
+                },
+                {
+                    **_analysis("/language:ruby", _DEFAULT_KEY, "2026-09-01T00:00:00Z"),
+                    "tool": {"name": "zizmor"},
+                    "ref": "refs/heads/main",
+                },
+            ],
+        )
+    )
+    status, configs = await client.codeql_configurations("o", "r", "main")
+    assert status == 200
+    assert [c.language for c in configs] == ["python"]
+    assert route.call_count == 1
 
 
 @respx.mock

@@ -29,7 +29,9 @@ from github_security_report.report import (
     Report,
     SignalSection,
     SummaryLine,
+    TableRow,
     TableSection,
+    WindowsFor,
     build_summary,
     limit_resolver,
     offender_column_totals,
@@ -37,11 +39,31 @@ from github_security_report.report import (
     table_column_totals,
     table_footer_rows,
     truncate,
+    window_shown,
 )
 
 
 def _link(repo: Repo) -> str:
     return f"[{repo.name}]({repo.html_url})"
+
+
+# Characters a cell's text must not carry verbatim into a Markdown table: a
+# pipe ends the cell, a newline ends the row, and brackets would close a
+# link label early. Cells hold text from outside this module (a workflow or
+# job name, a release tag), so every one is escaped the same way.
+_CELL_ESCAPES = str.maketrans({"|": "\\|", "[": "\\[", "]": "\\]"})
+
+
+def _cell_text(text: str) -> str:
+    """``text`` made safe for one Markdown table cell."""
+    return " ".join(text.split()).translate(_CELL_ESCAPES)
+
+
+def _cell(row: TableRow, index: int) -> str:
+    """One cell's text, escaped, and linked when its builder gave it a URL."""
+    text = _cell_text(row.cells[index])
+    url = row.url(index)
+    return f"[{text}]({url})" if url else text
 
 
 def _columns(signal: SignalType, *, informational: bool = False) -> list[str]:
@@ -237,7 +259,7 @@ def render_table_section(
     """
     heading = "#" * level
     meta = section.category
-    lines = [f"{heading} {meta.title}", ""]
+    lines = [f"{heading} {section.title}", ""]
     summary = build_summary(section.summary_counts(excluded, repo_list=repo_list))
     if not (section.rows or summary):
         lines.append("_No data available._")
@@ -249,7 +271,7 @@ def render_table_section(
         lines.append("| " + " | ".join(section.columns) + " |")
         lines.append("| " + " | ".join(aligns) + " |")
         for row in rows:
-            cells = [_link(row.repo), *row.cells]
+            cells = [_link(row.repo), *(_cell(row, i) for i in range(len(row.cells)))]
             lines.append("| " + " | ".join(cells) + " |")
         # A trailing totals row sums the numeric columns across the rows shown
         # above, matching the offender tables.
@@ -289,6 +311,7 @@ def render_org(
     show: Callable[[CategoryKey], bool] | None = None,
     limit: LimitFor | None = None,
     footer: FooterOptions = DEFAULT_FOOTER,
+    windows: WindowsFor | None = None,
 ) -> str:
     visible = show or (lambda _key: True)
     limit_for = limit_resolver(top_n, limit)
@@ -310,6 +333,8 @@ def render_org(
         """Append one extra table, honouring its own visibility and limit."""
         if section is None or not visible(section.category.key):
             return
+        if not window_shown(windows, section):
+            return
         key = section.category.key
         parts.append(
             render_table_section(
@@ -324,6 +349,12 @@ def render_org(
     for item in layout.plan(org):
         if isinstance(item.section, TableSection):
             table(item.section)
+            # A windowed category's later windows follow its first as
+            # sub-sections; when the first is hidden they are promoted, as
+            # a signal's sub-tables are below.
+            shown = visible(item.key) and window_shown(windows, item.section)
+            for child in item.children:
+                table(child, level=3 if shown else 2)
             continue
         key = item.section.signal.category_key
         parent_visible = visible(key)

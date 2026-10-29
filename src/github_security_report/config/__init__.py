@@ -17,13 +17,14 @@ Split across three modules -- :mod:`~github_security_report.config.schema`
 
 from __future__ import annotations
 
+from github_security_report.config.blocks import _categories_from, _report_from
 from github_security_report.config.loader import (
+    DEFAULT_CACHE_DIR,
     DEFAULT_CONFIG_DIR,
     DEFAULT_CONFIG_FILE,
-    _categories_from,
-    _report_from,
     _slack_from,
     build_config,
+    default_cache_dir,
     default_config_path,
     find_default_config,
     load_file,
@@ -34,6 +35,7 @@ from github_security_report.config.loader import (
 from github_security_report.config.models import (
     DEFAULT_ISSUE_LABELS,
     DEFAULT_RULESET_WORKFLOWS,
+    DEFAULT_RUN_WINDOWS,
     CategoryToggle,
     Config,
     OrgConfig,
@@ -41,6 +43,7 @@ from github_security_report.config.models import (
     ReportConfig,
     ReportDay,
     SlackConfig,
+    WorkflowRunsConfig,
 )
 from github_security_report.config.order import (
     DEFAULT_BAU,
@@ -54,6 +57,7 @@ from github_security_report.config.schema import (
     CONCURRENCY_MAX,
     CONFIG_SCHEMA,
     REPORT_OUTPUTS,
+    RUN_WINDOW_SURFACES,
     SEVERITY_NAMES,
     WEEKDAYS,
     ConfigError,
@@ -63,12 +67,15 @@ __all__ = [
     "CONCURRENCY_MAX",
     "CONFIG_SCHEMA",
     "DEFAULT_BAU",
+    "DEFAULT_CACHE_DIR",
     "DEFAULT_CONFIG_DIR",
     "DEFAULT_CONFIG_FILE",
     "DEFAULT_ISSUE_LABELS",
     "DEFAULT_PRIORITY",
     "DEFAULT_RULESET_WORKFLOWS",
+    "DEFAULT_RUN_WINDOWS",
     "REPORT_OUTPUTS",
+    "RUN_WINDOW_SURFACES",
     "SEVERITY_NAMES",
     "WEEKDAYS",
     "CategoryToggle",
@@ -81,11 +88,13 @@ __all__ = [
     "ReportConfig",
     "ReportDay",
     "SlackConfig",
+    "WorkflowRunsConfig",
     "_TOKEN_PREFIXES",
     "_categories_from",
     "_report_from",
     "_slack_from",
     "build_config",
+    "default_cache_dir",
     "default_config_path",
     "find_default_config",
     "load_file",

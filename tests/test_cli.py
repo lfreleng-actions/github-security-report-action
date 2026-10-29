@@ -163,6 +163,7 @@ def test_org_mode_writes_pages(tmp_path: Path) -> None:
     respx.get(f"{API}/repos/o/r/code-scanning/default-setup").mock(
         return_value=httpx.Response(200, json={"state": "not-configured"})
     )
+    _mock_workflow_runs()
 
     out = tmp_path / "site"
     result = cli.invoke(
@@ -200,6 +201,18 @@ def test_org_mode_writes_pages(tmp_path: Path) -> None:
     # --slack-channel supplies the channel even though the config has none,
     # so a payload is written for that channel.
     assert (out / "slack-payload-CTEST123.json").exists()
+
+
+def _mock_workflow_runs() -> None:
+    """An empty workflow-run listing for every ``o/r*`` repository.
+
+    The Workflow Failures tables read each in-scope repository's run listing
+    (and, on later runs, its failure list); an empty answer keeps a test about
+    something else from tripping over the unmocked route.
+    """
+    respx.get(url__regex=rf"{re.escape(API)}/repos/o/r\d*/actions/runs").mock(
+        return_value=httpx.Response(200, json={"total_count": 0, "workflow_runs": []})
+    )
 
 
 def _mock_org_o_r() -> None:
@@ -244,6 +257,7 @@ def _mock_org_o_r() -> None:
     respx.get(f"{API}/repos/o/r/code-scanning/default-setup").mock(
         return_value=httpx.Response(200, json={"state": "not-configured"})
     )
+    _mock_workflow_runs()
 
 
 def _write_default_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -536,6 +550,7 @@ def test_repo_mode_fail_threshold(tmp_path: Path) -> None:
             200, json={"data": {"repository": {"hasVulnerabilityAlertsEnabled": False}}}
         )
     )
+    _mock_workflow_runs()
     respx.get(url__startswith=f"{API}/repos/o/r/dependabot/alerts").mock(
         return_value=httpx.Response(200, json=[])
     )
@@ -577,6 +592,16 @@ def test_repo_mode_fail_threshold(tmp_path: Path) -> None:
         ],
     )
     assert ok.exit_code == 0, ok.stdout
+    # Repo mode reads the terminal's week, not the published report's quarter:
+    # one listing walk back seven days, never a 90-day backfill for one repo.
+    assert "Workflow Failures (7 days)" in ok.stdout
+    assert "(90 days)" not in ok.stdout
+    runs = [
+        c.request.url.params.get("created")
+        for c in respx.calls
+        if "/actions/runs" in str(c.request.url)
+    ]
+    assert runs and all(created is None for created in runs)
 
     # --hide promises suppression on "every output", so it has to reach repo
     # mode too. A flag accepted and validated but then ignored is worse than
@@ -965,6 +990,7 @@ def test_org_mode_top_n_from_config(tmp_path: Path) -> None:
     respx.get(
         url__regex=rf"{re.escape(API)}/repos/o/r\d/code-scanning/default-setup"
     ).mock(return_value=httpx.Response(200, json={"state": "not-configured"}))
+    _mock_workflow_runs()
 
     cfg = (
         '{"report": {"top_n": 1}, '
@@ -1060,6 +1086,7 @@ def _mock_offender_org() -> None:
     respx.get(f"{API}/repos/o/r/code-scanning/default-setup").mock(
         return_value=httpx.Response(200, json={"state": "not-configured"})
     )
+    _mock_workflow_runs()
     # A Python repository without Code Quality -> Code Quality Disabled.
     respx.get(f"{API}/repos/o/r/code-quality/setup").mock(
         return_value=httpx.Response(200, json={"state": "not-configured"})

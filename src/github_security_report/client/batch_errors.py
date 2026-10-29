@@ -13,6 +13,7 @@ that issues the query stays about issuing it.
 from __future__ import annotations
 
 from github_security_report.client.errors import GraphBatchError
+from github_security_report.client.paging import GraphQLResult
 
 # Fields whose failure can be isolated to the data they feed instead of failing
 # the whole repository. Only fields the model already carries a dedicated
@@ -70,15 +71,25 @@ def _rate_limited(errors: object) -> bool:
 
 
 def _batch_response(
-    org: str, count: int, *, status: int, body: dict | None
+    org: str,
+    count: int,
+    result: GraphQLResult,
+    *,
+    what: str = "prefetch",
+    unit: str = "repositories",
 ) -> tuple[dict, list]:
     """The ``(data, errors)`` of a batched query, or the failure to abort on.
+
+    ``what`` names the query in the messages and ``unit`` what it carried
+    (``prefetch`` of ``repositories``; ``run drill-down`` of ``runs``), since
+    both share this policy and an operator reading the error needs to know
+    which one failed.
 
     Raises :class:`GraphBatchError` when the query failed as a whole -- for
     every one of the ``count`` repositories -- and says whether the caller may
     retry them in smaller batches. Four shapes are told apart, in this order:
 
-    * A non-200 ``status`` (``body`` is then ``None``): a 502 or 504 is
+    * A non-200 ``status`` (``data`` is then ``None``): a 502 or 504 is
       GitHub's edge giving up on a query that ran too long, which a smaller
       batch may avoid; any other status -- a 403/429 that outlived the
       transport's retry budget, or a 500/503 outage -- would recur at any size.
@@ -92,8 +103,7 @@ def _batch_response(
     * No ``data`` object at all: with the rate limit ruled out, this is how
       GitHub reports a query it could not finish in time.
 
-    Anything else is a response the caller can read alias by alias; a missing
-    or malformed ``errors`` array is returned as an empty list.
+    Anything else is a response the caller can read alias by alias.
 
     Each message ends with the remedy that fits the failure: a batch of
     several repositories can be retried smaller, but by the time a failure
@@ -102,22 +112,22 @@ def _batch_response(
     a permission error was never retried, so it must not claim a retry budget
     was spent.
     """
-    if body is None:
+    status = result.status
+    if status != 200:
         raise GraphBatchError(
-            f"GraphQL prefetch for {org} failed with HTTP {status}; aborting "
-            "because the release/tag, Dependabot-enablement and open-issues "
-            f"data for {count} repositories would otherwise be fabricated "
-            f"from defaults (e.g. reported as never released). "
-            f"{_status_remedy(status, count)}",
+            f"GraphQL {what} for {org} failed with HTTP {status}; aborting "
+            f"because the data for {count} {unit} would otherwise be "
+            "fabricated from defaults (e.g. a repository reported as never "
+            f"released). {_status_remedy(status, count)}",
             status=status,
             splittable=status in _QUERY_TIMEOUT_STATUSES,
         )
-    errors = body.get("errors")
+    errors = result.errors
     if _rate_limited(errors):
         raise GraphBatchError(
-            f"GraphQL prefetch for {org} was refused: a GraphQL API rate "
+            f"GraphQL {what} for {org} was refused: a GraphQL API rate "
             f"limit is exhausted; aborting rather than reporting "
-            f"{count} repositories from fabricated defaults. "
+            f"{count} {unit} from fabricated defaults. "
             "Retry once the budget resets.",
             status=status,
             splittable=False,
@@ -125,26 +135,26 @@ def _batch_response(
         )
     if _exceeded_resource_limits(errors):
         raise GraphBatchError(
-            f"GraphQL prefetch for {org} exceeded GitHub's resource limits "
-            f"for a single query across {count} repositories; "
+            f"GraphQL {what} for {org} exceeded GitHub's resource limits "
+            f"for a single query across {count} {unit}; "
             "aborting rather than reporting the unresolved fields as "
             f"unknown. {_size_remedy(count)}",
             status=status,
             splittable=True,
             reason="resource limits exceeded",
         )
-    data = body.get("data")
-    if not isinstance(data, dict):
+    data = result.data
+    if data is None:
         raise GraphBatchError(
-            f"GraphQL prefetch for {org} returned no data for any of "
-            f"{count} repositories; aborting rather than reporting "
+            f"GraphQL {what} for {org} returned no data for any of "
+            f"{count} {unit}; aborting rather than reporting "
             f"fabricated defaults. {_size_remedy(count)} "
             f"errors={errors!r}",
             status=status,
             splittable=True,
             reason="HTTP 200 with no data",
         )
-    return data, errors if isinstance(errors, list) else []
+    return data, errors
 
 
 def _size_remedy(count: int) -> str:

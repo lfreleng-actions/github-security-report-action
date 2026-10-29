@@ -13,10 +13,11 @@ helper in this module:
 1. :func:`~github_security_report.collect.scoping.resolve_scope` -- list the organisation's repositories and scope them
 2. :func:`_run_sweeps` -- one org-bulk read per signal, plus ruleset coverage
 3. :func:`_gate_signals` -- decide which workflow-driven signals to collect
-4. :func:`_build_context` -- freeze the org-wide evidence per-repo probes need,
-   including the batched GraphQL prefetch (:mod:`collect.graph`)
-5. :func:`_collect_facts` -- bounded per-repo probes, then classification
-6. :mod:`collect.extras` -- the tables outside the four-state signal model
+   (2 and 3 run alongside the batched GraphQL prefetch, :mod:`collect.graph`)
+4. :func:`_build_context` -- freeze the org-wide evidence per-repo probes need
+5. :func:`_facts_for_repo` -- bounded per-repo probes, then classification
+6. :mod:`collect.extras` -- the tables outside the four-state signal model,
+   collected alongside the probes of step 5
 """
 
 from __future__ import annotations
@@ -25,13 +26,15 @@ import asyncio
 import datetime as dt
 import logging
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from github_security_report import gating, rulesets
 from github_security_report.classify import RepoFacts, classify_repo
 from github_security_report.collect.context import (
+    CollectExtras,
     OrgCollectContext,
+    gather_all,
     gather_in_batches,
 )
 from github_security_report.collect.extras import attach_extra_tables
@@ -42,6 +45,7 @@ from github_security_report.config import OrgConfig, ReportConfig
 from github_security_report.models import (
     CODE_SCANNING_TOOLS,
     Repo,
+    RepoGraphData,
     SignalType,
 )
 from github_security_report.report import OrgReport, build_org_report
@@ -186,15 +190,20 @@ async def _gate_signals(
 # --------------------------------------------------------------------------- #
 # Shared per-repo context
 # --------------------------------------------------------------------------- #
-async def _build_context(
+def _build_context(
     client: ClientProtocol,
     org: str,
     in_scope: list[Repo],
-    sweeps: _OrgSweeps,
     report_cfg: ReportConfig,
-    skipped: frozenset[SignalType],
+    evidence: tuple[_OrgSweeps, frozenset[SignalType]],
+    graph: Mapping[str, RepoGraphData],
 ) -> OrgCollectContext:
-    """Freeze the org-wide evidence that every per-repository probe reads."""
+    """Freeze the org-wide evidence that every per-repository probe reads.
+
+    ``evidence`` is what :func:`_sweep_and_gate` produced: the sweeps and the
+    signals gating ruled out.
+    """
+    sweeps, skipped = evidence
     return OrgCollectContext(
         client=client,
         org=org,
@@ -208,9 +217,7 @@ async def _build_context(
             )
             for repo in in_scope
         },
-        graph=await collect_graph(
-            client, org, in_scope, batch_size=report_cfg.graph_batch
-        ),
+        graph=graph,
         probe_tools=tuple(
             tool
             for signal, tool in CODE_SCANNING_TOOLS.items()
@@ -218,6 +225,18 @@ async def _build_context(
         ),
         probe_scorecard=SignalType.SCORECARD not in skipped,
     )
+
+
+async def _sweep_and_gate(
+    client: ClientProtocol,
+    org: str,
+    in_scope: list[Repo],
+    report_cfg: ReportConfig,
+) -> tuple[_OrgSweeps, frozenset[SignalType]]:
+    """The org-bulk sweeps, then the gating decision they feed."""
+    sweeps = await _run_sweeps(client, org)
+    skipped = await _gate_signals(client, org, in_scope, sweeps, report_cfg)
+    return sweeps, skipped
 
 
 # --------------------------------------------------------------------------- #
@@ -229,8 +248,9 @@ async def _facts_for_repo(repo: Repo, ctx: OrgCollectContext) -> RepoFacts:
     These per-repo probes are independent, so they are gathered and each repo's
     reads overlap; real HTTP concurrency stays bounded by the client semaphore.
     The Dependabot-enabled flag comes from the batched GraphQL prefetch rather
-    than a probe of its own. ``ctx.probe_tools`` names the code-scanning tools
-    worth probing (feature gating removes unsupported ones), and
+    than a probe of its own, and the secret-scanning state from the repository
+    listing where it carried one. ``ctx.probe_tools`` names the code-scanning
+    tools worth probing (feature gating removes unsupported ones), and
     ``ctx.probe_scorecard`` skips the external Scorecard read when the signal is
     gated out -- the facts then default to "no score" and the skipped classifier
     never reads them.
@@ -239,13 +259,22 @@ async def _facts_for_repo(repo: Repo, ctx: OrgCollectContext) -> RepoFacts:
     async def no_scorecard() -> tuple[int, float | None]:
         return 404, None
 
+    async def secret_scanning_status() -> int:
+        # The listing already said whether secret scanning is on, for a token
+        # with admin or security-manager rights; the alerts endpoint answers
+        # 200 or 404 for the same two states, so the probe is spent only when
+        # the listing left the state out.
+        if repo.secret_scanning is not None:
+            return 200 if repo.secret_scanning else 404
+        return await ctx.client.secret_scanning_status(ctx.org, repo.name)
+
     (
         (cs_status, cs_tools),
         secret_status,
         (scorecard_status, score),
     ) = await asyncio.gather(
         ctx.client.code_scanning_tools(ctx.org, repo.name, ctx.probe_tools),
-        ctx.client.secret_scanning_status(ctx.org, repo.name),
+        secret_scanning_status(),
         ctx.client.scorecard_score(ctx.org, repo.name)
         if ctx.probe_scorecard
         else no_scorecard(),
@@ -298,7 +327,7 @@ async def collect_org(
     *,
     generated_at: dt.datetime | None = None,
     selected: Sequence[Repo] | None = None,
-    author_tables: bool = True,
+    extras: CollectExtras | None = None,
 ) -> OrgReport:
     """Collect and build the report for one organisation.
 
@@ -309,23 +338,29 @@ async def collect_org(
     these; the org-bulk alert sweeps still read the organisation's open
     alerts, as they are single organisation-wide requests.
 
-    ``author_tables=False`` skips the Issues, Pull Requests and Assigned to Me
-    tables and the organisation membership and viewer reads behind them; see
-    :func:`~github_security_report.collect.extras.attach_extra_tables`.
+    ``extras`` says what to collect beyond the signals and posture tables
+    (see :class:`CollectExtras`); the default collects the author tables and
+    no workflow runs.
     """
     org = org_cfg.name
     log.info("collecting %s", org)
+    wanted = extras if extras is not None else CollectExtras()
 
     scoped = (
         selected_scope(selected)
         if selected is not None
         else await resolve_scope(client, org_cfg, report_cfg)
     )
-    sweeps = await _run_sweeps(client, org)
-    skipped = await _gate_signals(client, org, scoped.in_scope, sweeps, report_cfg)
-    ctx = await _build_context(
-        client, org, scoped.in_scope, sweeps, report_cfg, skipped
+    # The GraphQL prefetch depends on nothing but the scope, and the sweeps
+    # and gating on nothing but each other, so the two chains run together:
+    # the prefetch's seconds-long queries no longer hold the whole run while
+    # the rest of the semaphore sits idle.
+    evidence, graph = await gather_all(
+        _sweep_and_gate(client, org, scoped.in_scope, report_cfg),
+        collect_graph(client, org, scoped.in_scope, batch_size=report_cfg.graph_batch),
     )
+    skipped = evidence[1]
+    ctx = _build_context(client, org, scoped.in_scope, report_cfg, evidence, graph)
 
     facts = await gather_in_batches(
         scoped.in_scope, lambda repo: _facts_for_repo(repo, ctx)
@@ -345,6 +380,6 @@ async def collect_org(
         ctx,
         org_cfg,
         report_cfg,
-        author_tables=author_tables,
+        extras=wanted,
     )
     return report

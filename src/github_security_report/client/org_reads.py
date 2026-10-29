@@ -23,12 +23,13 @@ from github_security_report.authors import (
 )
 from github_security_report.client.alerts import AlertReads
 from github_security_report.client.batch_errors import _alias_errors, _batch_response
-from github_security_report.client.parsers import _parse_iso, _parse_repo_node
+from github_security_report.client.parsers import _parse_repo_node
 from github_security_report.client.queries import (
     _ORG_MEMBERS_QUERY,
     _REPO_GRAPH_FRAGMENT,
     _VIEWER_QUERY,
 )
+from github_security_report.client.repo_parser import _parse_repo
 from github_security_report.models import Repo, RepoGraphData
 
 log = logging.getLogger(__name__)
@@ -86,23 +87,7 @@ class OrgReadClient(AlertReads):
             if raw.get("disabled") or raw.get("size", 0) == 0:
                 log.info("skipping %s: disabled or empty", raw.get("full_name"))
                 continue
-            repos.append(
-                Repo(
-                    name=raw["name"],
-                    full_name=raw["full_name"],
-                    html_url=raw["html_url"],
-                    archived=raw.get("archived", False),
-                    fork=raw.get("fork", False),
-                    is_template=raw.get("is_template", False),
-                    private=raw.get("private", False),
-                    # Every per-branch read (the CodeQL analyses, the head it
-                    # is measured against) follows this, so a repository whose
-                    # default branch is not "main" must not inherit that
-                    # default from the model.
-                    default_branch=raw.get("default_branch") or "main",
-                    created_at=_parse_iso(raw.get("created_at")),
-                )
-            )
+            repos.append(_parse_repo(raw))
         return status, repos
 
     # ------------------------------------------------------------------ #
@@ -161,33 +146,25 @@ class OrgReadClient(AlertReads):
         # organisation that somehow exceeds it is reported as unknown rather
         # than silently classified against its first 10,000 members.
         for _ in range(_MEMBER_PAGE_LIMIT):
-            resp = await self._request(
-                "POST",
-                self._graphql_url,
-                json={
-                    "query": _ORG_MEMBERS_QUERY,
-                    "variables": {"org": org, "after": after},
-                },
+            result = await self._graphql(
+                _ORG_MEMBERS_QUERY, {"org": org, "after": after}
             )
-            if resp.status_code != 200:
-                await resp.aclose()  # unread body would leak a pooled connection
+            if result.status != 200:
                 return _unreadable_membership(
                     org,
                     MembershipGap.PERMISSION
-                    if resp.status_code in _PERMISSION_STATUSES
+                    if result.status in _PERMISSION_STATUSES
                     else MembershipGap.UNREADABLE,
                 )
-            body = resp.json()
-            await resp.aclose()  # release the connection once the body is read
-            if errors := body.get("errors"):
+            if result.errors:
                 # GraphQL answers a partially-failed query with HTTP 200,
                 # populating what it could alongside an ``errors`` array. A
                 # shortened member list is indistinguishable from a complete
                 # one, so any error at all condemns the whole read. A token
                 # without ``read:org`` lands here too: a null organisation and
                 # an INSUFFICIENT_SCOPES error.
-                return _unreadable_membership(org, _errors_gap(errors))
-            organization = (body.get("data") or {}).get("organization")
+                return _unreadable_membership(org, _errors_gap(result.errors))
+            organization = (result.data or {}).get("organization")
             if not isinstance(organization, dict):
                 # A token lacking organisation visibility gets HTTP 200 with a
                 # null organisation and an ``errors`` entry; that is an unknown
@@ -245,15 +222,8 @@ class OrgReadClient(AlertReads):
         contradicting the documented behaviour of exactly the scheduled runs
         that are most likely to authenticate this way.
         """
-        resp = await self._request(
-            "POST", self._graphql_url, json={"query": _VIEWER_QUERY}
-        )
-        if resp.status_code != 200:
-            await resp.aclose()  # unread body would leak a pooled connection
-            return ""
-        body = resp.json()
-        await resp.aclose()  # release the connection once the body is read
-        viewer = (body.get("data") or {}).get("viewer")
+        result = await self._graphql(_VIEWER_QUERY)
+        viewer = (result.data or {}).get("viewer")
         if not isinstance(viewer, dict):
             return ""
         login = viewer.get("login")
@@ -308,20 +278,11 @@ class OrgReadClient(AlertReads):
             f"query($owner: String!{var_decls}) {{\n{aliases}\n}}\n"
             f"{_REPO_GRAPH_FRAGMENT}"
         )
-        variables: dict[str, str] = {"owner": org}
+        variables: dict[str, object] = {"owner": org}
         for i, name in enumerate(names):
             variables[f"n{i}"] = name
-        resp = await self._request(
-            "POST",
-            self._graphql_url,
-            json={"query": query, "variables": variables},
-        )
-        status = resp.status_code
-        # A non-200 body is never read; closing either way returns the pooled
-        # connection rather than leaking it.
-        body = resp.json() if status == 200 else None
-        await resp.aclose()
-        data, errors = _batch_response(org, len(names), status=status, body=body)
+        result = await self._graphql(query, variables)
+        data, errors = _batch_response(org, len(names), result)
         # GitHub answers a partially-refused query with HTTP 200: the readable
         # aliases populated, the rest null or missing individual fields, and an
         # ``errors`` array explaining why. The paths are both logged for

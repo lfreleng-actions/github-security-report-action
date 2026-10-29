@@ -814,6 +814,28 @@ class TestDefaultConfig:
             "lfreleng-actions"
         )
 
+    def test_default_cache_dir_honours_xdg(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+        path = config.default_cache_dir()
+        assert path == tmp_path / "github-security-report"
+
+    def test_default_cache_dir_falls_back_to_home_cache(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+        path = config.default_cache_dir()
+        assert path.parts[-2:] == (".cache", "github-security-report")
+
+    def test_default_cache_dir_ignores_blank_xdg(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A set-but-blank variable is the XDG spec's "unset", not a cache at "".
+        monkeypatch.setenv("XDG_CACHE_HOME", "  ")
+        path = config.default_cache_dir()
+        assert path.parts[-2:] == (".cache", "github-security-report")
+
 
 class TestPerCategoryTopN:
     """A category may cap its own table independently of the output limit."""

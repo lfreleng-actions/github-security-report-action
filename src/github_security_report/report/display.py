@@ -10,7 +10,7 @@ surfaces present the same table the same way.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from typing import TypeVar
 
@@ -28,6 +28,23 @@ LimitFor = Callable[[CategoryKey], int | None]
 
 # Which side of a boolean feature category to name, per category.
 RepoListFor = Callable[[CategoryKey], RepoList]
+
+# The time windows one render surface shows of a windowed category, in days,
+# or ``None`` to show every window the report carries. Keyed by category so
+# the surfaces can differ (a week on the terminal, a quarter on the page).
+WindowsFor = Callable[[CategoryKey], Collection[int] | None]
+
+
+def window_shown(windows: WindowsFor | None, section: TableSection) -> bool:
+    """Whether ``section``'s window is one its surface shows.
+
+    A table with no window is never filtered here, and a surface with no
+    window policy shows every window: the filter only ever narrows.
+    """
+    if windows is None or section.window_days is None:
+        return True
+    shown = windows(section.category.key)
+    return shown is None or section.window_days in shown
 
 
 def _auto_repo_list(_key: CategoryKey) -> RepoList:

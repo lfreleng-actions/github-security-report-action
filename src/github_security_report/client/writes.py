@@ -2,10 +2,11 @@
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 """Remediation writes, and the public :class:`GitHubClient` façade.
 
-``GitHubClient`` completes the linear ``Transport -> OrgReadClient ->
-ReadClient -> GitHubClient`` chain. The chain exists so each layer stays a
-readable size -- connection/retry mechanics, org-scope reads, per-repository
-reads, and remediation writes are separable concerns -- while callers still get
+``GitHubClient`` completes the linear ``Transport -> Paging -> AlertReads ->
+OrgReadClient -> ReadClient -> WorkflowRunReads -> GitHubClient`` chain. The
+chain exists so each layer stays a readable size -- connection/retry
+mechanics, pagination, org-scope reads, per-repository reads, workflow-run
+reads and remediation writes are separable concerns -- while callers still get
 a single object, because one client instance serves both the reporting reads
 and the remediation writes.
 """
@@ -18,7 +19,7 @@ from urllib.parse import quote
 
 import httpx
 
-from github_security_report.client.reads import ReadClient
+from github_security_report.client.workflow_runs import WorkflowRunReads
 
 # Minimum spacing between cleanup mutations. GitHub asks integrations to leave
 # at least a second between mutating requests to avoid its secondary rate
@@ -27,7 +28,7 @@ from github_security_report.client.reads import ReadClient
 _MUTATION_INTERVAL_SECONDS = 1.0
 
 
-class GitHubClient(ReadClient):
+class GitHubClient(WorkflowRunReads):
     """Thin async client over the GitHub REST + GraphQL APIs."""
 
     mutation_interval_seconds: float = _MUTATION_INTERVAL_SECONDS

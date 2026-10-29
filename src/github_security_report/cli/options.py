@@ -10,10 +10,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import MappingProxyType
 
 from github_security_report.categories import CategoryKey
 from github_security_report.cli.outputs import TopNLimits
-from github_security_report.config import OrgConfig, ReportConfig
+from github_security_report.config import (
+    RUN_WINDOW_SURFACES,
+    OrgConfig,
+    ReportConfig,
+    WorkflowRunsConfig,
+)
 from github_security_report.report import OrgReport
 
 # An org config paired with the report collected for it.
@@ -38,6 +44,11 @@ class ReportOverrides:
     ``graph_batch`` and ``concurrency`` are operational levers rather than
     report policy: they change how the requests are issued, never what the
     report says, so they may move in either direction.
+
+    ``run_windows`` replaces the Workflow Failures windows of every surface
+    with one list, the shape a one-off investigation wants ("show me 14
+    days"); ``run_cache`` is one-way off, and ``run_cache_dir`` relocates the
+    run store.
     """
 
     repo_min_age_days: int | None = None
@@ -48,6 +59,9 @@ class ReportOverrides:
     include_test: bool | None = None
     graph_batch: int | None = None
     concurrency: int | None = None
+    run_windows: tuple[int, ...] | None = None
+    run_cache: bool | None = None
+    run_cache_dir: str | None = None
 
     def apply(self, org_cfg: OrgConfig) -> tuple[OrgConfig, ReportConfig]:
         """The org and report configs to collect with, overrides applied.
@@ -76,10 +90,31 @@ class ReportOverrides:
             value = getattr(self, name)
             if value is not None:
                 report_cfg = replace(report_cfg, **{name: value})
+        report_cfg = replace(report_cfg, workflow_runs=self.apply_runs(report_cfg))
         effective_cfg = org_cfg
         if self.releases_exclude is not None:
             effective_cfg = replace(org_cfg, releases_exclude=self.releases_exclude)
         return effective_cfg, report_cfg
+
+    def apply_runs(self, report_cfg: ReportConfig) -> WorkflowRunsConfig:
+        """The Workflow Failures settings with this run's overrides applied.
+
+        Separate from :meth:`apply` because repo mode has a report config
+        without an organisation to apply it to, and still takes the windows.
+        """
+        runs = report_cfg.workflow_runs
+        if self.run_windows is not None:
+            runs = replace(
+                runs,
+                windows=MappingProxyType(
+                    dict.fromkeys(RUN_WINDOW_SURFACES, self.run_windows)
+                ),
+            )
+        if self.run_cache is not None:
+            runs = replace(runs, cache=self.run_cache)
+        if self.run_cache_dir is not None:
+            runs = replace(runs, cache_dir=self.run_cache_dir)
+        return runs
 
 
 @dataclass(frozen=True)
@@ -103,3 +138,7 @@ class OrgRunOptions:
     # The per-user config file, when the run auto-discovered it rather than
     # being given a configuration; printed under each organisation's divider.
     config_path: Path | None = None
+    # Re-read every repository's workflow runs for the longest window instead
+    # of trusting the run store's watermarks. A property of this run, not of
+    # the configuration: the store is a cache, and this is how it is bypassed.
+    refresh_runs: bool = False

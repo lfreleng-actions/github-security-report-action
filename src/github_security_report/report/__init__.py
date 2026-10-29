@@ -54,6 +54,7 @@ from github_security_report.report.display import (
     FooterOptions,
     LimitFor,
     RepoListFor,
+    WindowsFor,
     _as_int,
     limit_resolver,
     offender_column_totals,
@@ -61,6 +62,7 @@ from github_security_report.report.display import (
     table_column_totals,
     table_footer_rows,
     truncate,
+    window_shown,
 )
 from github_security_report.report.signals import (
     ORG_SETUP_DOC_URL,
@@ -103,6 +105,7 @@ __all__ = [
     "SummaryLine",
     "TableRow",
     "TableSection",
+    "WindowsFor",
     "build_org_report",
     "build_summary",
     "limit_resolver",
@@ -110,4 +113,5 @@ __all__ = [
     "section_shows_informational",
     "table_column_totals",
     "truncate",
+    "window_shown",
 ]

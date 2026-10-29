@@ -3,9 +3,9 @@
 """Reporting categories outside the four-state per-signal model.
 
 Dependabot configuration posture, release/tag freshness, release mutability,
-private vulnerability reporting, the auto-merge setting, Code Quality and
-CodeQL scan health are rendered as tables rather than as pass/fail signals, so
-they are assembled here once the signal report exists. The Dependabot alerts
+private vulnerability reporting, the auto-merge setting, Code Quality, CodeQL
+scan health and Workflow Failures are rendered as tables rather than as
+pass/fail signals, so they are assembled here once the signal report exists. The Dependabot alerts
 enablement flag, the auto-merge flag, the Linguist languages, the default
 branch head and the release/tag data are reused from the batched GraphQL
 prefetch; the security-updates, private-vulnerability-reporting, Code Quality
@@ -21,9 +21,12 @@ from github_security_report import codeql, layout, posture
 from github_security_report.code_quality import CodeQualitySetup, applicable_languages
 from github_security_report.collect.codeql import collect_codeql_facts
 from github_security_report.collect.context import (
+    CollectExtras,
     OrgCollectContext,
+    gather_all,
     gather_in_batches,
 )
+from github_security_report.collect.workflow_runs import attach_workflow_failures
 from github_security_report.config import OrgConfig, ReportConfig
 from github_security_report.issues import build_issues_table
 from github_security_report.models import Repo, SignalType
@@ -55,14 +58,27 @@ async def _code_quality_setup(
     return await ctx.client.code_quality_setup(ctx.org, repo.name)
 
 
+async def _security_updates(repo: Repo, ctx: OrgCollectContext) -> bool | None:
+    """Whether Dependabot security updates are on, from the listing if it said.
+
+    The repository listing carries the state for a token with admin or
+    security-manager rights, so the per-repository probe is spent only when
+    the listing left it out.
+    """
+    if repo.security_updates is not None:
+        return repo.security_updates
+    return await ctx.client.automated_security_fixes(ctx.org, repo.name)
+
+
 async def _posture_for_repo(repo: Repo, ctx: OrgCollectContext) -> RepoPosture:
     """Build one repo's Dependabot posture and release/tag freshness.
 
     The Dependabot-alerts flag, the auto-merge setting, the Linguist languages
     and the release/tag/``dependabot.yml`` data come from the batched GraphQL
-    prefetch; the security-updates, private-vulnerability-reporting and Code
-    Quality setup reads remain per-repo REST calls, since GitHub exposes no
-    GraphQL equivalent. They are independent, so they are gathered together
+    prefetch, and the security-updates state from the repository listing where
+    it carried one; the private-vulnerability-reporting and Code Quality setup
+    reads remain per-repo REST calls, since GitHub exposes no GraphQL
+    equivalent. They are independent, so they are gathered together
     and the reads overlap (bounded by the client semaphore). Private
     vulnerability reporting is always probed, like every other signal, with the
     per-category toggle governing only whether the resulting table renders; the
@@ -73,7 +89,7 @@ async def _posture_for_repo(repo: Repo, ctx: OrgCollectContext) -> RepoPosture:
         applicable_languages(graph.languages) if graph.languages is not None else None
     )
     security_updates, pvr, quality = await asyncio.gather(
-        ctx.client.automated_security_fixes(ctx.org, repo.name),
+        _security_updates(repo, ctx),
         ctx.client.private_vulnerability_reporting(ctx.org, repo.name),
         _code_quality_setup(repo, ctx, quality_languages),
     )
@@ -164,16 +180,32 @@ async def attach_extra_tables(
     org_cfg: OrgConfig,
     report_cfg: ReportConfig,
     *,
-    author_tables: bool = True,
+    extras: CollectExtras | None = None,
 ) -> None:
     """Probe posture for every repository and attach the derived tables.
 
-    ``author_tables=False`` leaves the Issues, Pull Requests and Assigned to Me
-    tables uncollected, and with them the membership and viewer reads they
-    alone need. Remediation acts on none of them.
+    ``extras`` (see :class:`CollectExtras`) switches the author tables off,
+    which leaves the Issues, Pull Requests and Assigned to Me tables
+    uncollected and with them the membership and viewer reads they alone
+    need, and names the run store the Workflow Failures tables sync against.
     """
-    postures = await gather_in_batches(
-        in_scope, lambda repo: _posture_for_repo(repo, ctx)
+    wanted = extras if extras is not None else CollectExtras()
+
+    async def nothing() -> None:
+        return None
+
+    # The four collections read only the frozen context and each attach to
+    # a different part of the report, so they run together; previously they
+    # were three sequential passes with the semaphore part-idle between.
+    postures, codeql_facts, _authors, _runs = await gather_all(
+        gather_in_batches(in_scope, lambda repo: _posture_for_repo(repo, ctx)),
+        collect_codeql_facts(in_scope, ctx, stale_days=report_cfg.codeql_stale_days),
+        _attach_author_tables(report, in_scope, ctx, report_cfg)
+        if wanted.author_tables
+        else nothing(),
+        attach_workflow_failures(report, in_scope, ctx, report_cfg, wanted)
+        if wanted.run_store is not None
+        else nothing(),
     )
     report.dependabot_tables = posture.build_dependabot_tables(postures)
     report.releases = posture.build_releases_table(
@@ -188,17 +220,12 @@ async def attach_extra_tables(
     report.auto_merge = posture.build_auto_merge_table(postures)
     report.code_quality = posture.build_code_quality_table(postures)
     report.code_quality_writes = posture.code_quality_writes(postures)
-    codeql_facts = await collect_codeql_facts(
-        in_scope, ctx, stale_days=report_cfg.codeql_stale_days
-    )
     report.codeql_tables = codeql.build_codeql_tables(
         codeql_facts, stale_days=report_cfg.codeql_stale_days
     )
     report.codeql_health = codeql.CodeQLHealth(
         facts=tuple(codeql_facts), stale_days=report_cfg.codeql_stale_days
     )
-    if author_tables:
-        await _attach_author_tables(report, in_scope, ctx, report_cfg)
     # The Dependabot alerts enablement sub-table carries the repositories with
     # Dependabot alerts disabled, so drop them from the Dependabot signal
     # section's nag list to avoid listing the same repositories twice under the

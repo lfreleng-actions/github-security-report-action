@@ -230,3 +230,36 @@ fragment RepoData on Repository {{
   }}
 }}
 """
+
+# Failing jobs of a batch of workflow runs, 50 node IDs per query for one
+# rate-limit point. The REST listing says a run failed but not which job; this
+# names them, with the workflow's current friendly name (the listing shows the
+# name at run time) and the ref's prefix (``refs/tags/`` tells a tag push from
+# a branch push, which the listing's ``head_branch`` cannot). A WorkflowRun has
+# no conclusion or jobs of its own: both live on its check suite. ``first: 20``
+# bounds the job list; ``totalCount`` says when a run had more.
+_RUN_JOBS_WINDOW = 20
+_WORKFLOW_RUN_JOBS_QUERY = f"""
+query($ids: [ID!]!) {{
+  nodes(ids: $ids) {{
+    ... on WorkflowRun {{
+      id
+      workflow {{ name }}
+      checkSuite {{
+        branch {{ prefix }}
+        checkRuns(
+          first: {_RUN_JOBS_WINDOW}
+          filterBy: {{
+            conclusions: [
+              FAILURE, TIMED_OUT, STARTUP_FAILURE, ACTION_REQUIRED, STALE, CANCELLED
+            ]
+          }}
+        ) {{
+          totalCount
+          nodes {{ name conclusion detailsUrl }}
+        }}
+      }}
+    }}
+  }}
+}}
+"""

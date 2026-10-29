@@ -114,6 +114,13 @@ class Repo:
     # Repository creation time (UTC); used to exclude freshly-created repos from
     # the release/tag age requirement. None when the API did not provide it.
     created_at: dt.datetime | None = None
+    # Two feature states the repository listing already carries, under
+    # ``security_and_analysis``, for a token with admin or security-manager
+    # rights: whether secret scanning and Dependabot security updates are on.
+    # Read here so the per-repository probes for the same facts are spent
+    # only when the listing left them out (``None``).
+    secret_scanning: bool | None = None
+    security_updates: bool | None = None
 
 
 @dataclass(frozen=True)

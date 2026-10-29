@@ -59,6 +59,19 @@ CATEGORY_KEYS = [meta.key.value for meta in orderable_categories()]
 # Heuristic to warn when a token value, rather than an env-var name, is given.
 _TOKEN_PREFIXES = ("ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_")
 
+# The surfaces the Workflow Failures tables take a window list for. ``report``
+# covers both GitHub Pages artifacts, which share one set of windows, matching
+# how ``top_n_report`` already treats them.
+RUN_WINDOW_SURFACES = ("cli", "report", "slack")
+
+# A window list: whole days, at least one, no repeats. An empty list is a
+# legitimate way to show the category on a surface with no windows at all.
+_WINDOW_LIST = {
+    "type": "array",
+    "items": {"type": "integer", "minimum": 1},
+    "uniqueItems": True,
+}
+
 
 class ConfigError(ValueError):
     """Raised when configuration is malformed or fails validation."""
@@ -229,6 +242,40 @@ CONFIG_SCHEMA: dict = {
                             "type": "array",
                             "items": {"enum": CATEGORY_KEYS},
                         },
+                    },
+                },
+                # The Workflow Failures tables: which time windows each
+                # surface shows, how deep the run store reads and keeps, and
+                # how a workflow's failures are judged. The loader rejects a
+                # retention shorter than the longest window, which JSON
+                # Schema cannot express.
+                "workflow_runs": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "windows": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": dict.fromkeys(
+                                RUN_WINDOW_SURFACES, _WINDOW_LIST
+                            ),
+                        },
+                        "retention_days": {"type": "integer", "minimum": 1},
+                        "backfill_days": {"type": "integer", "minimum": 1},
+                        "include_dynamic": {"type": "boolean"},
+                        "exclude_workflows": {
+                            "type": "array",
+                            "items": {"type": "string", "minLength": 1},
+                        },
+                        "collapse_matrix": {"type": "boolean"},
+                        "persistent_threshold": {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                            "maximum": 1,
+                        },
+                        "min_runs": {"type": "integer", "minimum": 1},
+                        "cache": {"type": "boolean"},
+                        "cache_dir": {"type": "string", "minLength": 1},
                     },
                 },
                 # Per-category render toggles. Each known category may set a

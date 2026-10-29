@@ -98,6 +98,12 @@ class OrgReport:
     # the configured ones plus every applicable one. Not serialised; the
     # table's Languages column already shows what applies.
     code_quality_writes: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # The Workflow Failures tables, one per configured window, shortest
+    # first: the per-repository ranking and the per-workflow detail. Empty in
+    # repo mode without a window / when not collected. The first of each
+    # renders as a section and the rest beneath it; see :attr:`windowed`.
+    workflow_failures: tuple[TableSection, ...] = ()
+    workflow_failures_detail: tuple[TableSection, ...] = ()
     # The GitHub Issues table (open issues per repository, split by label).
     # None in repo mode / when not collected.
     issues: TableSection | None = None
@@ -139,15 +145,41 @@ class OrgReport:
             self.private_vulnerability_reporting,
             self.auto_merge,
             self.code_quality,
+            *(group[0] if group else None for group in self.windowed),
             self.issues,
             self.pull_requests,
             self.assigned_pull_requests,
         )
 
     @property
+    def windowed(self) -> tuple[tuple[TableSection, ...], ...]:
+        """The per-window table groups, each shortest window first.
+
+        A group's first table is the category's section; the rest are its
+        children in the layout, so a category with three windows holds one
+        position and the surfaces that show fewer windows drop the others.
+        """
+        return (self.workflow_failures, self.workflow_failures_detail)
+
+    def sibling_windows(self, table: TableSection) -> tuple[TableSection, ...]:
+        """The other windows of ``table``'s category, when it leads a group."""
+        for group in self.windowed:
+            if group and group[0] is table:
+                return group[1:]
+        return ()
+
+    @property
     def nested_tables(self) -> tuple[TableSection, ...]:
-        """Every table rendered beneath a parent signal, in assembly order."""
-        return (*self.codeql_tables, *self.dependabot_tables)
+        """Every table rendered beneath a parent, in assembly order.
+
+        The CodeQL and Dependabot sub-tables, then the later windows of each
+        windowed category.
+        """
+        return (
+            *self.codeql_tables,
+            *self.dependabot_tables,
+            *(table for group in self.windowed for table in group[1:]),
+        )
 
     def tables_nested_under(self, signal: SignalType) -> tuple[TableSection, ...]:
         """The tables that render beneath ``signal``'s section (often none)."""

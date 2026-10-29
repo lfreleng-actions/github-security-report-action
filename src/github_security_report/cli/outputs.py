@@ -16,7 +16,7 @@ from github_security_report.config import OrgConfig, ReportConfig
 from github_security_report.models import RepoSignal
 from github_security_report.render import html as html_render
 from github_security_report.render import markdown as md_render
-from github_security_report.report import FooterOptions, LimitFor, OrgReport
+from github_security_report.report import FooterOptions, LimitFor, OrgReport, WindowsFor
 from github_security_report.runner import should_fail
 
 # Keep filenames within output_dir: a channel value containing "/" or ".."
@@ -52,6 +52,15 @@ class TopNLimits:
     report: int | None = None
     cli: int | None = None
     slack: int | None = None
+
+    def named(self) -> list[tuple[str, int | None]]:
+        """Each override with the flag that set it, for boundary checks."""
+        return [
+            ("--top-n", self.shared),
+            ("--top-n-report", self.report),
+            ("--top-n-cli", self.cli),
+            ("--top-n-slack", self.slack),
+        ]
 
     def resolve(
         self, report_cfg: ReportConfig, output: str, category: CategoryKey | None = None
@@ -115,6 +124,17 @@ def show(
     """
     suppressed = frozenset(hidden)
     return lambda key: key not in suppressed and report_cfg.shows_category(key, output)
+
+
+def windows(report_cfg: ReportConfig, output: str) -> WindowsFor:
+    """The windows one output shows of each windowed category.
+
+    ``output`` is ``cli``, ``report`` (both GitHub Pages artifacts) or
+    ``slack``. Every windowed category reads the same per-surface list today;
+    the lookup is per category so a later one could differ.
+    """
+    shown = frozenset(report_cfg.workflow_runs.windows_for(output))
+    return lambda _key: shown
 
 
 def footer(report_cfg: ReportConfig) -> FooterOptions:
@@ -193,6 +213,23 @@ def slack_footer(
     return resolve
 
 
+def slack_windows(
+    items: list[tuple[OrgConfig, OrgReport]],
+) -> Callable[[OrgReport], WindowsFor | None]:
+    """The Slack windows for a channel, resolved per organisation.
+
+    Per organisation like the footer, since each organisation's digest follows
+    its own configuration; a report configured nowhere here shows every
+    window it carries.
+    """
+
+    def resolve(org: OrgReport) -> WindowsFor | None:
+        org_cfg = _config_for(items, org)
+        return None if org_cfg is None else windows(org_cfg.report, "slack")
+
+    return resolve
+
+
 def slack_limit(
     items: list[tuple[OrgConfig, OrgReport]], limits: TopNLimits
 ) -> LimitFor:
@@ -227,6 +264,7 @@ def write_org_files(
             show=show(report_cfg, "markdown", hidden),
             limit=limit,
             footer=footer(report_cfg),
+            windows=windows(report_cfg, "report"),
         ),
         encoding="utf-8",
     )
@@ -237,6 +275,7 @@ def write_org_files(
             show=show(report_cfg, "html", hidden),
             limit=limit,
             footer=footer(report_cfg),
+            windows=windows(report_cfg, "report"),
         ),
         encoding="utf-8",
     )

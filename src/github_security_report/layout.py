@@ -61,12 +61,13 @@ Styles
     existed, kept so an operator who preferred it can say so.
 
 The nested tables are **not** independently placeable: the Dependabot posture
-tables (alerts enabled, security updates enabled, cooldown) and the CodeQL
-scan-health tables (stale configurations, language coverage). They render as
-sub-sections beneath their parent signal on every surface, and detaching them
-would leave near-identical headings floating in the report with nothing to say
-which signal they qualified. They travel with it instead, as
-:attr:`LayoutItem.children`.
+tables (alerts enabled, security updates enabled, cooldown), the CodeQL
+scan-health tables (stale configurations, language coverage), and the later
+windows of a windowed category (Workflow Failures over 30 and 90 days behind
+the 7-day table). They render as sub-sections beneath their parent on every
+surface, and detaching them would leave near-identical headings floating in
+the report with nothing to say which section they qualified. They travel with
+it instead, as :attr:`LayoutItem.children`.
 """
 
 from __future__ import annotations
@@ -83,11 +84,12 @@ from github_security_report.report import OrgReport, SignalSection, TableSection
 class LayoutItem:
     """One top-level entry in the report, with any sub-tables it carries.
 
-    ``children`` is non-empty only for a signal that carries sub-tables (the
-    Dependabot Alerts and CodeQL signals). Each surface decides how to nest them
-    -- Markdown and HTML demote them to sub-headings, the terminal and Slack
-    simply follow the parent block -- but every surface renders them here,
-    beside the signal they qualify.
+    ``children`` is non-empty for a signal that carries sub-tables (the
+    Dependabot Alerts and CodeQL signals) and for a windowed table category,
+    whose later windows follow its first. Each surface decides how to nest
+    them -- Markdown and HTML demote them to sub-headings, the terminal and
+    Slack simply follow the parent block -- but every surface renders them
+    here, beside the section they qualify.
     """
 
     section: SignalSection | TableSection
@@ -139,7 +141,9 @@ def default_items(org: OrgReport) -> list[LayoutItem]:
         for section in org.sections
     ]
     items.extend(
-        LayoutItem(table) for table in org.standalone_tables if table is not None
+        LayoutItem(table, org.sibling_windows(table))
+        for table in org.standalone_tables
+        if table is not None
     )
     return items
 
@@ -249,10 +253,18 @@ def drawn_order(org: OrgReport) -> list[CategoryKey]:
     nested table has no position of its own to configure. A reader of the
     report still meets those tables somewhere definite, though, so this expands
     each parent to the children that follow it -- the sequence of headings, as
-    opposed to the sequence of configurable slots.
+    opposed to the sequence of configurable slots. A windowed category's later
+    windows share their parent's key and are not repeated.
     """
     return [
         key
         for item in plan(org)
-        for key in (item.key, *(child.category.key for child in item.children))
+        for key in (
+            item.key,
+            *(
+                child.category.key
+                for child in item.children
+                if child.category.key is not item.key
+            ),
+        )
     ]

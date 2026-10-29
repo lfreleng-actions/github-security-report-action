@@ -498,3 +498,19 @@ def test_excluded_display_governs_the_markdown_footer() -> None:
     conditional = render(report.ExcludedDisplay.CONDITIONAL_HIDE)
     assert conditional.count("**Excluded:**") == 1
     assert "[extra](https://github.com/o/extra)" in conditional
+
+
+def test_table_cells_escape_markdown_delimiters() -> None:
+    # A workflow or job name holding a pipe, a newline or brackets must not
+    # add a column, split the row or close a link label early.
+    from github_security_report.render.markdown import _cell
+    from github_security_report.report import TableRow
+
+    row = TableRow(
+        repo=Repo("r", "o/r", "https://github.com/o/r"),
+        cells=("Build | Test", "a\nb", "x [1]"),
+        cell_urls=(None, None, "https://example.test/run"),
+    )
+    assert _cell(row, 0) == "Build \\| Test"
+    assert _cell(row, 1) == "a b"
+    assert _cell(row, 2) == "[x \\[1\\]](https://example.test/run)"

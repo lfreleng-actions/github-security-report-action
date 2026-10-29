@@ -21,8 +21,11 @@ from __future__ import annotations
 
 from github_security_report.collect.context import (
     REPO_BATCH,
+    CollectExtras,
     OrgCollectContext,
+    gather_all,
     gather_in_batches,
+    repo_context,
 )
 from github_security_report.collect.org import collect_org
 from github_security_report.collect.protocols import (
@@ -45,11 +48,14 @@ __all__ = [
     "GRAPH_BATCH",
     "REPO_BATCH",
     "ClientProtocol",
+    "CollectExtras",
     "OrgCollectContext",
     "RepoClientProtocol",
     "NamedRepos",
     "check_named_repos",
     "collect_org",
     "collect_repo",
+    "gather_all",
     "gather_in_batches",
+    "repo_context",
 ]
