@@ -266,6 +266,53 @@ async def test_collect_org_end_to_end() -> None:
     assert zizmor.clean_count == 2
 
 
+class _Phases:
+    """A CollectProgress that records what the collection told it."""
+
+    def __init__(self) -> None:
+        self.phases: list[tuple[str, int | None]] = []
+        self.ticks: dict[str, int] = {}
+        self.notices: list[str | None] = []
+
+    def phase(self, name: str, *, repos: int | None = None) -> None:
+        self.phases.append((name, repos))
+        self.ticks[name] = 0
+
+    def repo_done(self) -> None:
+        self.ticks[self.phases[-1][0]] += 1
+
+    def notice(self, text: str | None) -> None:
+        self.notices.append(text)
+
+
+async def test_collect_org_names_its_phases_in_order() -> None:
+    progress = _Phases()
+    await collect.collect_org(
+        FakeClient(),
+        OrgConfig(name="o"),
+        ReportConfig(),
+        generated_at=WHEN,
+        extras=collect.CollectExtras(progress=progress),
+    )
+    assert progress.phases == [
+        ("listing repositories", None),
+        ("sweeping alerts, gating signals and prefetching (GraphQL)", None),
+        ("probing repositories", 2),
+        ("posture, scan health, authors and workflow runs", 2),
+        ("building tables", None),
+    ]
+    # The per-repository phases tick once per repository, the others never.
+    assert progress.ticks == {
+        "listing repositories": 0,
+        "sweeping alerts, gating signals and prefetching (GraphQL)": 0,
+        "probing repositories": 2,
+        "posture, scan health, authors and workflow runs": 2,
+        "building tables": 0,
+    }
+    # No run store was given, so no sync and no first-time notice.
+    assert progress.notices == []
+
+
 async def test_collect_org_gates_unsupported_aislop() -> None:
     # The default fake has no aislop evidence anywhere (no alerts, no ruleset,
     # no analyses), so feature gating skips the signal: its section is marked

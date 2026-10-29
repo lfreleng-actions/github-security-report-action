@@ -22,6 +22,8 @@ from github_security_report.client import GITHUB_API, GraphBatchError
 from github_security_report.client.workflow_runs import RunDrillDown
 from github_security_report.collect.context import (
     CollectExtras,
+    CollectProgress,
+    NullProgress,
     OrgCollectContext,
     batched,
     gather_in_batches,
@@ -150,6 +152,39 @@ async def _enrich(
         )
 
 
+def _cold_start_notice(
+    in_scope: list[Repo], store: RunStore, options: RunSyncOptions
+) -> str | None:
+    """Why this sync will take minutes rather than seconds, if it will.
+
+    A store on disk that holds none of the repositories is being built for
+    the first time, and ``refresh`` re-reads every one as if it were: either
+    costs a backfill per repository, which is when the operator decides
+    whether to wait. A store that merely lacks a few new repositories is the
+    ordinary case and says nothing, and so does a store in memory: it is
+    empty on every run, so there is no one-off to announce.
+    """
+    if not in_scope:
+        return None
+    count = len(in_scope)
+    noun = "repository" if count == 1 else "repositories"
+    if options.refresh:
+        return (
+            f"re-reading every repository's workflow runs "
+            f"({options.backfill_days} days, {count} {noun})"
+        )
+    if not store.persistent:
+        return None
+    synced = set(store.synced_repos())
+    if any(repo.name in synced for repo in in_scope):
+        return None
+    return (
+        f"building the workflow-run store for the first time "
+        f"({options.backfill_days} days, {count} {noun}); "
+        "this one-off takes several minutes"
+    )
+
+
 async def collect_workflow_runs(
     in_scope: list[Repo],
     ctx: OrgCollectContext,
@@ -157,14 +192,25 @@ async def collect_workflow_runs(
     *,
     now: dt.datetime,
     options: RunSyncOptions,
+    progress: CollectProgress | None = None,
 ) -> WorkflowRunsResult:
-    """Sync, enrich, prune, and load the longest window's records."""
-    syncs = await gather_in_batches(
-        in_scope,
-        lambda repo: RepoSync(
-            ctx.client, store, ctx.org, repo, now=now, options=options
-        ).run(),
-    )
+    """Sync, enrich, prune, and load the longest window's records.
+
+    ``progress`` is told, for as long as the sync lasts, when it is a
+    first-time build or a forced re-read: the one case in which this step
+    dominates the run.
+    """
+    shown = progress if progress is not None else NullProgress()
+    shown.notice(_cold_start_notice(in_scope, store, options))
+    try:
+        syncs = await gather_in_batches(
+            in_scope,
+            lambda repo: RepoSync(
+                ctx.client, store, ctx.org, repo, now=now, options=options
+            ).run(),
+        )
+    finally:
+        shown.notice(None)
     names = frozenset(repo.name for repo in in_scope)
     since = now - dt.timedelta(days=options.window_days)
     await _enrich(
@@ -234,6 +280,7 @@ async def attach_workflow_failures(
             include_dynamic=cfg.include_dynamic,
             refresh=extras.refresh_runs,
         ),
+        progress=extras.progress,
     )
     report.workflow_failures, report.workflow_failures_detail = (
         build_workflow_failure_tables(

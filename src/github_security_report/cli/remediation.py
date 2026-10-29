@@ -19,6 +19,7 @@ from rich.console import Console
 from github_security_report import collect, scope
 from github_security_report import remediate as remediate_mod
 from github_security_report.categories import CategoryKey
+from github_security_report.cli.progress import make_tracker
 from github_security_report.client import GitHubClient
 from github_security_report.collect.context import CollectExtras
 from github_security_report.collect.protocols import ClientProtocol
@@ -41,6 +42,7 @@ async def _run_remediate(
     apply: bool,
     repos: Sequence[scope.RepoRef] = (),
     config_path: Path | None = None,
+    no_progress: bool = False,
 ) -> int:
     """Collect each org's posture and enable (or preview enabling) features.
 
@@ -55,28 +57,36 @@ async def _run_remediate(
     """
     now = dt.datetime.now(dt.timezone.utc)
     failures = 0
-    async with GitHubClient(token) as client:
+    # One live line per organisation, kept up through the writes too: the
+    # paced CodeQL cleanup is otherwise a silent second per deletion.
+    tracker = make_tracker(console, no_progress=no_progress)
+    async with GitHubClient(token, progress=tracker) as client:
         selected = await _check_selection(client, cfg, repos, console=console)
         if selected is None:
             return 2
         for index, org_cfg in enumerate(cfg.organizations):
             if repos and index not in selected:
                 continue  # none of the named repositories live here
-            # The validated repositories themselves, so collection cannot
-            # silently lose one to a second, incomplete listing.
-            report = await collect.collect_org(
-                client,
-                org_cfg,
-                org_cfg.report,
-                generated_at=now,
-                selected=selected[index] if repos else None,
-                # No remediation acts on the author-aware tables, so their
-                # membership and viewer reads would only cost requests.
-                extras=CollectExtras(author_tables=False),
-            )
-            results = await remediate_mod.remediate_org(
-                client, report, categories=categories, apply=apply
-            )
+            tracker.start(org_cfg.name)
+            try:
+                # The validated repositories themselves, so collection cannot
+                # silently lose one to a second, incomplete listing.
+                report = await collect.collect_org(
+                    client,
+                    org_cfg,
+                    org_cfg.report,
+                    generated_at=now,
+                    selected=selected[index] if repos else None,
+                    # No remediation acts on the author-aware tables, so their
+                    # membership and viewer reads would only cost requests.
+                    extras=CollectExtras(author_tables=False, progress=tracker),
+                )
+                tracker.phase("applying" if apply else "previewing remediation")
+                results = await remediate_mod.remediate_org(
+                    client, report, categories=categories, apply=apply
+                )
+            finally:
+                tracker.stop()
             # Honour the org's configured terminal offender limit, the same
             # cap the report's CLI output uses, so large orgs stay readable.
             term_render.render_remediation(

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 from pathlib import Path
 
 import typer
@@ -27,6 +26,7 @@ from github_security_report.cli.modes import (
 )
 from github_security_report.cli.options import OrgRunOptions, ReportOverrides
 from github_security_report.cli.outputs import TopNLimits
+from github_security_report.cli.progress import interactive
 from github_security_report.config import CONCURRENCY_MAX
 from github_security_report.scope import RepoSelectionError, parse_repo_selection
 
@@ -73,8 +73,12 @@ def _supplied(flags: dict[str, bool]) -> list[str]:
 
 
 def _console(no_color: bool) -> Console:
-    """A console that drops colour in CI, when piped, or on request."""
-    plain = no_color or bool(os.environ.get("CI")) or not sys.stdout.isatty()
+    """A console that drops colour in CI, when piped, or on request.
+
+    The live progress line reads the same :func:`interactive` decision, so
+    the two never disagree about whether a person is watching.
+    """
+    plain = no_color or not interactive()
     return Console(no_color=plain, highlight=False)
 
 
@@ -204,6 +208,11 @@ def report(
         help="Re-read every repository's workflow runs for the longest window, ignoring what the run store already holds.",
     ),
     no_color: bool = typer.Option(False, "--no-color", help="Disable coloured output."),
+    no_progress: bool = typer.Option(
+        False,
+        "--no-progress",
+        help="Do not show the live progress line while collecting (it is already off in CI, when piped, and with --verbose).",
+    ),
 ) -> None:
     """Generate a security and quality report."""
     console = _console(no_color)
@@ -251,6 +260,7 @@ def report(
             hidden=hidden,
             config_path=config_path,
             refresh_runs=refresh_runs,
+            no_progress=no_progress,
         )
         code = boundary.run_guarded(console, _run_org(cfg, options, console=console))
     else:
@@ -297,6 +307,7 @@ def report(
                 hidden=hidden,
                 config_path=config_path,
                 run_windows=overrides.run_windows,
+                no_progress=no_progress,
             ),
         )
     raise typer.Exit(code)
@@ -345,6 +356,11 @@ def remediate(
         help="Limit every selected category to these repositories: comma-separated and/or repeatable, each 'name' (in any configured org) or 'owner/name'. Each org's repository list is checked first: a name matching nothing, a name matching only excluded repositories, or an incomplete list stops the run before any per-repository read or any write.",
     ),
     no_color: bool = typer.Option(False, "--no-color", help="Disable coloured output."),
+    no_progress: bool = typer.Option(
+        False,
+        "--no-progress",
+        help="Do not show the live progress line while collecting (it is already off in CI, when piped, and with --verbose).",
+    ),
 ) -> None:
     """Enable security features on repositories that lack them.
 
@@ -417,6 +433,7 @@ def remediate(
             apply=apply,
             repos=selection,
             config_path=config_path,
+            no_progress=no_progress,
         ),
     )
     raise typer.Exit(code)

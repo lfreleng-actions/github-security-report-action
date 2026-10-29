@@ -205,6 +205,7 @@ async def attach_extra_tables(
     need, and names the run store the Workflow Failures tables sync against.
     """
     wanted = extras if extras is not None else CollectExtras()
+    progress = wanted.progress
 
     async def nothing() -> None:
         return None
@@ -212,8 +213,15 @@ async def attach_extra_tables(
     # The four collections read only the frozen context and each attach to
     # a different part of the report, so they run together; previously they
     # were three sequential passes with the semaphore part-idle between.
+    # They share one phase name, and the posture probes alone drive its
+    # repository counter: one count per repository, not one per collection.
+    progress.phase(
+        "posture, scan health, authors and workflow runs", repos=len(in_scope)
+    )
     postures, codeql_facts, _authors, _runs = await gather_all(
-        gather_in_batches(in_scope, lambda repo: _posture_for_repo(repo, ctx)),
+        gather_in_batches(
+            in_scope, lambda repo: _posture_for_repo(repo, ctx), progress=progress
+        ),
         collect_codeql_facts(in_scope, ctx, stale_days=report_cfg.codeql_stale_days),
         _attach_author_tables(report, in_scope, ctx, report_cfg)
         if wanted.author_tables
@@ -222,6 +230,7 @@ async def attach_extra_tables(
         if wanted.run_store is not None
         else nothing(),
     )
+    progress.phase("building tables")
     report.dependabot_tables = posture.build_dependabot_tables(postures)
     report.releases = posture.build_releases_table(
         postures,

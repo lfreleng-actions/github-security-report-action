@@ -750,6 +750,18 @@ def test_repo_mode_accepts_the_limits_it_applies(flag: str) -> None:
     assert "organisation mode only" not in result.stdout
 
 
+def test_no_progress_is_accepted_in_every_mode() -> None:
+    # The live line is a property of the invocation, like --no-color, so the
+    # flag belongs to repo mode and remediate as much as to an org run.
+    repo = cli.invoke(
+        app, ["report", "--repo", "o/r", "--scope", "repo", "--no-progress"]
+    )
+    assert "organisation mode only" not in repo.stdout
+    assert "No such option" not in repo.stdout
+    fix = cli.invoke(app, ["remediate", "--org", "o", "--no-progress"])
+    assert "No such option" not in fix.stdout
+
+
 def test_releases_exclude_refused_across_many_orgs(tmp_path: Path) -> None:
     # One flag would replace the curated list of every configured org, so a
     # three-org config would lose all three lists. Refuse rather than flatten.
@@ -917,7 +929,14 @@ class TestReportOverrides:
 
 
 @pytest.mark.parametrize(
-    "flag", ["--no-gating", "--include-archived", "--include-test", "--graph-batch=5"]
+    "flag",
+    [
+        "--no-gating",
+        "--include-archived",
+        "--include-test",
+        "--graph-batch=5",
+        "--no-progress",
+    ],
 )
 def test_new_flags_are_accepted_in_org_mode(flag: str) -> None:
     # Resolution stops at the missing token, which is past option parsing:

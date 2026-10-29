@@ -142,3 +142,5 @@ class OrgRunOptions:
     # of trusting the run store's watermarks. A property of this run, not of
     # the configuration: the store is a cache, and this is how it is bypassed.
     refresh_runs: bool = False
+    # Leave the live progress line off even on an interactive terminal.
+    no_progress: bool = False
