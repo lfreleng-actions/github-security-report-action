@@ -36,6 +36,7 @@ from rich.table import Table
 from rich.text import Text
 
 from github_security_report.client.events import RequestKind
+from github_security_report.collect.context import RunSyncSummary
 
 log = logging.getLogger(__name__)
 
@@ -70,10 +71,17 @@ def progress_wanted(console: Console, *, no_progress: bool = False) -> bool:
 
 
 class NullTracker:
-    """A tracker that shows nothing, with :class:`RunTracker`'s surface."""
+    """A tracker that shows nothing, with :class:`RunTracker`'s surface.
+
+    It still keeps the sync summary, which the run summary prints whether or
+    not a live line was shown.
+    """
+
+    def __init__(self) -> None:
+        self.sync: RunSyncSummary | None = None
 
     def start(self, org: str) -> None:
-        return None
+        self.sync = None
 
     def stop(self) -> None:
         return None
@@ -86,6 +94,9 @@ class NullTracker:
 
     def notice(self, text: str | None) -> None:
         return None
+
+    def store_synced(self, summary: RunSyncSummary) -> None:
+        self.sync = summary
 
     def on_request(self, kind: RequestKind, in_flight: int) -> None:
         return None
@@ -178,6 +189,7 @@ class RunTracker:
         self._backoffs = 0
         self._resume_at = 0.0
         self._limited_resource: str | None = None
+        self.sync: RunSyncSummary | None = None
 
     # -- lifecycle ----------------------------------------------------------
     def start(self, org: str) -> None:
@@ -192,6 +204,7 @@ class RunTracker:
         self._in_flight = {}
         self._notice = None
         self._backoffs = 0
+        self.sync = None
         self._hold.hold()
         try:
             live = Live(
@@ -240,6 +253,9 @@ class RunTracker:
 
     def notice(self, text: str | None) -> None:
         self._notice = text
+
+    def store_synced(self, summary: RunSyncSummary) -> None:
+        self.sync = summary
 
     # -- ProgressSink ---------------------------------------------------------
     def on_request(self, kind: RequestKind, in_flight: int) -> None:

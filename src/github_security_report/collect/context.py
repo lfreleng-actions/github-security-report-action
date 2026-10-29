@@ -41,6 +41,27 @@ REPO_BATCH = 50
 GRAPH_PREFETCH_IN_FLIGHT = 4
 
 
+@dataclass(frozen=True)
+class RunSyncSummary:
+    """What one organisation's workflow-run sync did, for the run summary.
+
+    ``cold`` is whether a store on disk held none of the in-scope
+    repositories before the sync: a first-time build, which is when a run
+    takes minutes it will not take again. A store in memory is never cold,
+    since it is rebuilt on every run. The counts are this run's:
+    repositories whose listing was read (``repos``), of which ``unchanged``
+    answered 304 and ``unreadable`` could not be read; records ``written``
+    and ``pruned``.
+    """
+
+    cold: bool
+    repos: int
+    unchanged: int
+    unreadable: int
+    written: int
+    pruned: int
+
+
 class CollectProgress(Protocol):
     """What a collection tells a display about where it has got to.
 
@@ -59,6 +80,9 @@ class CollectProgress(Protocol):
     def notice(self, text: str | None) -> None:
         """Show ``text`` while something exceptional lasts; ``None`` clears it."""
 
+    def store_synced(self, summary: RunSyncSummary) -> None:
+        """The workflow-run sync finished and did ``summary``."""
+
 
 class NullProgress:
     """Progress nobody is watching: the default."""
@@ -70,6 +94,9 @@ class NullProgress:
         return None
 
     def notice(self, text: str | None) -> None:
+        return None
+
+    def store_synced(self, summary: RunSyncSummary) -> None:
         return None
 
 

@@ -1782,6 +1782,102 @@ def test_verbose_org_run_logs_the_request_accounting_when_collection_aborts(
 
 
 # --------------------------------------------------------------------------- #
+# Run summary
+# --------------------------------------------------------------------------- #
+def _summary_block(stdout: str, org: str) -> list[str]:
+    """The run-summary lines for ``org``: the heading and its three lines."""
+    lines = stdout.splitlines()
+    start = lines.index(f"Run summary for {org}")
+    return lines[start : start + 4]
+
+
+@respx.mock
+def test_run_summary_precedes_each_report(tmp_path: Path) -> None:
+    # The cost of the run stands just before the report it paid for, in the
+    # terminal only: the published surfaces carry none of it.
+    _mock_org_o_r()
+    out = tmp_path / "site"
+    result = cli.invoke(
+        app, ["report", "--org", "o", "--no-color", "--output-dir", str(out)]
+    )
+    assert result.exit_code == 0, result.stdout
+    block = _summary_block(result.stdout, "o")
+    assert block[0] == "Run summary for o"
+    assert re.fullmatch(
+        r"  requests: \d+ requests \(REST \d+ · GraphQL \d+ · external \d+\) · "
+        r"\d+\.\d MiB · \d+\.\d s",
+        block[1],
+    ), block[1]
+    # The mocked API sends no rate-limit headers and never pushes back.
+    assert block[2] == "  rate limit: no rate-limit headers seen · 0 backoffs"
+    # The default store is the per-user cache (isolated under tmp by conftest),
+    # empty before this run: a first-time build, synced for the one repo.
+    assert re.fullmatch(
+        r"  workflow-run store: \d+ KiB · 0 runs · 1 repository · "
+        r"built \(first run\) · this run: 1 synced, 0 written",
+        block[3],
+    ), block[3]
+    lines = result.stdout.splitlines()
+    assert lines.index("Run summary for o") < next(
+        i for i, line in enumerate(lines) if "Security report: o" in line
+    )
+    for name in ("report.md", "report.html", "report.json"):
+        assert "Run summary" not in (out / "o" / name).read_text()
+        assert "workflow-run store" not in (out / "o" / name).read_text()
+
+
+@respx.mock
+def test_run_summary_second_run_is_warm() -> None:
+    _mock_org_o_r()
+    first = cli.invoke(app, ["report", "--org", "o", "--no-color"])
+    assert first.exit_code == 0, first.stdout
+    second = cli.invoke(app, ["report", "--org", "o", "--no-color"])
+    assert second.exit_code == 0, second.stdout
+    store = _summary_block(second.stdout, "o")[3]
+    assert "built (first run)" not in store
+    assert "1 repository" in store
+
+
+@respx.mock
+def test_run_summary_names_an_uncached_store() -> None:
+    _mock_org_o_r()
+    result = cli.invoke(app, ["report", "--org", "o", "--no-color", "--no-run-cache"])
+    assert result.exit_code == 0, result.stdout
+    store = _summary_block(result.stdout, "o")[3]
+    assert store.startswith("  workflow-run store: in memory (not cached) · 0 runs")
+    # Empty on every run, so there is no first run to report.
+    assert "built (first run)" not in store
+
+
+def test_run_summary_is_printed_per_org(
+    recording_client: list[dict[str, object]],
+) -> None:
+    config_data = json.dumps({"organizations": [{"name": "o"}, {"name": "p"}]})
+    result = cli.invoke(app, ["report", "--config-data", config_data, "--no-color"])
+    assert result.exit_code == 0, result.stdout
+    for org in ("o", "p"):
+        block = _summary_block(result.stdout, org)
+        assert (
+            block[1] == "  requests: 3 requests (REST 3 · GraphQL 0) · 0.0 MiB · 1.5 s"
+        )
+        # The faked collection never syncs, so the store line has no deltas.
+        assert "this run:" not in block[3]
+    # Each summary stands above its own report, not stacked above the first:
+    # every collection is over before the first report renders.
+    lines = result.stdout.splitlines()
+    order = [
+        next(i for i, line in enumerate(lines) if line == f"Run summary for {org}")
+        if kind == "summary"
+        else next(
+            i for i, line in enumerate(lines) if f"Security report: {org}" in line
+        )
+        for org in ("o", "p")
+        for kind in ("summary", "report")
+    ]
+    assert order == sorted(order), order
+
+
+# --------------------------------------------------------------------------- #
 # Client concurrency
 # --------------------------------------------------------------------------- #
 _CONCURRENCY_CONFIG = json.dumps(
@@ -1884,6 +1980,20 @@ def test_action_passes_the_concurrency_input_to_the_flag() -> None:
     )
     workflow = (root / ".github" / "workflows" / "reporting.yaml").read_text()
     assert 'concurrency: "${{ vars.GSR_CONCURRENCY }}"' in workflow
+
+
+def test_action_passes_the_no_progress_input_to_the_flag() -> None:
+    # Off by default and passed only when true, like the other boolean
+    # inputs; the action runs under CI, where the line is already off, so
+    # this is parity with the CLI rather than something the workflow needs.
+    root = Path(__file__).resolve().parents[1]
+    action = yaml.safe_load((root / "action.yaml").read_text())
+    assert action["inputs"]["no_progress"]["default"] == "false"
+    step = next(
+        s for s in action["runs"]["steps"] if "INPUT_GRAPH_BATCH" in s.get("env", {})
+    )
+    assert step["env"]["INPUT_NO_PROGRESS"] == "${{ inputs.no_progress }}"
+    assert '[ "$INPUT_NO_PROGRESS" = "true" ] && args+=(--no-progress)' in step["run"]
 
 
 def _issues_queue_run(tmp_path: Path, categories: dict, *extra: str) -> tuple:

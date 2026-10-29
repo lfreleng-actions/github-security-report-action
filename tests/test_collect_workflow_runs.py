@@ -28,7 +28,7 @@ from test_collect_run_sync import (
 
 from github_security_report.client import GraphBatchError
 from github_security_report.client.workflow_runs import RunDrillDown
-from github_security_report.collect.context import OrgCollectContext
+from github_security_report.collect.context import OrgCollectContext, RunSyncSummary
 from github_security_report.collect.run_sync import RunSyncOptions, _merge
 from github_security_report.collect.workflow_runs import (
     DRILL_DOWN_BATCH,
@@ -69,10 +69,11 @@ def _ctx(fake: FakeRunsClient) -> OrgCollectContext:
 
 
 class _Notices:
-    """A CollectProgress that keeps the notices it was shown."""
+    """A CollectProgress that keeps the notices and sync summary it heard."""
 
     def __init__(self) -> None:
         self.shown: list[str | None] = []
+        self.sync: RunSyncSummary | None = None
 
     def phase(self, name: str, *, repos: int | None = None) -> None:
         return None
@@ -82,6 +83,9 @@ class _Notices:
 
     def notice(self, text: str | None) -> None:
         self.shown.append(text)
+
+    def store_synced(self, summary: RunSyncSummary) -> None:
+        self.sync = summary
 
 
 async def _collect(
@@ -135,10 +139,16 @@ async def test_a_first_time_build_is_announced_for_as_long_as_it_lasts(
         "repositories); this one-off takes several minutes",
         None,
     ]
-    # Warm now: the next sync says nothing.
+    assert progress.sync == RunSyncSummary(
+        cold=True, repos=2, unchanged=0, unreadable=0, written=1, pruned=0
+    )
+    # Warm now: the next sync says nothing and writes nothing new.
     progress.shown.clear()
     await _collect(fake, store, [_repo("a"), _repo("b")], progress=progress)
     assert progress.shown == [None, None]
+    assert progress.sync is not None
+    assert not progress.sync.cold
+    assert (progress.sync.repos, progress.sync.written) == (2, 0)
 
 
 async def test_a_store_lacking_only_a_new_repository_is_not_cold(
@@ -161,6 +171,8 @@ async def test_an_in_memory_store_is_never_a_first_time_build() -> None:
         assert not store.persistent
         await _collect(fake, store, [_repo("a"), _repo("b")], progress=progress)
     assert progress.shown == [None, None]
+    assert progress.sync is not None
+    assert not progress.sync.cold
 
 
 async def test_a_forced_refresh_is_announced_too(store: RunStore) -> None:

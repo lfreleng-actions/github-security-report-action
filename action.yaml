@@ -126,6 +126,10 @@ inputs:
     description: "Keep the workflow-run store in memory for this run instead of on disk, so every window is re-read from GitHub and nothing is left behind"
     required: false
     default: "false"
+  no_progress:
+    description: "Do not show the live progress line while collecting. The action runs under CI, where the line is already off; this exists for parity with the CLI flag"
+    required: false
+    default: "false"
   tool_version:
     description: "Published PyPI version to run; ignored on pull_request or when use_local_source is true (both run from the checked-out source). Empty (the default) uses the Dependabot-managed pin in .github/runtime-pin/requirements.txt"
     required: false
@@ -190,6 +194,7 @@ runs:
         INPUT_RUN_CACHE_DIR: ${{ inputs.run_cache_dir }}
         INPUT_REFRESH_RUNS: ${{ inputs.refresh_runs }}
         INPUT_NO_RUN_CACHE: ${{ inputs.no_run_cache }}
+        INPUT_NO_PROGRESS: ${{ inputs.no_progress }}
         TOOL_VERSION: ${{ inputs.tool_version }}
         USE_LOCAL_SOURCE: ${{ inputs.use_local_source }}
         EVENT_NAME: ${{ github.event_name }}
@@ -286,6 +291,7 @@ runs:
         [ -n "$INPUT_RUN_CACHE_DIR" ] && args+=(--run-cache-dir "$INPUT_RUN_CACHE_DIR")
         [ "$INPUT_REFRESH_RUNS" = "true" ] && args+=(--refresh-runs)
         [ "$INPUT_NO_RUN_CACHE" = "true" ] && args+=(--no-run-cache)
+        [ "$INPUT_NO_PROGRESS" = "true" ] && args+=(--no-progress)
         # One --hide per category. Commas become spaces so either separator
         # works in a workflow, and the unquoted expansion is deliberate word
         # splitting; empty fields collapse, so a trailing separator cannot

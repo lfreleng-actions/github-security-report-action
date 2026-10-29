@@ -25,6 +25,7 @@ from github_security_report.collect.context import (
     CollectProgress,
     NullProgress,
     OrgCollectContext,
+    RunSyncSummary,
     batched,
     gather_in_batches,
 )
@@ -152,17 +153,27 @@ async def _enrich(
         )
 
 
+def _cold(in_scope: list[Repo], store: RunStore) -> bool:
+    """Whether ``store`` holds none of ``in_scope``: a first-time build.
+
+    A store that merely lacks a few new repositories is the ordinary case
+    and is not cold. Nor is a store in memory: it is empty on every run, so
+    there is no one-off to announce and no first run to report.
+    """
+    if not in_scope or not store.persistent:
+        return False
+    synced = set(store.synced_repos())
+    return not any(repo.name in synced for repo in in_scope)
+
+
 def _cold_start_notice(
-    in_scope: list[Repo], store: RunStore, options: RunSyncOptions
+    in_scope: list[Repo], options: RunSyncOptions, *, cold: bool
 ) -> str | None:
     """Why this sync will take minutes rather than seconds, if it will.
 
-    A store on disk that holds none of the repositories is being built for
-    the first time, and ``refresh`` re-reads every one as if it were: either
-    costs a backfill per repository, which is when the operator decides
-    whether to wait. A store that merely lacks a few new repositories is the
-    ordinary case and says nothing, and so does a store in memory: it is
-    empty on every run, so there is no one-off to announce.
+    A ``cold`` store is being built for the first time, and ``refresh``
+    re-reads every repository as if it were: either costs a backfill per
+    repository, which is when the operator decides whether to wait.
     """
     if not in_scope:
         return None
@@ -173,10 +184,7 @@ def _cold_start_notice(
             f"re-reading every repository's workflow runs "
             f"({options.backfill_days} days, {count} {noun})"
         )
-    if not store.persistent:
-        return None
-    synced = set(store.synced_repos())
-    if any(repo.name in synced for repo in in_scope):
+    if not cold:
         return None
     return (
         f"building the workflow-run store for the first time "
@@ -198,10 +206,11 @@ async def collect_workflow_runs(
 
     ``progress`` is told, for as long as the sync lasts, when it is a
     first-time build or a forced re-read: the one case in which this step
-    dominates the run.
+    dominates the run. Once the sync is over it hears what the sync did.
     """
     shown = progress if progress is not None else NullProgress()
-    shown.notice(_cold_start_notice(in_scope, store, options))
+    cold = _cold(in_scope, store)
+    shown.notice(_cold_start_notice(in_scope, options, cold=cold))
     try:
         syncs = await gather_in_batches(
             in_scope,
@@ -222,17 +231,26 @@ async def collect_workflow_runs(
     )
     pruned = store.prune(now - dt.timedelta(days=options.retention_days))
     unknown = frozenset(sync.repo for sync in syncs if not sync.readable)
+    summary = RunSyncSummary(
+        cold=cold,
+        repos=len(syncs),
+        unchanged=sum(1 for sync in syncs if sync.status == 304),
+        unreadable=len(unknown),
+        written=sum(sync.written for sync in syncs),
+        pruned=pruned,
+    )
     log.info(
         "workflow runs for %s: %d repositories synced (%d unchanged, %d "
         "unreadable), %d records written, %d re-read, %d pruned",
         ctx.org,
-        len(syncs),
-        sum(1 for sync in syncs if sync.status == 304),
-        len(unknown),
-        sum(sync.written for sync in syncs),
+        summary.repos,
+        summary.unchanged,
+        summary.unreadable,
+        summary.written,
         sum(sync.rereads for sync in syncs),
         pruned,
     )
+    shown.store_synced(summary)
     return WorkflowRunsResult(
         records=tuple(r for r in store.records(since=since) if r.repo in names),
         unknown=unknown,

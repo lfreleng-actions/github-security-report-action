@@ -284,6 +284,9 @@ class _Phases:
     def notice(self, text: str | None) -> None:
         self.notices.append(text)
 
+    def store_synced(self, summary: object) -> None:
+        return None
+
 
 async def test_collect_org_names_its_phases_in_order() -> None:
     progress = _Phases()
