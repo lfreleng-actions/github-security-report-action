@@ -18,26 +18,29 @@ mid-sync leaves the previous state intact rather than a half-written page.
 from __future__ import annotations
 
 import datetime as dt
-import json
 import re
 import sqlite3
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import asdict
 from pathlib import Path
 from types import TracebackType
 
 from github_security_report.workflow_runs.models import (
-    FailedJob,
     Outcome,
     RepoSyncState,
-    Trigger,
     WorkflowRunRecord,
+)
+from github_security_report.workflow_runs.store_codec import (
+    _encode_datetime,
+    _encode_optional,
+    _from_row,
+    _sync_state_from_row,
+    _to_row,
 )
 
 # Bump to invalidate every existing store: a mismatch drops and recreates the
 # tables, since the data is only ever a cache of what GitHub holds.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 STORE_FILENAME = "runs.sqlite"
 
@@ -54,7 +57,8 @@ _SCHEMA = (
     " workflow_id INTEGER, workflow_name TEXT, workflow_path TEXT, event TEXT,"
     " trigger TEXT, ref_name TEXT, outcome TEXT, conclusion TEXT, attempt INTEGER,"
     " created_at TEXT NOT NULL, html_url TEXT, failed_jobs TEXT,"
-    " ref_is_tag INTEGER, retried INTEGER NOT NULL DEFAULT 0)",
+    " ref_is_tag INTEGER, retried INTEGER NOT NULL DEFAULT 0,"
+    " jobs_truncated INTEGER NOT NULL DEFAULT 0)",
     "CREATE INDEX runs_repo_created_at ON runs (repo, created_at)",
     "CREATE INDEX runs_outcome ON runs (outcome)",
     "CREATE TABLE sync_state ("
@@ -81,6 +85,7 @@ _RUN_COLUMNS = [
     "failed_jobs",
     "ref_is_tag",
     "retried",
+    "jobs_truncated",
 ]
 _INSERT_RUN = (
     f"INSERT OR REPLACE INTO runs ({', '.join(_RUN_COLUMNS)}) "
@@ -104,95 +109,6 @@ def store_path(cache_dir: Path, api_host: str, org: str) -> Path:
     cannot name a path outside ``cache_dir``.
     """
     return cache_dir / _safe_component(api_host) / _safe_component(org) / STORE_FILENAME
-
-
-def _encode_datetime(value: dt.datetime) -> str:
-    """ISO-8601 UTC text of fixed width, so text order is time order.
-
-    A naive datetime is rejected rather than guessed at: the callers always
-    hold aware UTC values from GitHub, so a naive one is a bug upstream.
-    """
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError(f"datetime {value!r} must be timezone-aware")
-    return value.astimezone(dt.timezone.utc).isoformat(timespec="microseconds")
-
-
-def _decode_datetime(text: str | None) -> dt.datetime | None:
-    return None if text is None else dt.datetime.fromisoformat(text)
-
-
-def _encode_optional(value: dt.datetime | None) -> str | None:
-    return None if value is None else _encode_datetime(value)
-
-
-def _encode_failed_jobs(jobs: tuple[FailedJob, ...] | None) -> str | None:
-    """``None`` stays NULL; an empty tuple becomes ``[]`` so the two differ."""
-    return None if jobs is None else json.dumps([asdict(job) for job in jobs])
-
-
-def _decode_failed_jobs(text: str | None) -> tuple[FailedJob, ...] | None:
-    return None if text is None else tuple(FailedJob(**j) for j in json.loads(text))
-
-
-def _optional_bool(value: int | None) -> bool | None:
-    return None if value is None else bool(value)
-
-
-def _to_row(record: WorkflowRunRecord) -> tuple[object, ...]:
-    return (
-        record.id,
-        record.node_id,
-        record.repo,
-        record.workflow_id,
-        record.workflow_name,
-        record.workflow_path,
-        record.event,
-        record.trigger.value,
-        record.ref_name,
-        record.outcome.value,
-        record.conclusion,
-        record.attempt,
-        _encode_datetime(record.created_at),
-        record.html_url,
-        _encode_failed_jobs(record.failed_jobs),
-        None if record.ref_is_tag is None else int(record.ref_is_tag),
-        int(record.retried),
-    )
-
-
-def _from_row(row: sqlite3.Row) -> WorkflowRunRecord:
-    created_at = _decode_datetime(row["created_at"])
-    assert created_at is not None  # the column is NOT NULL
-    return WorkflowRunRecord(
-        id=row["id"],
-        node_id=row["node_id"],
-        repo=row["repo"],
-        workflow_id=row["workflow_id"],
-        workflow_name=row["workflow_name"],
-        workflow_path=row["workflow_path"],
-        event=row["event"],
-        trigger=Trigger(row["trigger"]),
-        ref_name=row["ref_name"],
-        outcome=Outcome(row["outcome"]),
-        conclusion=row["conclusion"],
-        attempt=row["attempt"],
-        created_at=created_at,
-        html_url=row["html_url"],
-        failed_jobs=_decode_failed_jobs(row["failed_jobs"]),
-        ref_is_tag=_optional_bool(row["ref_is_tag"]),
-        retried=bool(row["retried"]),
-    )
-
-
-def _sync_state_from_row(row: sqlite3.Row) -> RepoSyncState:
-    return RepoSyncState(
-        repo=row["repo"],
-        watermark=_decode_datetime(row["watermark"]),
-        etag=row["etag"],
-        failures_etag=row["failures_etag"],
-        oldest=_decode_datetime(row["oldest"]),
-        last_sync_at=_decode_datetime(row["last_sync_at"]),
-    )
 
 
 class RunStore:
@@ -386,10 +302,19 @@ class RunStore:
     # -- housekeeping -------------------------------------------------------
 
     def prune(self, before: dt.datetime) -> int:
-        """Delete records created before ``before``; returns how many went."""
+        """Delete records created before ``before``; returns how many went.
+
+        Every repository's ``oldest`` coverage advances to ``before`` as well
+        where it reached further back: the history those records held is
+        gone, so a window later widened past the retention must be marked
+        truncated rather than quietly counted from what remains.
+        """
+        cutoff = _encode_datetime(before)
         with self._transaction() as conn:
-            cursor = conn.execute(
-                "DELETE FROM runs WHERE created_at < ?", (_encode_datetime(before),)
+            cursor = conn.execute("DELETE FROM runs WHERE created_at < ?", (cutoff,))
+            conn.execute(
+                "UPDATE sync_state SET oldest = ? WHERE oldest IS NOT NULL AND oldest < ?",
+                (cutoff, cutoff),
             )
         return cursor.rowcount
 

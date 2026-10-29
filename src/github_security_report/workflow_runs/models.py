@@ -129,6 +129,8 @@ class WorkflowRunRecord:
     re-read as a pass. Either way it is a direct flakiness signal, and the
     second case would otherwise never be noticed, since a re-run keeps its
     ``created_at`` and so never crosses the incremental watermark.
+    ``jobs_truncated`` marks a run whose failing jobs outnumbered the
+    drill-down's window, so the names it holds are the first of them.
     """
 
     id: int
@@ -148,6 +150,9 @@ class WorkflowRunRecord:
     failed_jobs: tuple[FailedJob, ...] | None = None
     ref_is_tag: bool | None = None
     retried: bool = False
+    # Whether the run had more failing jobs than the drill-down's window
+    # carried, so ``failed_jobs`` names the first of them rather than all.
+    jobs_truncated: bool = False
 
     @property
     def is_dynamic(self) -> bool:

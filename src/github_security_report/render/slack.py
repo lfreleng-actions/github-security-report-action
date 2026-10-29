@@ -58,6 +58,17 @@ from github_security_report.report import (
     window_shown,
 )
 
+# The characters Slack's mrkdwn treats as control syntax: ``<...>`` is a link
+# or a mention (``<!channel>`` pages everyone) and ``&`` starts an entity. A
+# digest carries workflow names straight from the run API, so each is
+# escaped as Slack documents before it enters a block.
+_MRKDWN_ESCAPES = str.maketrans({"&": "&amp;", "<": "&lt;", ">": "&gt;"})
+
+
+def _mrkdwn(text: str) -> str:
+    """``text`` made inert for a Slack mrkdwn block."""
+    return text.translate(_MRKDWN_ESCAPES)
+
 
 def _table_block(
     section: TableSection,
@@ -89,7 +100,7 @@ def _table_block(
         text = f"*{section.title}*"
         if rows and digest:
             shown = section.rows[:rows]
-            text += "".join(f"\n• {row.digest}" for row in shown)
+            text += "".join(f"\n• {_mrkdwn(row.digest)}" for row in shown)
             hidden = len(section.rows) - len(shown)
             if hidden:
                 text += f"\n… and {hidden} more"

@@ -1578,16 +1578,27 @@ from that mode would be waste. `--run-windows` applies there; the three store
 flags are refused rather than accepted and ignored.
 
 In GitHub Actions the runner's home directory is discarded with the job, so
-the bundled `reporting.yaml` restores `~/.cache/github-security-report` with
-`actions/cache/restore` before the report and saves it with
-`actions/cache/save` afterwards, under a key unique to the run
-(`gsr-runs-${{ github.run_id }}`) with a `gsr-runs-` restore prefix that
-picks up the newest earlier store. A daily schedule keeps the entry inside
-GitHub's seven-day cache eviction. The save runs whatever the report step's
-outcome, because the store is written in transactions: a run that aborted
-part-way still leaves it consistent, and the repositories it did sync need
-not be re-read. A caller's own workflow needs the same two steps, or every
-scheduled run pays the backfill.
+the bundled `reporting.yaml` keeps the store in the Actions cache between
+runs, under a key unique to the run (`gsr-runs-${{ github.run_id }}`) with a
+`gsr-runs-` restore prefix that picks up the newest earlier store. A daily
+schedule keeps the entry inside GitHub's seven-day cache eviction. The save
+runs whatever the report step's outcome, because the store is written in
+transactions: a run that aborted part-way still leaves it consistent, and
+the repositories it did sync need not be re-read.
+
+The store is cached **encrypted**. It names every in-scope repository's
+branches, workflow files and failing jobs, private repositories included
+when the token can read them, and GitHub lets a pull request from a fork
+restore any cache saved on the default branch, which the `production`
+environment's protection rules do not cover. The workflow therefore
+encrypts the store with `openssl enc -aes-256-cbc -pbkdf2` under a key held
+in the environment's secret `GSR_RUN_STORE_KEY` (any long random string;
+`openssl rand -base64 48` makes one) before saving, and decrypts it after
+restoring. Without the secret the store is neither restored nor saved, a
+notice says so, and each run reads its windows from GitHub again — correct,
+only slower and dearer. A store that fails to decrypt, after a key rotation,
+is discarded with a warning and rebuilt. A caller's own workflow needs the
+same steps, or every scheduled run pays the backfill.
 
 The point of the store is that repeated runs are nearly free. Each sync
 presents the listing's ETag, so an unchanged repository answers `304`, which

@@ -23,6 +23,7 @@ from github_security_report.collect.context import (
     REPO_BATCH,
     CollectExtras,
     OrgCollectContext,
+    gather_all,
     gather_in_batches,
     repo_context,
 )
@@ -54,6 +55,7 @@ __all__ = [
     "check_named_repos",
     "collect_org",
     "collect_repo",
+    "gather_all",
     "gather_in_batches",
     "repo_context",
 ]

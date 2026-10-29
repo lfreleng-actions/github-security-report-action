@@ -120,6 +120,32 @@ def repo_context(client: ClientProtocol, owner: str) -> OrgCollectContext:
     )
 
 
+async def gather_all(*aws: Awaitable[Any]) -> list[Any]:
+    """Await every awaitable, or cancel the rest when one of them fails.
+
+    ``asyncio.gather`` propagates the first exception while its siblings
+    carry on, so the caller unwinds -- closing the client, the run store --
+    under tasks still using them. This waits for the first failure, cancels
+    and awaits what is still running, then re-raises, so nothing outlives
+    the fan-out that started it. Results come back in argument order.
+    """
+    tasks = [asyncio.ensure_future(aw) for aw in aws]
+    try:
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+        failed = next((t for t in done if not t.cancelled() and t.exception()), None)
+        if failed is not None:
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            raise failed.exception()  # type: ignore[misc]
+        return [task.result() for task in tasks]
+    except asyncio.CancelledError:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+
 async def gather_in_batches(
     repos: list[Repo], probe: Callable[[Repo], Awaitable[_T]]
 ) -> list[_T]:
@@ -127,12 +153,13 @@ async def gather_in_batches(
 
     The client semaphore caps real HTTP concurrency; chunking the gather also
     bounds task creation so very large orgs (hundreds or thousands of repos) do
-    not allocate every task at once.
+    not allocate every task at once. A failing probe cancels its batch before
+    the error propagates (see :func:`gather_all`).
     """
     results: list[_T] = []
     for start in range(0, len(repos), REPO_BATCH):
         batch = repos[start : start + REPO_BATCH]
-        results.extend(await asyncio.gather(*(probe(repo) for repo in batch)))
+        results.extend(await gather_all(*(probe(repo) for repo in batch)))
     return results
 
 

@@ -87,6 +87,7 @@ def _apply_drill_down(
     return replace(
         record,
         failed_jobs=found.failed_jobs,
+        jobs_truncated=found.jobs_truncated,
         workflow_name=found.workflow_name or record.workflow_name,
         ref_is_tag=found.ref_is_tag,
         trigger=trigger,

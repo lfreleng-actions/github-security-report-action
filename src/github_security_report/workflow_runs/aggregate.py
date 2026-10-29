@@ -98,7 +98,8 @@ class WorkflowWindowStats:
     ``runs`` counts concluded runs (pass, fail and skip). ``workflow_name`` and
     ``workflow_path`` are the newest seen, so a renamed workflow appears under
     its current name. ``jobs_unreadable`` says how many failures the drill-down
-    could not read, so the table can mark ``failing_jobs`` as partial. The
+    could not read, and ``jobs_truncated`` how many had more failing jobs than
+    it carried, so the table can mark ``failing_jobs`` as partial. The
     trigger mappings are read-only and hold only non-zero entries. The two
     thresholds are carried so :attr:`pattern` needs no options re-supplied.
     """
@@ -118,6 +119,7 @@ class WorkflowWindowStats:
     jobs_unreadable: int
     last_failure: WorkflowRunRecord | None
     min_runs: int = DEFAULT_MIN_RUNS
+    jobs_truncated: int = 0
     persistent_threshold: float = DEFAULT_PERSISTENT_THRESHOLD
 
     @property
@@ -285,6 +287,7 @@ def _workflow(
     counts: Counter[str] = Counter()
     last_url: dict[str, str] = {}
     unreadable = 0
+    truncated = 0
     for record in runs:
         tally.add(record)
         if record.outcome is not Outcome.FAIL:
@@ -292,6 +295,7 @@ def _workflow(
         if record.failed_jobs is None:
             unreadable += 1
             continue
+        truncated += record.jobs_truncated
         for job in record.failed_jobs:
             name = normalise_job_name(job.name, collapse_matrix=options.collapse_matrix)
             counts[name] += 1
@@ -318,6 +322,7 @@ def _workflow(
         last_failure=tally.last_failure,
         min_runs=options.min_runs,
         persistent_threshold=options.persistent_threshold,
+        jobs_truncated=truncated,
     )
 
 

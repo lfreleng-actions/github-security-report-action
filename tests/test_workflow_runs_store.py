@@ -22,6 +22,7 @@ from github_security_report.workflow_runs import (
     WorkflowRunRecord,
     store_path,
 )
+from github_security_report.workflow_runs.store import SCHEMA_VERSION
 
 UTC = dt.timezone.utc
 T0 = dt.datetime(2026, 3, 1, 12, 0, 0, tzinfo=UTC)
@@ -333,7 +334,26 @@ class TestSchemaVersion:
             assert reopened.count() == 1
         with closing(sqlite3.connect(path)) as raw:
             (version,) = raw.execute("PRAGMA user_version").fetchone()
-        assert version == 1
+        assert version == SCHEMA_VERSION
+
+    def test_prune_advances_coverage_it_removed(self, tmp_path: Path) -> None:
+        # The history pruned away is gone, so a window later widened past the
+        # retention must read as truncated: oldest moves up to the cutoff for
+        # a repository whose coverage reached further back, and stays put
+        # for one already inside it or with no coverage recorded.
+        with RunStore(tmp_path / "runs.sqlite") as store:
+            store.set_sync_state(
+                RepoSyncState(repo="deep", oldest=T0 - dt.timedelta(days=90))
+            )
+            store.set_sync_state(
+                RepoSyncState(repo="shallow", oldest=T0 - dt.timedelta(days=3))
+            )
+            store.set_sync_state(RepoSyncState(repo="unknown"))
+            cutoff = T0 - dt.timedelta(days=7)
+            store.prune(cutoff)
+            assert store.sync_state("deep").oldest == cutoff
+            assert store.sync_state("shallow").oldest == T0 - dt.timedelta(days=3)
+            assert store.sync_state("unknown").oldest is None
 
     def test_creates_parent_directories(self, tmp_path: Path) -> None:
         path = store_path(tmp_path / "cache", "api.github.com", "org")

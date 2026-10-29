@@ -23,6 +23,7 @@ from github_security_report.collect.codeql import collect_codeql_facts
 from github_security_report.collect.context import (
     CollectExtras,
     OrgCollectContext,
+    gather_all,
     gather_in_batches,
 )
 from github_security_report.collect.workflow_runs import attach_workflow_failures
@@ -196,7 +197,7 @@ async def attach_extra_tables(
     # The four collections read only the frozen context and each attach to
     # a different part of the report, so they run together; previously they
     # were three sequential passes with the semaphore part-idle between.
-    postures, codeql_facts, _authors, _runs = await asyncio.gather(
+    postures, codeql_facts, _authors, _runs = await gather_all(
         gather_in_batches(in_scope, lambda repo: _posture_for_repo(repo, ctx)),
         collect_codeql_facts(in_scope, ctx, stale_days=report_cfg.codeql_stale_days),
         _attach_author_tables(report, in_scope, ctx, report_cfg)

@@ -12,6 +12,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -202,10 +203,16 @@ async def test_collection_prunes_past_retention(store: RunStore) -> None:
 
 
 def test_merge_keeps_enrichment_while_outcome_and_attempt_hold() -> None:
-    """Failing jobs survive a re-read of the same failure, not a new attempt."""
-    held = _fail(id=1, failed_jobs=(JOB,))
-    assert _merge(held, _fail(id=1)).failed_jobs == (JOB,)
-    assert _merge(held, _fail(id=1, attempt=2)).failed_jobs is None
+    """Failing jobs survive a re-read of the same failure, not a new attempt.
+
+    The truncation mark travels with them: a listing re-read knows nothing
+    of jobs, so it must not quietly clear the partial-list warning either.
+    """
+    held = replace(_fail(id=1, failed_jobs=(JOB,)), jobs_truncated=True)
+    same = _merge(held, _fail(id=1))
+    assert (same.failed_jobs, same.jobs_truncated) == ((JOB,), True)
+    later = _merge(held, _fail(id=1, attempt=2))
+    assert (later.failed_jobs, later.jobs_truncated) == (None, False)
 
 
 def test_merge_marks_a_failure_reread_as_a_pass_retried() -> None:

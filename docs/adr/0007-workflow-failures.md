@@ -220,15 +220,22 @@ the organisation listing already carries under `security_and_analysis`.
     flags (`--no-run-cache`, `--run-cache-dir`, `--refresh-runs`) are refused
     in repo mode rather than accepted and ignored; `--run-windows` applies.
 
-13. **CI keeps the store with `actions/cache`.** The bundled
-    `reporting.yaml` restores `~/.cache/github-security-report` before the
-    report and saves it afterwards whatever the report's outcome, under a key
-    unique to the run (`gsr-runs-${{ github.run_id }}`) with a `gsr-runs-`
-    restore prefix so the newest earlier store is picked up. A daily schedule
-    keeps the entry inside GitHub's seven-day cache eviction. The save runs
-    even after a failed report step because the store is written in
-    transactions: a run that aborted part-way still leaves it consistent, and
-    the repositories it did sync need not be re-read.
+13. **CI keeps the store in the Actions cache, encrypted.** The bundled
+    `reporting.yaml` restores the store before the report and saves it
+    afterwards whatever the report's outcome, under a key unique to the run
+    (`gsr-runs-${{ github.run_id }}`) with a `gsr-runs-` restore prefix so
+    the newest earlier store is picked up. A daily schedule keeps the entry
+    inside GitHub's seven-day cache eviction. The save runs even after a
+    failed report step because the store is written in transactions: a run
+    that aborted part-way still leaves it consistent, and the repositories
+    it did sync need not be re-read. The store names private repositories'
+    branches, workflow files and failing jobs, and a cache saved on the
+    default branch can be restored by a fork's pull-request job, which no
+    environment protection rule prevents; so the workflow encrypts the
+    store (`openssl enc -aes-256-cbc -pbkdf2`) under a key held in the
+    environment's `GSR_RUN_STORE_KEY` secret before saving, and skips both
+    steps, with a notice, when the secret is absent. A store that does not
+    decrypt after a key rotation is discarded and rebuilt.
 
 14. **Probe consolidation and phase overlap, as behaviour-preserving
     optimisations.** One unfiltered `code-scanning/analyses?per_page=100`

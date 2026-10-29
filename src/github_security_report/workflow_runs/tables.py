@@ -15,6 +15,7 @@ from __future__ import annotations
 import datetime as dt
 import posixpath
 from collections.abc import Iterable, Mapping, Sequence
+from urllib.parse import quote
 
 from github_security_report.categories import CategoryKey, category_meta
 from github_security_report.models import Repo
@@ -94,20 +95,44 @@ def _triggers(counts: Mapping[Trigger, int]) -> str:
 
 
 def _jobs_cell(stats: WorkflowWindowStats) -> str:
-    """The failing jobs with their counts, or why none are named."""
+    """The failing jobs with their counts, or why none are named.
+
+    A run whose failing jobs outnumbered the drill-down's window contributes
+    the first of them; the cell says so rather than present them as all.
+    """
     named = [f"{job.name} ({job.count})" for job in stats.failing_jobs]
     if stats.jobs_unreadable and not named:
         return "jobs unreadable"
     if stats.jobs_unreadable:
         named.append(f"{stats.jobs_unreadable} unread")
+    if stats.jobs_truncated:
+        named.append(f"more in {stats.jobs_truncated} run(s)")
     return ", ".join(named) or "-"
 
 
 def _workflow_url(repo: Repo, path: str) -> str | None:
-    """The workflow's run history page; none for a GitHub-managed workflow."""
+    """The workflow's run history page; none for a GitHub-managed workflow.
+
+    The file name is one path segment, encoded as such: a name holding ``#``
+    or ``?`` would otherwise read as a fragment or a query.
+    """
     if not path.startswith(".github/workflows/"):
         return None
-    return f"{repo.html_url}/actions/workflows/{posixpath.basename(path)}"
+    name = quote(posixpath.basename(path), safe="")
+    return f"{repo.html_url}/actions/workflows/{name}"
+
+
+def _digest(repo: Repo, stats: RepoWindowStats) -> str:
+    """One line for the brevity-first surface: the headline and the worst."""
+    rate = _percent(stats.fail_rate)
+    line = f"{repo.name} — {stats.failed}/{stats.runs} failed ({rate})"
+    worst = stats.worst
+    if worst is not None:
+        line += (
+            f" · worst: {worst.workflow_name} "
+            f"({worst.failed}/{worst.runs}, {worst.pattern})"
+        )
+    return line
 
 
 def _repo_row(repo: Repo, stats: RepoWindowStats, threshold: float) -> TableRow:
@@ -146,6 +171,7 @@ def _repo_row(repo: Repo, stats: RepoWindowStats, threshold: float) -> TableRow:
         ),
         cell_urls=(None,) * 6
         + (_workflow_url(repo, worst.workflow_path) if worst else None,),
+        digest=_digest(repo, stats),
     )
 
 

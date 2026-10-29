@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 
 import pytest
@@ -310,3 +311,53 @@ def test_excluded_workflow_leaves_both_tables() -> None:
     assert row.cells[0] == "3"
     assert row.cells[5] == "1"
     assert repo_table.notes[0].startswith("8 runs")
+
+
+def test_repo_row_carries_a_digest_for_slack() -> None:
+    # The one-line rendering Slack prefers to an eight-column table: the
+    # headline figures and the worst workflow with its pattern.
+    (repo_table, _), _ = _build()
+    digest = repo_table.rows[0].digest
+    assert digest.startswith("a — 4/7 failed (67%)")
+    assert "worst: Testing (3/6, persistent)" in digest
+
+
+def test_repo_rows_all_carry_digests_end_to_end() -> None:
+    # The builder-to-Slack path: every row carries a digest, which is the
+    # condition the Slack renderer tests before choosing bullets.
+    (repo_table, _), _ = _build()
+    assert repo_table.rows and all(row.digest for row in repo_table.rows)
+
+
+def test_workflow_url_encodes_the_file_name() -> None:
+    # A file name holding '#' or '?' is one path segment, not a fragment.
+    odd = _run(
+        "a",
+        Outcome.FAIL,
+        Trigger.MERGE,
+        days_ago=1,
+        workflow_path=".github/workflows/test#nightly.yaml",
+        failed_jobs=(),
+    )
+    (repo_table, _), (detail, _) = _build(records=[odd])
+    assert repo_table.rows[0].cell_urls[-1] == (
+        "https://github.com/o/a/actions/workflows/test%23nightly.yaml"
+    )
+    assert detail.rows[0].cell_urls[0] == repo_table.rows[0].cell_urls[-1]
+
+
+def test_truncated_job_lists_are_marked() -> None:
+    # A run with more failing jobs than the drill-down carried names the
+    # first of them; the cell says so rather than present them as all.
+    cut = dataclasses.replace(
+        _run(
+            "a",
+            Outcome.FAIL,
+            Trigger.MERGE,
+            days_ago=1,
+            failed_jobs=(FailedJob("First", "failure", JOB_URL),),
+        ),
+        jobs_truncated=True,
+    )
+    _, (detail, _) = _build(records=[cut])
+    assert detail.rows[0].cells[2] == "First (1), more in 1 run(s)"

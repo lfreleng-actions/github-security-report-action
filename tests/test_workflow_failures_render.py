@@ -206,3 +206,32 @@ def test_output_windows_follow_the_default_config() -> None:
     assert outputs.windows(cfg, "cli")(FAILURES) == {7}
     assert outputs.windows(cfg, "report")(FAILURES) == {7, 30, 90}
     assert outputs.windows(cfg, "slack")(FAILURES) == {7}
+
+
+def test_slack_digest_escapes_mrkdwn_control_syntax() -> None:
+    # A workflow named like a Slack mention or link must not page a channel
+    # or become a link when its digest enters the block.
+    from github_security_report.categories import category_meta
+
+    repo = Repo("r", "o/r", "https://github.com/o/r")
+    table = TableSection(
+        category=category_meta(CategoryKey.WORKFLOW_FAILURES),
+        columns=("Repository", "Failed"),
+        rows=[
+            TableRow(
+                repo=repo,
+                cells=("1",),
+                digest="r — 1/1 failed · worst: <!channel> & <https://x|y> (1/1)",
+            )
+        ],
+        fail_count=1,
+        window_days=7,
+    )
+    org = report.build_org_report("o", [], repo_count=1, generated_at=WHEN)
+    org.workflow_failures = (table,)
+    org.section_order = layout.resolve(org)
+    blocks = slack.render_org_blocks(org, top_n=10, pages_url=None, windows=_week)
+    text = _block_text(blocks, "Workflow Failures (7 days)")
+    assert text is not None
+    assert "&lt;!channel&gt; &amp; &lt;https://x|y&gt;" in text
+    assert "<!channel>" not in text

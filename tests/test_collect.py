@@ -827,6 +827,42 @@ async def test_collect_org_releases_exclude_and_min_age() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Fan-out that fails leaves nothing running
+# --------------------------------------------------------------------------- #
+async def test_gather_all_cancels_siblings_when_one_fails() -> None:
+    # asyncio.gather would propagate the error while the slow sibling kept
+    # running, so the caller could close the client and the run store under
+    # it. The failing fan-out must take its siblings down first.
+    cancelled = asyncio.Event()
+    started = asyncio.Event()
+
+    async def slow() -> str:
+        started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return "never"
+
+    async def failing() -> str:
+        await started.wait()
+        raise GraphBatchError("boom", status=500, splittable=False)
+
+    with pytest.raises(GraphBatchError):
+        await collect.gather_all(slow(), failing())
+    assert cancelled.is_set()
+
+
+async def test_gather_all_keeps_argument_order() -> None:
+    async def value(v: int, delay: float) -> int:
+        await asyncio.sleep(delay)
+        return v
+
+    assert await collect.gather_all(value(1, 0.02), value(2, 0.0)) == [1, 2]
+
+
+# --------------------------------------------------------------------------- #
 # Feature states the listing already carried
 # --------------------------------------------------------------------------- #
 class ProbeCountingClient(FakeClient):

@@ -47,9 +47,21 @@ def _link(repo: Repo) -> str:
     return f"[{repo.name}]({repo.html_url})"
 
 
+# Characters a cell's text must not carry verbatim into a Markdown table: a
+# pipe ends the cell, a newline ends the row, and brackets would close a
+# link label early. Cells hold text from outside this module (a workflow or
+# job name, a release tag), so every one is escaped the same way.
+_CELL_ESCAPES = str.maketrans({"|": "\\|", "[": "\\[", "]": "\\]"})
+
+
+def _cell_text(text: str) -> str:
+    """``text`` made safe for one Markdown table cell."""
+    return " ".join(text.split()).translate(_CELL_ESCAPES)
+
+
 def _cell(row: TableRow, index: int) -> str:
-    """One cell's text, linked when its builder gave it a URL."""
-    text = row.cells[index]
+    """One cell's text, escaped, and linked when its builder gave it a URL."""
+    text = _cell_text(row.cells[index])
     url = row.url(index)
     return f"[{text}]({url})" if url else text
 

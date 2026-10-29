@@ -113,6 +113,7 @@ def _merge(
     return replace(
         fresh,
         failed_jobs=existing.failed_jobs if same else fresh.failed_jobs,
+        jobs_truncated=existing.jobs_truncated if same else fresh.jobs_truncated,
         ref_is_tag=existing.ref_is_tag if settled else fresh.ref_is_tag,
         trigger=existing.trigger if settled else fresh.trigger,
         retried=retried,

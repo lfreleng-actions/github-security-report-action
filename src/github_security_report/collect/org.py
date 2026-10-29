@@ -34,6 +34,7 @@ from github_security_report.classify import RepoFacts, classify_repo
 from github_security_report.collect.context import (
     CollectExtras,
     OrgCollectContext,
+    gather_all,
     gather_in_batches,
 )
 from github_security_report.collect.extras import attach_extra_tables
@@ -354,7 +355,7 @@ async def collect_org(
     # and gating on nothing but each other, so the two chains run together:
     # the prefetch's seconds-long queries no longer hold the whole run while
     # the rest of the semaphore sits idle.
-    evidence, graph = await asyncio.gather(
+    evidence, graph = await gather_all(
         _sweep_and_gate(client, org, scoped.in_scope, report_cfg),
         collect_graph(client, org, scoped.in_scope, batch_size=report_cfg.graph_batch),
     )
