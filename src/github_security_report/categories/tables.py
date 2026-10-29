@@ -33,8 +33,11 @@ TABLE_CATEGORIES: dict[CategoryKey, CategoryMeta] = {
             "success, and its cause says so. Orphaned means the setup that "
             "produced it no longer exists, so it will never scan again: once the "
             "live setup covers its language (see Language Coverage), delete it "
-            "from the repository's code-scanning tool status page. Superseded "
-            "means default setup is on, which blocks advanced CodeQL uploads."
+            "from the repository's code-scanning tool status page. Superseded by "
+            "default setup means default setup is on, which blocks advanced "
+            "CodeQL uploads. Superseded within its workflow means the workflow "
+            "still runs but its job or language matrix changed, so it now "
+            "scans that language under another, current configuration."
         ),
     ),
     CategoryKey.CODEQL_LANGUAGE_COVERAGE: CategoryMeta(

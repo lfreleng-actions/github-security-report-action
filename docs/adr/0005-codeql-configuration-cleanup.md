@@ -40,12 +40,23 @@ that **deletes**: a configuration's analyses, and with them its alert history.
 2. **Act only on configurations that cannot upload again.** The table's cause
    is an enum carrying the remediation policy, so the table and the plan
    cannot disagree. Delete when the setup is gone (default setup off, workflow
-   file removed), blocked (superseded by default setup), or no longer covers
-   the language. Re-enable the workflow when GitHub disabled it for
-   inactivity; that restores the scan rather than discarding it. Every other
-   cause (analyses failing, default setup changing state or not uploading, an
-   upload from outside GitHub Actions, a workflow disabled by hand, one active
-   but not uploading, an unreadable state) is reported and left for a person.
+   file removed), blocked (superseded by default setup), replaced within its
+   own workflow, or no longer covers the language. A workflow that keeps
+   running after its job id or language matrix changes uploads under new
+   categories, so the old ones stop although the file reads as active. Such a
+   configuration counts as replaced only when a current configuration from
+   the same workflow file scans its language and has scanned since; without
+   one it is "active but not uploading", below. The workflow path comes from
+   the analysis key up to the colon after the file's `.yml` or `.yaml`
+   extension that a valid job id follows, never the last colon: GitHub
+   sometimes records the whole category as the key, and a path cut from that
+   names no file, reads as removed, and would delete a live configuration. A
+   key with no such split yields no path. Re-enable the workflow when GitHub
+   disabled it for inactivity; that restores the scan rather than discarding
+   it. Every other cause (analyses failing, default setup changing state or
+   not uploading, an upload from outside GitHub Actions, a workflow disabled
+   by hand, one active but not uploading, an unreadable state) is reported and
+   left for a person.
 
 3. **Guards refuse rather than fail.** A deletion is refused when:
    - no current configuration scans its language, since the stale results are

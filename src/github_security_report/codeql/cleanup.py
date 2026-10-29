@@ -7,8 +7,9 @@ Stale Configurations table reports, so the plan acts on exactly the rows the
 reader was shown. Each stale configuration yields at most one item:
 
 - **Delete** an orphaned configuration: one that can never upload again (its
-  setup is gone, or blocked by default setup). Deleting removes its analyses
-  and with them the stale "results may be out of date" warning.
+  setup is gone, blocked by default setup, or replaced by another category
+  from the same workflow). Deleting removes its analyses and with them the
+  stale "results may be out of date" warning.
 - **Re-enable** the workflow behind a configuration that GitHub disabled for
   repository inactivity; that restores the scan rather than discarding it.
 
@@ -93,7 +94,7 @@ def plan_cleanup(facts: Sequence[CodeQLFacts], *, stale_days: int) -> list[Clean
         )
         workflows_done: set[str | None] = set()
         for config in stale:
-            item = _plan_one(repo_facts, config, current)
+            item = _plan_one(repo_facts, config, current, stale_days)
             if item is None:
                 continue
             if item.action is CleanupAction.REENABLE_WORKFLOW:
@@ -105,9 +106,12 @@ def plan_cleanup(facts: Sequence[CodeQLFacts], *, stale_days: int) -> list[Clean
 
 
 def _plan_one(
-    facts: CodeQLFacts, config: CodeQLConfiguration, current: frozenset[str]
+    facts: CodeQLFacts,
+    config: CodeQLConfiguration,
+    current: frozenset[str],
+    stale_days: int,
 ) -> CleanupItem | None:
-    cause = stale_cause(config, facts)
+    cause = stale_cause(config, facts, stale_days=stale_days)
     if cause.reenable_workflow:
         return CleanupItem(facts.repo, config, cause, CleanupAction.REENABLE_WORKFLOW)
     if not cause.orphaned:

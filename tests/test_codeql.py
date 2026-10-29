@@ -617,8 +617,8 @@ def test_a_transitional_setup_outranks_a_removed_workflow() -> None:
 
 
 def test_a_colon_in_the_workflow_file_name_is_kept() -> None:
-    # An analysis key is "<workflow path>:<job id>"; a job id cannot hold a
-    # colon but a file name can, so the path ends at the last colon.
+    # An analysis key is "<workflow path>:<job id>"; a file name can hold a
+    # colon, so the path ends at the colon after the file's extension.
     config = CodeQLConfiguration(
         category="c",
         analysis_key=".github/workflows/code:ql.yml:analyze",
@@ -734,6 +734,7 @@ def test_orphaned_causes_are_exactly_those_that_cannot_upload_again() -> None:
         StaleCause.DEFAULT_SETUP_DISABLED,
         StaleCause.LANGUAGE_REMOVED,
         StaleCause.WORKFLOW_REMOVED,
+        StaleCause.SUPERSEDED_IN_WORKFLOW,
         StaleCause.SUPERSEDED,
         StaleCause.SUPERSEDED_DISABLED,
     }
@@ -770,7 +771,10 @@ def test_a_failing_configuration_is_never_planned_for_deletion() -> None:
         failing,
         setup=DefaultSetup(configured=False, languages=frozenset({"python"})),
     )
-    assert stale_cause(failing, facts) is StaleCause.ANALYSES_FAILING
+    assert (
+        stale_cause(failing, facts, stale_days=STALE_DAYS)
+        is StaleCause.ANALYSES_FAILING
+    )
     assert not StaleCause.ANALYSES_FAILING.orphaned
     assert plan_cleanup([facts], stale_days=STALE_DAYS) == []
 
@@ -865,3 +869,229 @@ def test_an_inactive_workflow_is_not_reenabled_without_knowing_default_setup() -
     (row,) = build_stale_configurations_table([facts], stale_days=STALE_DAYS).rows
     assert row.cells[-1] == "Default setup state unreadable"
     assert plan_cleanup([facts], stale_days=STALE_DAYS) == []
+
+
+# --------------------------------------------------------------------------- #
+# Configurations left behind by a workflow restructure (issue #219)
+# --------------------------------------------------------------------------- #
+# Three repositories moved their CodeQL job to a reusable workflow, keeping the
+# same workflow file. Job id and matrix changed, so the categories they used to
+# upload under froze while the file stayed active. Keys and dates as observed.
+_RESTRUCTURE_HEAD = dt.datetime(2026, 10, 28, 12, tzinfo=dt.timezone.utc)
+_WORKFLOW = ".github/workflows/codeql.yml"
+_ANALYZE = f"{_WORKFLOW}:analyze"
+_OTHER = f"{_WORKFLOW}:other-languages"
+_LEFT_BEHIND = {
+    "dependamerge": (
+        (
+            f"{_WORKFLOW}:analyze/build-mode:none/language:python",
+            f"{_WORKFLOW}:analyze/build-mode:none/language:python",
+            "2026-10-21",
+        ),
+        (
+            f"{_WORKFLOW}:actions/build-mode:none/language:actions",
+            f"{_WORKFLOW}:actions/build-mode:none/language:actions",
+            "2026-10-21",
+        ),
+    ),
+    "python-nss-ng": (
+        (
+            f"{_WORKFLOW}:analyze/build-mode:none/language:python",
+            _ANALYZE,
+            "2026-10-18",
+        ),
+        (
+            f"{_WORKFLOW}:other-languages/build-mode:none/language:actions",
+            _OTHER,
+            "2026-10-18",
+        ),
+        (
+            f"{_WORKFLOW}:other-languages/build-mode:none/language:c-cpp",
+            _OTHER,
+            "2026-10-18",
+        ),
+    ),
+    "test-python-project": (
+        (
+            f"{_WORKFLOW}:analyze/build-mode:none/language:python",
+            _ANALYZE,
+            "2026-10-11",
+        ),
+        (
+            f"{_WORKFLOW}:other-languages/build-mode:none/language:actions",
+            _OTHER,
+            "2026-10-18",
+        ),
+    ),
+}
+
+
+def _uploaded(category: str, key: str, day: str, *ids: int) -> CodeQLConfiguration:
+    return CodeQLConfiguration(
+        category=category,
+        analysis_key=key,
+        last_scan_at=dt.datetime.fromisoformat(day).replace(tzinfo=dt.timezone.utc),
+        language=category.rpartition("language:")[2],
+        analysis_ids=ids,
+    )
+
+
+def _restructured(
+    name: str,
+    *,
+    current: frozenset[str] | None = None,
+    state: str = "active",
+) -> CodeQLFacts:
+    """A repository after the move, with its left-behind configurations.
+
+    ``current`` names the languages the new ``analyze`` job scans; by default
+    every language a left-behind configuration scanned, as observed.
+    """
+    stale = tuple(
+        _uploaded(category, key, day, 10 + i)
+        for i, (category, key, day) in enumerate(_LEFT_BEHIND[name])
+    )
+    languages = (
+        current
+        if current is not None
+        else frozenset(c.language for c in stale if c.language is not None)
+    )
+    live = tuple(
+        _uploaded(f"{_ANALYZE}/language:{lang}", _ANALYZE, "2026-10-28", 100 + i)
+        for i, lang in enumerate(sorted(languages))
+    )
+    return _facts(
+        name,
+        *live,
+        *stale,
+        setup=DefaultSetup(configured=False, languages=languages),
+        workflows={_WORKFLOW: state},
+        head=_RESTRUCTURE_HEAD,
+    )
+
+
+@pytest.mark.parametrize(
+    ("key", "path"),
+    [
+        (_ANALYZE, _WORKFLOW),
+        (
+            f"{_WORKFLOW}:actions/build-mode:none/language:actions",
+            _WORKFLOW,
+        ),
+        (".github/workflows/codeql.yaml:analyze", ".github/workflows/codeql.yaml"),
+        (".github/workflows/code:ql.yml:analyze", ".github/workflows/code:ql.yml"),
+        (
+            ".github/workflows/code:ql.yml:actions/build-mode:none/language:actions",
+            ".github/workflows/code:ql.yml",
+        ),
+        # A job id holds no ".", so the first ".yml:" is not the extension.
+        (
+            ".github/workflows/codeql.yml:nightly.yaml:analyze",
+            ".github/workflows/codeql.yml:nightly.yaml",
+        ),
+        (
+            ".github/workflows/codeql.yml:nightly.yaml:analyze/language:python",
+            ".github/workflows/codeql.yml:nightly.yaml",
+        ),
+        # Not a single workflow file: never a path whose absence means removal.
+        (".github/workflows/nested/codeql.yml:analyze", None),
+        (".github/workflows/codeql.txt:analyze", None),
+        (_WORKFLOW, None),
+        # No valid job id after any extension: no path rather than a guess.
+        (".github/workflows/codeql.yml:9job", None),
+        (".github/workflows/codeql.yml:", None),
+        ("jenkins:codeql", None),
+    ],
+)
+def test_workflow_path_ends_at_the_workflow_file_extension(
+    key: str, path: str | None
+) -> None:
+    config = CodeQLConfiguration(category="c", analysis_key=key, last_scan_at=HEAD)
+    assert config.workflow_path == path
+
+
+@pytest.mark.parametrize("name", sorted(_LEFT_BEHIND))
+def test_configurations_left_by_a_workflow_restructure_are_superseded(
+    name: str,
+) -> None:
+    facts = _restructured(name)
+    table = build_stale_configurations_table([facts], stale_days=1)
+    assert [row.cells[-1] for row in table.rows] == [
+        "Superseded within its workflow; orphaned"
+    ] * len(_LEFT_BEHIND[name])
+    items = plan_cleanup([facts], stale_days=1)
+    assert sorted((i.config.category, i.action, i.refusal) for i in items) == sorted(
+        (category, CleanupAction.DELETE, None)
+        for category, _key, _day in _LEFT_BEHIND[name]
+    )
+    assert {i.cause for i in items} == {StaleCause.SUPERSEDED_IN_WORKFLOW}
+
+
+def test_a_category_shaped_key_is_not_read_as_a_removed_workflow() -> None:
+    # The key equals the category; split at its last colon it named
+    # ".../codeql.yml:actions/build-mode:none/language", which reads as
+    # missing. Its workflow file exists and is active.
+    facts = _restructured("dependamerge")
+    stale = facts.stale_configurations(1)
+    assert {c.workflow_path for c in stale} == {_WORKFLOW}
+    assert StaleCause.WORKFLOW_REMOVED not in {
+        stale_cause(c, facts, stale_days=1) for c in stale
+    }
+
+
+def test_a_disabled_workflow_with_a_current_sibling_is_superseded() -> None:
+    facts = _restructured("test-python-project", state="disabled_manually")
+    (python, actions) = sorted(
+        facts.stale_configurations(1), key=lambda c: c.language or ""
+    )
+    for config in (python, actions):
+        assert (
+            stale_cause(config, facts, stale_days=1)
+            is StaleCause.SUPERSEDED_IN_WORKFLOW
+        )
+
+
+def test_an_idle_workflow_without_a_current_sibling_is_left_alone() -> None:
+    # The new job scans python and actions but not c-cpp: nothing from this
+    # workflow has replaced the c-cpp configuration, so it may yet resume.
+    facts = _restructured("python-nss-ng", current=frozenset({"python", "actions"}))
+    causes = {
+        c.language: stale_cause(c, facts, stale_days=1)
+        for c in facts.stale_configurations(1)
+    }
+    assert causes == {
+        "python": StaleCause.SUPERSEDED_IN_WORKFLOW,
+        "actions": StaleCause.SUPERSEDED_IN_WORKFLOW,
+        "c-cpp": StaleCause.WORKFLOW_IDLE,
+    }
+    planned = {i.config.language for i in plan_cleanup([facts], stale_days=1)}
+    assert planned == {"python", "actions"}
+
+
+def test_a_sibling_must_be_current_and_from_the_same_workflow() -> None:
+    # A stale sibling, or a current one from another workflow, replaces
+    # nothing: the configuration stays idle.
+    stale_sibling = _facts(
+        "r",
+        _config("python", ADVANCED_KEY, days_behind=45),
+        replace(
+            _config("python", ADVANCED_KEY, days_behind=40),
+            category=f"{ADVANCED_KEY}/language:python",
+        ),
+        setup=DefaultSetup(configured=False, languages=frozenset({"python"})),
+        workflows={".github/workflows/codeql.yml": "active"},
+    )
+    other_workflow = _facts(
+        "r",
+        _config("python", ADVANCED_KEY, days_behind=45),
+        _config("python", ".github/workflows/scan.yml:codeql", days_behind=0),
+        setup=DefaultSetup(configured=False, languages=frozenset({"python"})),
+        workflows={".github/workflows/codeql.yml": "active"},
+    )
+    for facts in (stale_sibling, other_workflow):
+        config = facts.configurations[0]
+        assert (
+            stale_cause(config, facts, stale_days=STALE_DAYS)
+            is StaleCause.WORKFLOW_IDLE
+        )
+        assert plan_cleanup([facts], stale_days=STALE_DAYS) == []
