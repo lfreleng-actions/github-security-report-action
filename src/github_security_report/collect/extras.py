@@ -189,8 +189,22 @@ async def attach_extra_tables(
     need, and names the run store the Workflow Failures tables sync against.
     """
     wanted = extras if extras is not None else CollectExtras()
-    postures = await gather_in_batches(
-        in_scope, lambda repo: _posture_for_repo(repo, ctx)
+
+    async def nothing() -> None:
+        return None
+
+    # The four collections read only the frozen context and each attach to
+    # a different part of the report, so they run together; previously they
+    # were three sequential passes with the semaphore part-idle between.
+    postures, codeql_facts, _authors, _runs = await asyncio.gather(
+        gather_in_batches(in_scope, lambda repo: _posture_for_repo(repo, ctx)),
+        collect_codeql_facts(in_scope, ctx, stale_days=report_cfg.codeql_stale_days),
+        _attach_author_tables(report, in_scope, ctx, report_cfg)
+        if wanted.author_tables
+        else nothing(),
+        attach_workflow_failures(report, in_scope, ctx, report_cfg, wanted)
+        if wanted.run_store is not None
+        else nothing(),
     )
     report.dependabot_tables = posture.build_dependabot_tables(postures)
     report.releases = posture.build_releases_table(
@@ -205,19 +219,12 @@ async def attach_extra_tables(
     report.auto_merge = posture.build_auto_merge_table(postures)
     report.code_quality = posture.build_code_quality_table(postures)
     report.code_quality_writes = posture.code_quality_writes(postures)
-    codeql_facts = await collect_codeql_facts(
-        in_scope, ctx, stale_days=report_cfg.codeql_stale_days
-    )
     report.codeql_tables = codeql.build_codeql_tables(
         codeql_facts, stale_days=report_cfg.codeql_stale_days
     )
     report.codeql_health = codeql.CodeQLHealth(
         facts=tuple(codeql_facts), stale_days=report_cfg.codeql_stale_days
     )
-    if wanted.author_tables:
-        await _attach_author_tables(report, in_scope, ctx, report_cfg)
-    if wanted.run_store is not None:
-        await attach_workflow_failures(report, in_scope, ctx, report_cfg, wanted)
     # The Dependabot alerts enablement sub-table carries the repositories with
     # Dependabot alerts disabled, so drop them from the Dependabot signal
     # section's nag list to avoid listing the same repositories twice under the
