@@ -139,6 +139,8 @@ def _summary_context(
                 "kind": line.kind,
                 "emoji": SUMMARY_EMOJI[line.kind],
                 "text": line.text,
+                # A multi-line note: the template breaks between the parts.
+                "parts": line.text.split("\n"),
                 "label": line.names_label,
                 "names": names,
                 "names_hidden": hidden,

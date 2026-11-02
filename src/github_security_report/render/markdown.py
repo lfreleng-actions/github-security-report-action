@@ -185,7 +185,9 @@ def _summary_lines(
     """
     out: list[str] = []
     for line in lines:
-        out.append(f"{SUMMARY_EMOJI[line.kind]} {line.text}")
+        # A multi-line note keeps its detail on a line of its own.
+        text = line.text.replace("\n", "<br>\n")
+        out.append(f"{SUMMARY_EMOJI[line.kind]} {text}")
         out.append("")
     for line in lines:
         if not line.listed:
