@@ -56,7 +56,7 @@
 {%- macro render_summary(summary) -%}
   {% if summary %}
   <ul class="summary">
-    {% for line in summary %}<li class="kind-{{ line.kind }}"><span aria-hidden="true">{{ line.emoji }}</span> {{ line.text }}</li>{% endfor %}
+    {% for line in summary %}<li class="kind-{{ line.kind }}"><span aria-hidden="true">{{ line.emoji }}</span> {% for part in line.parts %}{% if not loop.first %}<br>{% endif %}{{ part }}{% endfor %}</li>{% endfor %}
     {% for line in summary %}{% if line.label and line.names %}<li class="names"><strong>{{ line.label }}:</strong> {% for r in line.names %}{% if r.url %}<a href="{{ r.url }}">{{ r.name }}</a>{% else %}{{ r.name }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}{% if line.names_hidden %} … (+{{ line.names_hidden }} more){% endif %}</li>{% endif %}{% endfor %}
   </ul>
   {% endif %}

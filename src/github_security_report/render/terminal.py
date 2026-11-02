@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+from rich.cells import cell_len
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
@@ -140,7 +141,11 @@ def _render_summary(
     """
     for line in lines:
         style = _SUMMARY_STYLE[line.kind]
-        console.print(f"  [{style}]{SUMMARY_EMOJI[line.kind]} {line.text}[/{style}]")
+        emoji = SUMMARY_EMOJI[line.kind]
+        # A multi-line note's detail aligns under its headline's text.
+        indent = " " * (2 + cell_len(emoji) + 1)
+        text = line.text.replace("\n", f"\n{indent}")
+        console.print(f"  [{style}]{emoji} {text}[/{style}]")
     for line in lines:
         if line.listed:
             style = _SUMMARY_STYLE[line.kind]

@@ -40,6 +40,8 @@ def _table_to_dict(section: TableSection) -> dict:
         "fail_count": section.fail_count,
         "unknown_count": section.unknown_count,
         "not_applicable_count": section.not_applicable_count,
+        # One string per note; a note with a detail line carries it after a
+        # newline (the malware coverage note's headline and detail).
         "notes": list(section.notes),
         "description": section.resolved_description(),
         # Aggregate rows beneath the totals, over every row (report.json is the
