@@ -1806,23 +1806,24 @@ Repo mode leaves nothing behind.
 
 ### Progress and run summary
 
-On an interactive terminal an org-mode run keeps one live line at the bottom
-of the screen while it collects: the organisation, the phase it is in, the
-repository count where the phase works per repository, the REST and GraphQL
-request counts with how many are in flight, and the elapsed time. A second
-line appears while GitHub has the run paused for a rate limit, and while the
+On an interactive terminal an org-mode run keeps three live lines at the
+bottom of the screen while it collects, one kind of information each: where
+the run is (the organisation and the phase it is in), its API traffic (the
+REST and GraphQL request counts with how many are in flight, and external
+requests once there are any), and its progress (the elapsed time, the
+repository count where the phase works per repository, and a countdown while
+GitHub has the run paused for a rate limit). A fourth line appears while the
 workflow-run store is being built for the first time, since that one-off
-dominates a cold run. Warnings logged in the meantime are held and replayed,
-in order, once the line comes down.
-
-<!-- markdownlint-disable MD013 -->
+dominates a cold run. Each line stays one line: on a terminal too narrow for
+it, it is cut short with an ellipsis rather than wrapped, and the elapsed
+time, leading its line, is the last thing to go. Warnings logged in the
+meantime are held and replayed, in order, once the display comes down.
 
 ```text
-⠧ lfreleng-actions · probing repositories · 41/120 repos · REST 812 (9 in flight) · GraphQL 24 · 38.2 s
-⏳ rate limited by GitHub (core); resuming in 42 s
+⠧ lfreleng-actions · probing repositories
+  REST 812 (9 in flight) · GraphQL 24
+  38.2 s · 41/120 repos · ⏳ rate limited by GitHub (core); resuming in 42 s
 ```
-
-<!-- markdownlint-enable MD013 -->
 
 Before each organisation's report, a dim three-line summary says what the
 run cost and what the store holds, so a slow run explains itself without
@@ -1846,9 +1847,9 @@ reads `in memory (not cached)` and, since its store is empty every time, is
 never a first run. The summary is for the terminal only: nothing of it
 reaches the Markdown, HTML, JSON or Slack output.
 
-The live line is off under `--no-progress`, when `CI` is set, when stdout is
-not a terminal, and with `--verbose`, whose log lines would fight it for the
-screen. The summary prints in every case. The same figures reach the log at
+The live display is off under `--no-progress`, when `CI` is set, when stdout
+is not a terminal, and with `--verbose`, whose log lines would fight it for
+the screen. The summary prints in every case. The same figures reach the log at
 `INFO` under `--verbose`.
 
 ### GitHub Enterprise Server
