@@ -40,10 +40,36 @@ jobs:
         with:
           persist-credentials: false
 
+      # setup-uv runs the interpreter 'uv python find' picks in its
+      # working directory and reads uv settings there, which once was the
+      # caller's workspace. Plant a .venv and a .python-version whose
+      # interpreters only record that they ran, and a uv.toml no uv can
+      # satisfy, so the run below fails if the action uses any of them.
+      - name: "Plant a workspace .venv, .python-version and uv.toml"
+        shell: bash
+        run: |
+          # Plant a workspace .venv, .python-version and uv.toml
+          marker="${RUNNER_TEMP}/planted-ran"
+          mkdir -p .venv/bin .planted-python/bin
+          printf 'home = /usr/bin\nversion = 3.12.0\n' > .venv/pyvenv.cfg
+          for exe in .venv/bin/python3 .venv/bin/python \
+            .planted-python/bin/python3; do
+            printf '#!/bin/sh\necho "%s $*" >> "%s"\nexit 1\n' \
+              "${GITHUB_WORKSPACE}/${exe}" "${marker}" > "${exe}"
+            chmod +x "${exe}"
+          done
+          printf '%s\n' "${GITHUB_WORKSPACE}/.planted-python/bin/python3" \
+            > .python-version
+          {
+            echo 'cache-dir = "/nonexistent/planted-cache"'
+            echo 'required-version = "==0.0.1"'
+          } > uv.toml
+
       # Repo mode: a self-contained run against this repository using the
       # ephemeral GITHUB_TOKEN. Always runs from this checkout (it is a
       # self-test of the action source, not a published release).
       - name: "Running local action: ${{ github.repository }}"
+        id: report
         uses: $/
         with:
           scope: "repo"
@@ -55,7 +81,20 @@ jobs:
         shell: bash
         env:
           REPO: ${{ github.repository }}
+          FAILED: ${{ steps.report.outputs.failed }}
+          SHOULD_NOTIFY: ${{ steps.report.outputs.should_notify }}
         run: |
           # Local action validation
+          # The run wrote its outputs, so it completed.
+          if [ "${FAILED}" != "false" ] || [ "${SHOULD_NOTIFY}" != "false" ]; then
+            echo "Error: unexpected outputs failed='${FAILED}'" \
+              "should_notify='${SHOULD_NOTIFY}' ❌" >&2
+            exit 1
+          fi
+          if [ -e "${RUNNER_TEMP}/planted-ran" ]; then
+            echo "Error: the action ran a planted workspace interpreter ❌" >&2
+            cat "${RUNNER_TEMP}/planted-ran" >&2
+            exit 1
+          fi
           echo "Validated local action: ${REPO} ✅"
           echo "Validation step summary output" >> "$GITHUB_STEP_SUMMARY"
