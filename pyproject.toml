@@ -60,7 +60,7 @@ Issues = "https://github.com/lfreleng-actions/github-security-report-action/issu
 [project.optional-dependencies]
 dev = [
   "pytest==9.1.1",
-  "pytest-asyncio==1.4.0",
+  "pytest-asyncio==1.4.1",
   "pytest-cov==7.1.0",
   "respx==0.23.1",
   "syrupy==6.1.1",
@@ -92,7 +92,7 @@ include = ["src", "README.md", "LICENSE*", "pyproject.toml"]
 [dependency-groups]
 dev = [
   "pytest==9.1.1",
-  "pytest-asyncio==1.4.0",
+  "pytest-asyncio==1.4.1",
   "pytest-cov==7.1.0",
   "respx==0.23.1",
   "syrupy==6.1.1",
