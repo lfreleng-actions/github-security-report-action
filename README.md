@@ -371,6 +371,18 @@ that only shape an organisation-wide run — `output_dir`, `pages_url`,
 misconfigured workflow says so instead of quietly producing a report that
 ignores them.
 
+### Runtime isolation
+
+The action installs its own uv-managed Python and runs the tool from an
+action-owned virtual environment with `python -I`, so interpreter settings an
+earlier step of the caller's job exports (`UV_PYTHON`, `VIRTUAL_ENV`,
+`CONDA_PREFIX`, `PYTHONPATH` and similar) cannot choose what runs.
+
+The action trusts the caller's `PATH`. The runner resolves `bash` for every
+`shell: bash` step on it, and setup-uv runs helpers such as `tar` from it, so
+no composite action can defend against a caller that has put a directory from
+its checkout on `PATH`.
+
 ## Configuration
 
 Configuration is JSON, supplied as a plain `vars.` entry or base64-encoded in a

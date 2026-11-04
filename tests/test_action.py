@@ -15,14 +15,9 @@ import re
 from pathlib import Path
 from typing import Any
 
-import pytest
 import yaml
 
 ACTION = Path(__file__).resolve().parents[1] / "action.yaml"
-
-pytestmark = pytest.mark.xfail(
-    strict=True, reason="action.yaml lets the caller pick the interpreter"
-)
 
 
 def _steps() -> list[dict[str, Any]]:
@@ -95,6 +90,10 @@ def test_every_uv_call_names_the_trusted_interpreter() -> None:
 def test_tool_runs_isolated_from_the_trusted_environment() -> None:
     script = _step("run")["run"]
     assert "uvx" not in script
+    # The caller's PYTHONPATH, PYTHONHOME and active environment are dropped
+    # before uv starts any Python, the local-source build backend included.
+    assert "PYTHON*|__PYVENV_LAUNCHER__|VIRTUAL_ENV|CONDA_*|UV_PYTHON*|" in script
+    assert 'unset "$name"' in script
     assert (
         '"$VENV/bin/python" -I "$VENV/bin/github-security-report" "${args[@]}"'
         in script
