@@ -458,15 +458,23 @@ Four presentation surfaces from one canonical dataset:
   `hatch-vcs` dynamic version; `uv.lock` committed.
 - **Action runtime hybrid:** `action.yaml` **auto-detects** run source —
   `local` when `github.event_name == 'pull_request'` **or** `use_local_source
-  == true` (`uvx --from "${GITHUB_ACTION_PATH}"` so PRs and manual test runs
+  == true` (installs `"${GITHUB_ACTION_PATH}"` so PRs and manual test runs
   exercise unreleased code), otherwise `pypi`
-  (`uvx --from github-security-report==<version> github-security-report ...`).
+  (installs `github-security-report==<version>`). Either way the tool goes
+  into an action-owned virtual environment built from a uv-managed Python
+  that uv installs under an empty environment, and starts through that
+  interpreter with `-I`, so no caller interpreter setting (`UV_PYTHON`,
+  `VIRTUAL_ENV`, `CONDA_PREFIX`, `PYTHONPATH`, ...) can choose what runs.
+  The action trusts the caller's `PATH`: the runner resolves `bash` on it
+  for every `shell: bash` step and setup-uv runs helpers such as `tar` from
+  it, so no composite action can defend against a checkout directory there.
   For the `pypi` path an explicit `tool_version` input wins; when it is empty
   (the default) the version is read from the Dependabot-managed pin in
   `.github/runtime-pin/requirements.txt`, so bumps arrive as cooldown-gated
   PRs instead of a hand-edited default that silently drifts each release.
   Harden-runner egress must allow `pypi.org` / `files.pythonhosted.org` for the
-  `pypi` path and the GitHub API for both.
+  `pypi` path, and the GitHub API and GitHub release downloads (uv's managed
+  Python builds) for both.
 
 ## 15. Dependabot
 

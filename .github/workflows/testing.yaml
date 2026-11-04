@@ -98,3 +98,162 @@ jobs:
           fi
           echo "Validated local action: ${REPO} ✅"
           echo "Validation step summary output" >> "$GITHUB_STEP_SUMMARY"
+
+  ### Caller variables cannot choose the action's Python ###
+  isolation:
+    name: "Workspace Isolation"
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      security-events: read  # read this repo's own security data (repo mode)
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+        # request: variables that name an interpreter outright.
+        # active-environment: variables that describe an active venv or
+        # conda environment. UV_PYTHON stays unset here so it cannot mask
+        # active-environment discovery.
+        selector: [request, active-environment]
+    steps:
+      # Harden the runner used by this workflow
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        if: runner.os == 'Linux'
+        with:
+          egress-policy: audit
+
+      # An earlier step of a caller's job can write to the workspace and
+      # export variables through GITHUB_ENV. Plant interpreters, uv, shell
+      # tools and stdlib-named modules that only record that they ran, and
+      # export the settings uv and Python read to choose what to run.
+      - name: "Plant bait and hostile settings"
+        shell: bash
+        env:
+          SELECTOR: ${{ matrix.selector }}
+        run: |
+          # Plant bait and hostile settings
+          set -euo pipefail
+          marker="${RUNNER_TEMP}/planted-ran"
+          ws="${GITHUB_WORKSPACE}"
+          cd "${ws}"
+          mkdir -p .venv/bin .venv/conda-meta xdg-bin pkg
+          printf 'home = /usr/bin\nversion = 3.13.0\n' > .venv/pyvenv.cfg
+          for exe in .venv/bin/python .venv/bin/python3 \
+            .venv/bin/python3.13 .venv/bin/uv xdg-bin/env xdg-bin/bash; do
+            printf '#!/bin/sh\necho "%s $*" >> "%s"\nexit 1\n' \
+              "${ws}/${exe}" "${marker}" > "${exe}"
+            chmod +x "${exe}"
+          done
+          for dir in . pkg; do
+            mkdir -p "${dir}/urllib"
+            for module in json.py base64.py sitecustomize.py \
+              usercustomize.py urllib/__init__.py; do
+              printf 'open(%s, "a").write(__file__ + "\\n")\n' \
+                "'${marker}'" > "${dir}/${module}"
+            done
+          done
+
+          # Control: the bait is live. A Python that is not isolated
+          # imports the planted modules, and a python3 looked up on the
+          # planted PATH is the planted one.
+          PYTHONPATH=pkg:. python3 -c 'import json' || true
+          if [ ! -s "${marker}" ]; then
+            echo "Error: control did not import the planted modules ❌" >&2
+            exit 1
+          fi
+          rm -f "${marker}"
+          PATH="${ws}/.venv/bin:${PATH}" bash -c "python3 -c pass" || true
+          if [ ! -s "${marker}" ]; then
+            echo "Error: control did not run the planted python3 ❌" >&2
+            exit 1
+          fi
+          rm -f "${marker}"
+
+          case "${RUNNER_ARCH}" in
+            X64) arch=x86_64 ;;
+            ARM64) arch=aarch64 ;;
+            *) echo "Error: unknown runner architecture ${RUNNER_ARCH}" >&2
+               exit 1 ;;
+          esac
+          {
+            echo "PATH=${ws}/.venv/bin:${PATH}"
+            echo "PYTHONPATH=pkg:."
+            echo "PYTHONHOME=${ws}/.venv"
+            echo "PYTHONUSERBASE=${ws}"
+            echo "PYTHONSTARTUP=${ws}/json.py"
+            echo "PYTHONEXECUTABLE=${ws}/.venv/bin/python"
+            echo "__PYVENV_LAUNCHER__=${ws}/.venv/bin/python"
+            echo "UV_NO_CACHE=1"
+            echo "UV_PYTHON_ARCH=${arch}"
+            echo "UV_PYTHON_INSTALL_MIRROR=https://127.0.0.1:9"
+            echo "XDG_BIN_HOME=${ws}/xdg-bin"
+            if [ "${SELECTOR}" = "request" ]; then
+              echo "UV_PYTHON=${ws}/.venv/bin/python3"
+              echo "UV_PYTHON_SEARCH_PATH=${ws}/.venv/bin"
+              echo "UV_PYTHON_INSTALL_DIR=${ws}/python-install"
+              echo "UV_PYTHON_PREFERENCE=only-system"
+            else
+              echo "VIRTUAL_ENV=${ws}/.venv"
+              echo "CONDA_PREFIX=${ws}/.venv"
+              echo "CONDA_DEFAULT_ENV=base"
+              echo "UV_INTERNAL__PARENT_INTERPRETER=${ws}/.venv/bin/python"
+              echo "UV_INTERNAL__TEST_PYTHON_MANAGED=1"
+              echo "UV_CACHE_DIR=${ws}/uv-cache"
+            fi
+          } >> "${GITHUB_ENV}"
+
+      # Cold: setup-uv and the action's Python install run from scratch.
+      - name: "Run the action (cold)"
+        id: cold
+        uses: $/
+        with:
+          scope: "repo"
+          repo: "${{ github.repository }}"
+          token: "${{ github.token }}"
+          fail_threshold: "none"
+          use_local_source: "true"
+
+      # Warm: the action's interpreter is already installed.
+      - name: "Run the action (warm)"
+        id: warm
+        uses: $/
+        with:
+          scope: "repo"
+          repo: "${{ github.repository }}"
+          token: "${{ github.token }}"
+          fail_threshold: "none"
+          use_local_source: "true"
+
+      - name: "Verify no bait ran"
+        shell: bash
+        env:
+          COLD_FAILED: ${{ steps.cold.outputs.failed }}
+          COLD_NOTIFY: ${{ steps.cold.outputs.should_notify }}
+          WARM_FAILED: ${{ steps.warm.outputs.failed }}
+          WARM_NOTIFY: ${{ steps.warm.outputs.should_notify }}
+        run: |
+          # Verify no bait ran
+          status=0
+          if [ -e "${RUNNER_TEMP}/planted-ran" ]; then
+            echo "Error: the action ran planted code ❌" >&2
+            while IFS= read -r line; do echo "  ${line}" >&2; done \
+              < "${RUNNER_TEMP}/planted-ran"
+            status=1
+          fi
+          case ":${PATH}:" in
+            *":${GITHUB_WORKSPACE}/xdg-bin:"*)
+              echo "Error: the caller's XDG_BIN_HOME is on PATH ❌" >&2
+              status=1 ;;
+          esac
+          check_outputs() {
+            if [ "$2" != "false" ] || [ "$3" != "false" ]; then
+              echo "Error: $1 run outputs failed='$2' should_notify='$3' ❌" >&2
+              status=1
+            fi
+          }
+          check_outputs cold "${COLD_FAILED}" "${COLD_NOTIFY}"
+          check_outputs warm "${WARM_FAILED}" "${WARM_NOTIFY}"
+          if [ "${status}" -ne 0 ]; then exit 1; fi
+          echo "No bait ran; both runs produced their outputs ✅"
