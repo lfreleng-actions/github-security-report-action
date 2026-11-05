@@ -10,8 +10,10 @@ that remain mutable. Repositories younger than a configurable age are excluded
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Iterable
 
 from github_security_report.categories import CategoryKey, category_meta
+from github_security_report.matching import Pattern, compile_patterns, matches
 from github_security_report.models import ReleaseRef, Repo
 from github_security_report.posture.facts import RepoPosture
 from github_security_report.report import TableRow, TableSection
@@ -34,17 +36,19 @@ def is_release_excluded(
     *,
     generated_at: dt.datetime,
     repo_min_age_days: int,
-    exclude: frozenset[str] | set[str] | tuple[str, ...],
+    exclude: Iterable[str | Pattern],
 ) -> bool:
     """Whether a repository is ineligible for the Releases / Tagging table.
 
-    A repository is excluded when its name is in ``exclude`` (never released /
-    not consumed externally) or when it was created within ``repo_min_age_days``
-    (``0`` disables the age hold, so every repository is eligible). This is the
-    repository-eligibility gate; the separate release-staleness threshold is
-    applied later, once each repository's release/tag ages are known.
+    A repository is excluded when its name matches a pattern in ``exclude``
+    (never released / not consumed externally; see
+    :mod:`github_security_report.matching`) or when it was created within
+    ``repo_min_age_days`` (``0`` disables the age hold, so every repository is
+    eligible). This is the repository-eligibility gate; the separate
+    release-staleness threshold is applied later, once each repository's
+    release/tag ages are known.
     """
-    if repo.name in exclude:
+    if matches(repo.name, compile_patterns(exclude, "releases_exclude")):
         return True
     repo_age = _age_days(repo.created_at, generated_at)
     return (
@@ -104,7 +108,7 @@ def build_releases_table(
     the very top; repositories with the same number of missing signals are then
     ordered by their combined known staleness (oldest first).
     """
-    excluded = frozenset(exclude)
+    excluded = compile_patterns(exclude, "releases_exclude")
     ranked: list[tuple[int, int, RepoPosture, int | None, int | None]] = []
     current_count = 0
     unknown_count = 0

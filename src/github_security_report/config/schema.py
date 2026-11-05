@@ -9,7 +9,6 @@ weekdays), the error raised on invalid input, and ``CONFIG_SCHEMA`` itself.
 from __future__ import annotations
 
 from github_security_report.categories import (
-    EXCLUDABLE_CATEGORIES,
     REPO_LIST_CATEGORIES,
     CategoryMeta,
     all_categories,
@@ -74,6 +73,15 @@ _WINDOW_LIST = {
 }
 
 
+# A list of repository-name patterns (see matching.py): regular expressions
+# searched case-insensitively. The loader rejects one that does not compile,
+# which JSON Schema cannot.
+_PATTERN_LIST = {
+    "type": "array",
+    "items": {"type": "string", "minLength": 1},
+}
+
+
 class ConfigError(ValueError):
     """Raised when configuration is malformed or fails validation."""
 
@@ -82,9 +90,8 @@ def _category_schema(meta: CategoryMeta) -> dict:
     """The schema for one category's block under ``report.categories``.
 
     ``repo_list`` is offered only to the boolean feature categories, the only
-    ones with an enabled list to name, and ``exclude`` only to the categories
-    whose builders apply it: anywhere else either would validate and then do
-    nothing, so it is left out and the schema rejects it by name.
+    ones with an enabled list to name: anywhere else it would validate and then
+    do nothing, so it is left out and the schema rejects it by name.
     """
     properties: dict = {
         "enabled": {"type": "boolean"},
@@ -109,18 +116,14 @@ def _category_schema(meta: CategoryMeta) -> dict:
             "type": "array",
             "items": {"type": "string", "minLength": 1},
         },
+        # This category's own exclusion lists, each replacing the report-wide
+        # list of the same name: general exclusions, and the test repositories
+        # the footer counts on a line of their own.
+        "exclude": _PATTERN_LIST,
+        "exclude_tests": _PATTERN_LIST,
     }
     if meta.key in REPO_LIST_CATEGORIES:
         properties["repo_list"] = {"enum": REPO_LIST_VALUES}
-    if meta.key in EXCLUDABLE_CATEGORIES:
-        # Regular expressions searched against the repository name, case-
-        # insensitively; a match drops the repository from this category only
-        # and lists it on the category's Excluded footer line. The loader
-        # rejects a pattern that does not compile, which JSON Schema cannot.
-        properties["exclude"] = {
-            "type": "array",
-            "items": {"type": "string", "minLength": 1},
-        }
     return {"type": "object", "additionalProperties": False, "properties": properties}
 
 
@@ -207,10 +210,20 @@ CONFIG_SCHEMA: dict = {
                 # its counts: the shorter list (auto), or always the enabled or
                 # the disabled repositories. Overridable per category.
                 "repo_list": {"enum": REPO_LIST_VALUES},
-                # When each category's footer lists the excluded repositories:
-                # always, never, or only where a category's exclusions differ
-                # from the organisation's own list.
+                # Repositories every category leaves out, still analysed:
+                # general exclusions, and the test repositories counted on a
+                # footer line of their own. A category's own list replaces
+                # either.
+                "exclude": _PATTERN_LIST,
+                "exclude_tests": _PATTERN_LIST,
+                # When each category's footer shows each class of excluded
+                # repository: always, never, or only where a category's
+                # exclusions differ from the report-wide list; and whether
+                # the line names them or counts them alone.
                 "excluded_display": {"enum": EXCLUDED_DISPLAY_VALUES},
+                "excluded_names": {"type": "boolean"},
+                "excluded_tests_display": {"enum": EXCLUDED_DISPLAY_VALUES},
+                "excluded_tests_names": {"type": "boolean"},
                 "ruleset_workflows": {
                     "type": "object",
                     "additionalProperties": {"type": "string"},
@@ -321,11 +334,11 @@ CONFIG_SCHEMA: dict = {
                 "properties": {
                     "name": {"type": "string", "minLength": 1},
                     "token_env": {"type": "string"},
-                    "exclude": {"type": "array", "items": {"type": "string"}},
-                    "releases_exclude": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                    },
+                    # Patterns for the repositories removed from analysis
+                    # altogether, and for those left out of the Releases /
+                    # Tagging table alone.
+                    "exclude": _PATTERN_LIST,
+                    "releases_exclude": _PATTERN_LIST,
                     "slack": {"$ref": "#/properties/slack"},
                     "report": {"$ref": "#/properties/report"},
                 },

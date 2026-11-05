@@ -874,9 +874,11 @@ async def test_collect_org_reads_code_quality_only_where_it_applies(
     assert client.code_quality_reads == expected
 
 
-async def test_collect_org_code_quality_exclude_drops_the_repo_from_that_table() -> (
-    None
-):
+def _patterns(*patterns: str) -> tuple[re.Pattern[str], ...]:
+    return tuple(re.compile(p, re.IGNORECASE) for p in patterns)
+
+
+async def test_collect_org_category_exclude_drops_the_repo_from_that_table() -> None:
     # git-configure-action is Code Quality's one offender (Go, not configured)
     # and Auto-merge's too. Excluding it from Code Quality alone must leave
     # Auto-merge still reporting it, keep it out of the remediation plan, and
@@ -886,11 +888,11 @@ async def test_collect_org_code_quality_exclude_drops_the_repo_from_that_table()
     client.repos.append(_repo("zz-template"))
     report = await collect.collect_org(
         client,
-        OrgConfig(name="o", exclude=("zz-template",)),
+        OrgConfig(name="o", exclude=("^zz-template$",)),
         ReportConfig(
             categories={
                 CategoryKey.CODE_QUALITY.value: CategoryToggle(
-                    exclude=(re.compile("^git-", re.IGNORECASE),)
+                    exclude=_patterns("^git-")
                 )
             }
         ),
@@ -915,9 +917,90 @@ async def test_collect_org_code_quality_exclude_drops_the_repo_from_that_table()
     assert [r.repo.name for r in report.auto_merge.rows] == ["git-configure-action"]
 
 
-async def test_collect_org_code_quality_exclude_matching_nothing_leaves_baseline() -> (
-    None
-):
+async def test_collect_org_exclude_tests_is_its_own_class() -> None:
+    # A test-repository pattern on one category counts the repository on that
+    # category's test line, not its Excluded line, and nowhere else.
+    report = await collect.collect_org(
+        PostureClient(),
+        OrgConfig(name="o"),
+        ReportConfig(
+            categories={
+                CategoryKey.CODE_QUALITY.value: CategoryToggle(
+                    exclude_tests=_patterns("^git-")
+                )
+            }
+        ),
+        generated_at=WHEN,
+    )
+    assert report.code_quality is not None
+    assert report.code_quality.rows == []
+    assert [r.name for r in report.excluded_tests_for(CategoryKey.CODE_QUALITY)] == [
+        "git-configure-action"
+    ]
+    assert report.excluded_for(CategoryKey.CODE_QUALITY) == []
+    assert report.excluded_tests_for(CategoryKey.AUTO_MERGE) == []
+    assert CategoryKey.AUTO_MERGE not in report.category_excluded_tests
+
+
+async def test_collect_org_report_wide_exclusions_reach_every_category() -> None:
+    # Report-wide lists are the baseline every category inherits: the signal
+    # sections, the nested tables and the standalone tables all leave the
+    # repository out, nothing is recorded per category, and a repository
+    # matching both classes is a test exclusion.
+    client = PostureClient()
+    client.repos.append(_repo("test-fixture"))
+    client.languages["test-fixture"] = ("Go",)
+    report = await collect.collect_org(
+        client,
+        OrgConfig(name="o"),
+        ReportConfig(
+            include_test=True,
+            exclude=_patterns("fixture"),
+            exclude_tests=_patterns("^test-"),
+        ),
+        generated_at=WHEN,
+    )
+    assert [r.name for r in report.excluded_tests_default] == ["test-fixture"]
+    assert report.baseline_excluded == []
+    assert report.category_excluded == {} and report.category_excluded_tests == {}
+    # In scope and analysed, yet reported nowhere.
+    assert report.repo_count == 3
+    for section in report.sections:
+        assert "test-fixture" not in {s.repo.name for s in section.offenders}
+        assert "test-fixture" not in {r.name for r in section.nag_repos}
+    for table in (*report.dependabot_tables, *report.codeql_tables):
+        assert "test-fixture" not in {r.repo.name for r in table.rows}
+    assert report.code_quality is not None
+    assert [r.repo.name for r in report.code_quality.rows] == ["git-configure-action"]
+    assert report.auto_merge is not None
+    assert "test-fixture" not in {r.repo.name for r in report.auto_merge.rows}
+
+
+async def test_collect_org_named_selection_opts_into_excluded_categories() -> None:
+    # remediate --repos names a repository on purpose, so the per-category
+    # lists leave it alone for that run and it is a target again.
+    client = PostureClient()
+    cfg = ReportConfig(
+        categories={
+            CategoryKey.CODE_QUALITY.value: CategoryToggle(
+                exclude_tests=_patterns("^git-")
+            )
+        }
+    )
+    report = await collect.collect_org(
+        client,
+        OrgConfig(name="o"),
+        cfg,
+        generated_at=WHEN,
+        selected=[_repo("git-configure-action")],
+    )
+    assert report.code_quality is not None
+    assert [r.repo.name for r in report.code_quality.rows] == ["git-configure-action"]
+    assert report.code_quality_writes == {"git-configure-action": ("go",)}
+    assert report.excluded_tests_for(CategoryKey.CODE_QUALITY) == []
+
+
+async def test_collect_org_exclude_matching_nothing_leaves_baseline() -> None:
     # A list that drops no repository gives the category no exclusions of its
     # own, so a conditional-hide footer still sees it matching the baseline.
     report = await collect.collect_org(
@@ -926,7 +1009,7 @@ async def test_collect_org_code_quality_exclude_matching_nothing_leaves_baseline
         ReportConfig(
             categories={
                 CategoryKey.CODE_QUALITY.value: CategoryToggle(
-                    exclude=(re.compile("^test-"),)
+                    exclude=_patterns("^test-")
                 )
             }
         ),

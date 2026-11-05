@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
+from github_security_report.matching import Pattern, compile_patterns, matches
 from github_security_report.models import Repo
 
 log = logging.getLogger(__name__)
@@ -47,14 +48,15 @@ def decide(
     *,
     include_archived: bool = False,
     include_test: bool = False,
-    exclude: frozenset[str] | set[str] | tuple[str, ...] = (),
+    exclude: Iterable[str | Pattern] = (),
 ) -> ScopeDecision:
     """Decide whether a single repository is in scope, with a reason.
 
-    ``exclude`` matches case-insensitively, as GitHub treats repository names,
-    so an entry never fails to exclude a repository over its capitalisation.
+    ``exclude`` holds name patterns (see :mod:`github_security_report.matching`),
+    searched case-insensitively, as GitHub treats repository names, so an
+    entry never fails to exclude a repository over its capitalisation.
     """
-    if repo.name.lower() in {name.lower() for name in exclude}:
+    if matches(repo.name, compile_patterns(exclude, "exclude")):
         return ScopeDecision(repo, False, "explicitly excluded")
     if repo.fork:
         return ScopeDecision(repo, False, "fork")
@@ -75,14 +77,14 @@ def filter_repos(
     exclude: tuple[str, ...] = (),
 ) -> list[Repo]:
     """Return the in-scope repositories, logging every exclusion and reason."""
-    exclude_set = set(exclude)
+    patterns = compile_patterns(exclude, "exclude")
     kept: list[Repo] = []
     for repo in repos:
         decision = decide(
             repo,
             include_archived=include_archived,
             include_test=include_test,
-            exclude=exclude_set,
+            exclude=patterns,
         )
         if decision.included:
             kept.append(repo)

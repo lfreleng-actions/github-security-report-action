@@ -979,6 +979,12 @@ def test_org_to_dict_lists_category_exclusions() -> None:
     assert (
         _org_to_dict(org, hidden={CategoryKey.CODE_QUALITY})["category_excluded"] == {}
     )
+    # The test-repository class travels the same way, with its baseline.
+    org.excluded_tests_default = [repo("test-b")]
+    org.category_excluded_tests[CategoryKey.RELEASES] = [repo("test-b"), repo("test-c")]
+    data = _org_to_dict(org)
+    assert data["excluded_tests"] == ["o/test-b"]
+    assert data["category_excluded_tests"] == {"releases": ["o/test-b", "o/test-c"]}
 
 
 def test_org_shorthand_honours_token_env() -> None:

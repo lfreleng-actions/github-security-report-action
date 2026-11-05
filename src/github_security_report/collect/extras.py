@@ -22,6 +22,7 @@ import logging
 from github_security_report import codeql, layout, malware, posture
 from github_security_report.categories import CategoryKey
 from github_security_report.code_quality import CodeQualitySetup, applicable_languages
+from github_security_report.codeql import CodeQLFacts
 from github_security_report.collect.codeql import collect_codeql_facts
 from github_security_report.collect.context import (
     CollectExtras,
@@ -29,6 +30,7 @@ from github_security_report.collect.context import (
     gather_all,
     gather_in_batches,
 )
+from github_security_report.collect.exclusions import CategoryScope
 from github_security_report.collect.workflow_runs import attach_workflow_failures
 from github_security_report.config import OrgConfig, ReportConfig
 from github_security_report.issues import (
@@ -46,7 +48,7 @@ from github_security_report.pulls import (
     build_assigned_pull_requests_table,
     build_pull_requests_table,
 )
-from github_security_report.report import OrgReport, TableSection
+from github_security_report.report import OrgReport
 
 log = logging.getLogger(__name__)
 
@@ -123,34 +125,9 @@ async def _posture_for_repo(repo: Repo, ctx: OrgCollectContext) -> RepoPosture:
     )
 
 
-def _build_code_quality(
-    report: OrgReport, postures: list[RepoPosture], report_cfg: ReportConfig
-) -> tuple[TableSection, dict[str, tuple[str, ...]]]:
-    """The Code Quality table and its remediation plan, less the excluded.
-
-    A repository the category's own ``exclude`` patterns match is dropped
-    before the table is built, so it is neither a row nor a count nor a
-    remediation target, and is recorded as excluded for this category alone:
-    its footer then lists it alongside the organisation's own exclusions,
-    while every other category still reports the repository.
-    """
-    kept: list[RepoPosture] = []
-    dropped: list[Repo] = []
-    for p in postures:
-        if report_cfg.category_excludes(CategoryKey.CODE_QUALITY, p.repo.name):
-            dropped.append(p.repo)
-        else:
-            kept.append(p)
-    if dropped:
-        report.category_excluded[CategoryKey.CODE_QUALITY] = sorted(
-            (*report.excluded_repos, *dropped), key=lambda r: r.name
-        )
-    return posture.build_code_quality_table(kept), posture.code_quality_writes(kept)
-
-
 async def _attach_author_tables(
     report: OrgReport,
-    in_scope: list[Repo],
+    categories: CategoryScope,
     ctx: OrgCollectContext,
     report_cfg: ReportConfig,
 ) -> None:
@@ -174,7 +151,7 @@ async def _attach_author_tables(
     # extra request; the two identity reads above are the run's only additions.
     report.issues = build_issues_table(
         ctx.graph,
-        in_scope,
+        categories.repos(CategoryKey.GITHUB_ISSUES),
         generated_at=report.generated_at,
         label_columns=report_cfg.issue_labels,
         age_warn_days=report_cfg.issue_age_warn_days,
@@ -183,7 +160,7 @@ async def _attach_author_tables(
     )
     report.pull_requests = build_pull_requests_table(
         ctx.graph,
-        in_scope,
+        categories.repos(CategoryKey.PULL_REQUESTS),
         members=members,
         warn_threshold=report_cfg.dependabot_warn_threshold,
         error_threshold=report_cfg.dependabot_error_threshold,
@@ -196,7 +173,7 @@ async def _attach_author_tables(
     if viewer:
         report.assigned_issues = build_assigned_issues_table(
             ctx.graph,
-            in_scope,
+            categories.repos(CategoryKey.GITHUB_ISSUES_ASSIGNED),
             generated_at=report.generated_at,
             label_columns=report_cfg.issue_labels,
             age_warn_days=report_cfg.issue_age_warn_days,
@@ -206,12 +183,98 @@ async def _attach_author_tables(
         )
         report.assigned_pull_requests = build_assigned_pull_requests_table(
             ctx.graph,
-            in_scope,
+            categories.repos(CategoryKey.PULL_REQUESTS_ASSIGNED),
             members=members,
             warn_threshold=report_cfg.dependabot_warn_threshold,
             error_threshold=report_cfg.dependabot_error_threshold,
             viewer=viewer,
         )
+
+
+def _build_posture_tables(
+    report: OrgReport,
+    scope: CategoryScope,
+    probed: tuple[list[RepoPosture], list[CodeQLFacts]],
+    ctx: OrgCollectContext,
+    org_cfg: OrgConfig,
+    report_cfg: ReportConfig,
+) -> None:
+    """Build every table the posture and scan-health probes (``probed``) feed.
+
+    Each is built from the input its own category covers, so the rows, the
+    counts and the remediation plan agree on which repositories it reports.
+    """
+    postures, codeql_facts = probed
+
+    def for_category(key: CategoryKey, items: list[RepoPosture]) -> list[RepoPosture]:
+        return scope.narrow(key, items, lambda p: p.repo)
+
+    # The detail table is the parent's child in the layout and is built from
+    # the same runs, so it covers the same repositories and reports the same
+    # exclusions; its own lists, if any, are not read.
+    for recorded in (scope.category_excluded, scope.category_excluded_tests):
+        if CategoryKey.WORKFLOW_FAILURES in recorded:
+            recorded[CategoryKey.WORKFLOW_FAILURES_DETAIL] = recorded[
+                CategoryKey.WORKFLOW_FAILURES
+            ]
+    report.dependabot_tables = [
+        posture.build_alerts_table(
+            for_category(CategoryKey.DEPENDABOT_ALERTS_ENABLED, postures)
+        ),
+        posture.build_security_updates_table(
+            for_category(CategoryKey.DEPENDABOT_UPDATES_ENABLED, postures)
+        ),
+        posture.build_cooldown_table(
+            for_category(CategoryKey.DEPENDABOT_COOLDOWN, postures)
+        ),
+    ]
+    report.releases = posture.build_releases_table(
+        for_category(CategoryKey.RELEASES, postures),
+        generated_at=report.generated_at,
+        repo_min_age_days=report_cfg.repo_min_age_days,
+        release_max_age_days=report_cfg.release_max_age_days,
+        exclude=org_cfg.releases_exclude,
+    )
+    report.mutable_releases = posture.build_mutable_releases_table(
+        for_category(CategoryKey.MUTABLE_RELEASES, postures)
+    )
+    report.private_vulnerability_reporting = posture.build_pvr_table(
+        for_category(CategoryKey.PRIVATE_VULNERABILITY_REPORTING, postures)
+    )
+    report.auto_merge = posture.build_auto_merge_table(
+        for_category(CategoryKey.AUTO_MERGE, postures)
+    )
+    # Malware findings come from the Dependabot sweep already made for the
+    # alerts signal, so this table costs no request of its own.
+    report.malware_findings = malware.build_malware_findings_table(
+        scope.repos(CategoryKey.MALWARE_FINDINGS),
+        ctx.dependabot,
+        {p.repo.name: p.dependabot_alerts for p in postures},
+        sweep_readable=ctx.sweep_status.get("dependabot") == 200,
+        generated_at=report.generated_at,
+    )
+    quality = for_category(CategoryKey.CODE_QUALITY, postures)
+    report.code_quality = posture.build_code_quality_table(quality)
+    report.code_quality_writes = posture.code_quality_writes(quality)
+    # Remediation plans from the same facts the stale-configurations table
+    # shows, so a repository that category leaves out is never cleaned up.
+    stale_facts = scope.narrow(
+        CategoryKey.CODEQL_STALE_CONFIGURATIONS, codeql_facts, lambda f: f.repo
+    )
+    report.codeql_tables = [
+        codeql.build_stale_configurations_table(
+            stale_facts, stale_days=report_cfg.codeql_stale_days
+        ),
+        codeql.build_language_coverage_table(
+            scope.narrow(
+                CategoryKey.CODEQL_LANGUAGE_COVERAGE, codeql_facts, lambda f: f.repo
+            ),
+            stale_days=report_cfg.codeql_stale_days,
+        ),
+    ]
+    report.codeql_health = codeql.CodeQLHealth(
+        facts=tuple(stale_facts), stale_days=report_cfg.codeql_stale_days
+    )
 
 
 async def attach_extra_tables(
@@ -222,8 +285,13 @@ async def attach_extra_tables(
     report_cfg: ReportConfig,
     *,
     extras: CollectExtras | None = None,
+    categories: CategoryScope | None = None,
 ) -> None:
     """Probe posture for every repository and attach the derived tables.
+
+    ``categories`` narrows each table to the repositories its category
+    covers (see :class:`CategoryScope`); absent, every table covers
+    ``in_scope`` and nothing is recorded as excluded per category.
 
     ``extras`` (see :class:`CollectExtras`) switches the author tables off,
     which leaves the Issues, Pull Requests and both Assigned to Me tables
@@ -232,6 +300,13 @@ async def attach_extra_tables(
     """
     wanted = extras if extras is not None else CollectExtras()
     progress = wanted.progress
+    scope = (
+        categories
+        if categories is not None
+        else CategoryScope(report_cfg, in_scope, excluded_repos=report.excluded_repos)
+    )
+    if categories is None:
+        scope.attach(report)
 
     async def nothing() -> None:
         return None
@@ -249,42 +324,18 @@ async def attach_extra_tables(
             in_scope, lambda repo: _posture_for_repo(repo, ctx), progress=progress
         ),
         collect_codeql_facts(in_scope, ctx, stale_days=report_cfg.codeql_stale_days),
-        _attach_author_tables(report, in_scope, ctx, report_cfg)
+        _attach_author_tables(report, scope, ctx, report_cfg)
         if wanted.author_tables
         else nothing(),
-        attach_workflow_failures(report, in_scope, ctx, report_cfg, wanted)
+        attach_workflow_failures(
+            report, scope.repos(CategoryKey.WORKFLOW_FAILURES), ctx, report_cfg, wanted
+        )
         if wanted.run_store is not None
         else nothing(),
     )
     progress.phase("building tables")
-    report.dependabot_tables = posture.build_dependabot_tables(postures)
-    report.releases = posture.build_releases_table(
-        postures,
-        generated_at=report.generated_at,
-        repo_min_age_days=report_cfg.repo_min_age_days,
-        release_max_age_days=report_cfg.release_max_age_days,
-        exclude=org_cfg.releases_exclude,
-    )
-    report.mutable_releases = posture.build_mutable_releases_table(postures)
-    report.private_vulnerability_reporting = posture.build_pvr_table(postures)
-    report.auto_merge = posture.build_auto_merge_table(postures)
-    # Malware findings come from the Dependabot sweep already made for the
-    # alerts signal, so this table costs no request of its own.
-    report.malware_findings = malware.build_malware_findings_table(
-        in_scope,
-        ctx.dependabot,
-        {p.repo.name: p.dependabot_alerts for p in postures},
-        sweep_readable=ctx.sweep_status.get("dependabot") == 200,
-        generated_at=report.generated_at,
-    )
-    report.code_quality, report.code_quality_writes = _build_code_quality(
-        report, postures, report_cfg
-    )
-    report.codeql_tables = codeql.build_codeql_tables(
-        codeql_facts, stale_days=report_cfg.codeql_stale_days
-    )
-    report.codeql_health = codeql.CodeQLHealth(
-        facts=tuple(codeql_facts), stale_days=report_cfg.codeql_stale_days
+    _build_posture_tables(
+        report, scope, (postures, codeql_facts), ctx, org_cfg, report_cfg
     )
     # The Dependabot alerts enablement sub-table carries the repositories with
     # Dependabot alerts disabled, so drop them from the Dependabot signal

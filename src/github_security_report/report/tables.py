@@ -11,11 +11,11 @@ Issues and Pull Requests. A :class:`TableSection` carries its
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from github_security_report.categories import REPO_LIST_CATEGORIES, CategoryMeta
 from github_security_report.models import Repo
+from github_security_report.report.exclusions import NO_EXCLUSIONS, Exclusions
 from github_security_report.summary import RepoList, SummaryCount
 
 # Semantic emphasis a builder can attach to a table cell, mapped to a concrete
@@ -201,13 +201,14 @@ class TableSection:
 
     def summary_counts(
         self,
-        excluded: Sequence[Repo] = (),
+        exclusions: Exclusions = NO_EXCLUSIONS,
         *,
         repo_list: RepoList = RepoList.AUTO,
     ) -> list[SummaryCount]:
         """Footer buckets for this table.
 
-        Failure, unknown, pass, any notes, not applicable and excluded.
+        Failure, unknown, pass, any notes, not applicable, then the excluded
+        test repositories and the other excluded repositories.
 
         A boolean feature table also names one side's repositories, chosen by
         ``repo_list`` (see :meth:`listed_kind`); both sides are always counted.
@@ -232,10 +233,5 @@ class TableSection:
             ),
             *(SummaryCount("note", 1, note) for note in self.notes),
             SummaryCount("na", self.not_applicable_count, "Not applicable"),
-            SummaryCount(
-                "excluded",
-                len(excluded),
-                "Excluded",
-                tuple(r.name for r in excluded),
-            ),
+            *exclusions.counts(),
         ]

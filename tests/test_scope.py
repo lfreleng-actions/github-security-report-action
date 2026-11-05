@@ -121,3 +121,12 @@ def test_select_named_keeps_only_the_named_repositories() -> None:
 def test_exclude_matches_case_insensitively() -> None:
     decision = scope.decide(_repo("MyRepo"), exclude=("myrepo",))
     assert (decision.included, decision.reason) == (False, "explicitly excluded")
+
+
+def test_exclude_entries_are_patterns() -> None:
+    # Searched, so a prefix anchor excludes a family and a plain name still
+    # excludes itself; an unanchored name also excludes names containing it.
+    assert not scope.decide(_repo("test-go-project"), exclude=("^test-",)).included
+    assert scope.decide(_repo("latest-action"), exclude=("^test-",)).included
+    assert not scope.decide(_repo("fixture-extra"), exclude=("fixture",)).included
+    assert scope.decide(_repo("fixture-extra"), exclude=("^fixture$",)).included

@@ -568,6 +568,64 @@ def test_conditional_hide_keeps_only_the_deviating_category() -> None:
     assert "3 Excluded" in out
 
 
+def test_excluded_names_off_counts_without_listing() -> None:
+    console = Console(record=True, width=120, no_color=True)
+    terminal.render_org(
+        _excluded_org(), console, footer=report.FooterOptions(excluded_names=False)
+    )
+    out = console.export_text()
+    assert "2 Excluded" in out and "3 Excluded" in out
+    assert "Excluded:" not in out
+
+
+def _tests_org() -> report.OrgReport:
+    """Two test repositories excluded report-wide; Auto-merge excludes a third."""
+    org = report.build_org_report(
+        "lfreleng-actions", [], repo_count=7, generated_at=WHEN
+    )
+    org.excluded_tests_default = [_repo("test-go"), _repo("test-py")]
+    org.auto_merge = _auto_merge_org().auto_merge
+    org.category_excluded_tests[CategoryKey.AUTO_MERGE] = [
+        _repo("test-go"),
+        _repo("test-py"),
+        _repo("test-rs"),
+    ]
+    return org
+
+
+def _render_tests(footer: report.FooterOptions = report.DEFAULT_FOOTER) -> str:
+    console = Console(record=True, width=120, no_color=True)
+    terminal.render_org(_tests_org(), console, footer=footer)
+    return console.export_text()
+
+
+def test_test_repositories_are_counted_on_their_own_line_unnamed() -> None:
+    # The default: a count a reader can act on, with no list of names and no
+    # general Excluded line, since nothing is excluded that way.
+    out = _render_tests()
+    assert "2 Test repositories excluded" in out
+    assert "3 Test repositories excluded" in out
+    assert "test-go" not in out
+    assert "Excluded" not in out.replace("Test repositories excluded", "")
+
+
+def test_test_repositories_can_be_named() -> None:
+    out = _render_tests(report.FooterOptions(excluded_tests_names=True))
+    assert "Test repositories excluded: test-go, test-py, test-rs" in out
+
+
+def test_test_repositories_line_honours_its_own_display_mode() -> None:
+    hidden = _render_tests(
+        report.FooterOptions(excluded_tests=report.ExcludedDisplay.ALWAYS_HIDE)
+    )
+    assert "Test repositories excluded" not in hidden
+    conditional = _render_tests(
+        report.FooterOptions(excluded_tests=report.ExcludedDisplay.CONDITIONAL_HIDE)
+    )
+    assert conditional.count("Test repositories excluded") == 1
+    assert "3 Test repositories excluded" in conditional
+
+
 def _cleanup(
     outcomes: list[tuple[str, str, str, str]],
 ) -> remediate.CategoryRemediation:

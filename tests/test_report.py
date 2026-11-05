@@ -441,7 +441,11 @@ class TestExcludedDisplay:
         # out, so once no Excluded line qualifies it "All Clean" is accurate.
         section = report.SignalSection(signal=SignalType.CODEQL, clean_count=3)
         org = self._org()
-        shown = report.build_summary(section.summary_counts(org.excluded_repos))
-        hidden = report.build_summary(section.summary_counts(()))
+        shown = report.build_summary(
+            section.summary_counts(
+                report.Exclusions(excluded=tuple(org.excluded_repos))
+            )
+        )
+        hidden = report.build_summary(section.summary_counts())
         assert [line.text for line in shown] == ["3 Clean", "2 Excluded"]
         assert [line.text for line in hidden] == ["All Clean"]

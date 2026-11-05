@@ -146,6 +146,9 @@ def footer(report_cfg: ReportConfig) -> FooterOptions:
     return FooterOptions(
         repo_list=report_cfg.repo_list_for,
         excluded=report_cfg.excluded_display,
+        excluded_names=report_cfg.excluded_names,
+        excluded_tests=report_cfg.excluded_tests_display,
+        excluded_tests_names=report_cfg.excluded_tests_names,
     )
 
 

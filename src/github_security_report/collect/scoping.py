@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from github_security_report import scope
 from github_security_report.collect.protocols import ClientProtocol
 from github_security_report.config import OrgConfig, ReportConfig
+from github_security_report.matching import compile_patterns, matches
 from github_security_report.models import Repo
 
 log = logging.getLogger(__name__)
@@ -62,11 +63,11 @@ async def resolve_scope(
     # Repositories removed specifically by the per-org exclude list (not by
     # fork/template/archived/test filtering) are tracked so the report can show
     # them as explicitly excluded rather than silently dropping them.
-    exclude_names = {name.lower() for name in org_cfg.exclude}
+    patterns = compile_patterns(org_cfg.exclude, "exclude")
     return OrgScope(
         status=status,
         in_scope=in_scope,
-        excluded=[repo for repo in repos if repo.name.lower() in exclude_names],
+        excluded=[repo for repo in repos if matches(repo.name, patterns)],
     )
 
 
@@ -94,7 +95,7 @@ async def check_named_repos(
     before a run reads or writes anything.
     """
     status, repos = await client.list_org_repos(org_cfg.name)
-    exclude = set(org_cfg.exclude)
+    exclude = compile_patterns(org_cfg.exclude, "exclude")
     in_scope: list[Repo] = []
     excluded: list[tuple[Repo, str]] = []
     for repo in scope.select_named(org_cfg.name, repos, only):

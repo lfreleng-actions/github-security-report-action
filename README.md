@@ -156,8 +156,8 @@ tables (org mode):
   enabled count out of the applicable count per language, such as
   `python 30/32 · go 5/5 · javascript-typescript 10/12`. See
   [ADR-0006](docs/adr/0006-github-code-quality.md); hide it with the
-  `code_quality` render toggle, or leave fixture repositories out of it alone
-  with its `exclude` patterns (see [Per-category exclusions](#per-category-exclusions)).
+  `code_quality` render toggle, or leave test repositories out of it alone
+  with its `exclude_tests` patterns (see [Per-category exclusions](#per-category-exclusions)).
 - **Workflow Failures** — repositories whose GitHub Actions workflows failed
   in the window, ranked by failed runs. The motivating case is the bulk
   Dependabot merge whose integration tests need credentials, so they run
@@ -474,23 +474,32 @@ organisation, as `--top-n` does.
 
 The per-org `exclude` list removes repositories from analysis entirely; they are
 reported as **excluded** (distinct from "not enabled"), so an intentional
-exclusion is visible rather than silently dropped. Entries match repository
-names case-insensitively, as GitHub does.
+exclusion is visible rather than silently dropped. Each entry is a regular
+expression *searched* against the repository name, case-insensitively, as
+GitHub compares names: `^test-` drops every repository whose name starts with
+`test-`, a plain name matches itself (and any name containing it), and
+`^name$` pins one repository exactly. Every exclusion list in the
+configuration — `exclude`, `releases_exclude`, and the `exclude` /
+`exclude_tests` lists described under
+[Per-category exclusions](#per-category-exclusions) — matches this way, and a
+pattern that does not compile is a configuration error.
 
 Every category reports those exclusions beneath its counts, so an
 organisation-wide list repeats under each one. `report.excluded_display`
-governs that line on every surface:
+governs that line on every surface, and `report.excluded_names` (default
+`true`) whether it lists the repositories beneath the count or counts them
+alone:
 
 | Value | Excluded line |
 | ----- | ------------- |
 | `always-show` (default) | Shown under every category |
 | `always-hide` | Never shown |
-| `conditional-hide` | Shown only for a category whose exclusions differ from the organisation's `exclude` list, and then in full |
+| `conditional-hide` | Shown only for a category whose exclusions differ from the report-wide list, and then in full |
 
 Hiding the line changes nothing else: every count is unaffected, and the report
 header's repository count already leaves excluded repositories out. So a clean
 category reads `All Clean` once no Excluded line qualifies it. Every category
-reports the organisation's own list unless it excludes repositories of its own
+reports the report-wide list unless it excludes repositories of its own
 (see [Per-category exclusions](#per-category-exclusions)), so with
 `conditional-hide` the line survives only beneath such a category. The
 `report.json` artifact always lists the exclusions.
@@ -646,37 +655,69 @@ render as a name list rather than a one-column table on every surface. The
 
 ### Per-category exclusions
 
-A category can leave repositories out that every other category still reports,
-with `report.categories.<key>.exclude`: a list of regular expressions searched
-against the repository name, case-insensitively, so `^test-` drops every
-repository whose name starts with `test-` and `^fixture$` drops exactly
-`fixture`. The motivating case is Code Quality, which is billed per committer:
-an organisation that reports its test repositories (`include_test`) still has
-no reason to pay for scanning them, and wants the section to list only the
-repositories worth switching on:
+Two further exclusion lists leave repositories out of a category while they
+stay in scope and analysed, so another category can still report them. Both
+hold name patterns, as every exclusion list does, and both exist report-wide
+(`report.exclude`, `report.exclude_tests`, applying to every category) and per
+category (`report.categories.<key>.exclude`, `.exclude_tests`), where a
+category's own list *replaces* the report-wide one rather than adding to it,
+like every other `categories` key. The difference between the two is how the
+footer reports them:
+
+| List | Footer line | Default |
+| ---- | ----------- | ------- |
+| `exclude` | ⏩ **Excluded** — merged with the organisation's own `exclude` list | shown, repositories named |
+| `exclude_tests` | 🧪 **Test repositories excluded** — a line of its own | shown, counted but not named |
+
+The motivating case is Code Quality, which is billed per committer: an
+organisation that reports its test repositories (`include_test: true`) still
+has no reason to pay for scanning them, and wants the section to list only the
+repositories worth switching on, with one line saying how many test
+repositories it set aside:
 
 ```json
 {
   "report": {
     "include_test": true,
+    "excluded_display": "conditional-hide",
     "categories": {
-      "code_quality": { "exclude": ["^test-"] }
+      "code_quality": { "exclude_tests": ["^test-"] }
     }
   },
   "organizations": [{ "name": "lfreleng-actions" }]
 }
 ```
 
+```text
+Code Quality
+  ✅ 72 Enabled
+  📊 Enabled by language: python 57/57 · go 3/3 · javascript-typescript 25/25
+  ➖ 60 Not applicable
+  🧪 12 Test repositories excluded
+```
+
 An excluded repository is neither a row nor a count in that category, and
-`remediate --category code_quality` never writes to it. It is not dropped
-silently: the category's **Excluded** footer line names it alongside the
-organisation's own `exclude` list, and `report.json` carries the category's full
-list under `category_excluded`. Under `excluded_display: conditional-hide` that
-footer line is exactly the one that stays. An organisation's own `exclude` list
-replaces the inherited one rather than adding to it, as every other
-`categories` key does; a pattern that does not compile is a configuration
-error. `exclude` applies to `code_quality` only; setting it on any other
-category is a configuration error, since no other table yet applies it.
+`remediate` never writes to it, whichever category it is: the per-category
+lists apply to remediation by default. Naming a repository with
+`remediate --repos` opts it back in for that run, since naming it is the
+explicit request; the organisation's own `exclude` list still holds. A
+repository matching both lists is a test exclusion. Nothing is dropped
+silently: each class is counted on its footer line, and `report.json` carries
+the report-wide test list under `excluded_tests` and any category's own lists
+under `category_excluded` and `category_excluded_tests`.
+
+The test line has the same two controls as the Excluded line:
+`report.excluded_tests_display` takes the same three values as
+`excluded_display` (default `always-show`), and `report.excluded_tests_names`
+(default `false`) lists the repositories beneath the count. Under
+`conditional-hide`, either line survives only beneath a category whose list
+differs from the report-wide one. Setting `report.exclude_tests` for every
+category and `excluded_tests_display: always-show` therefore repeats the same
+count under each heading, which is the honest reading of a report-wide list;
+switch the line to `conditional-hide` to see it only where a category differs.
+
+The Workflow Failures detail table is the parent category's child and covers
+the same repositories; its own lists are not read.
 
 ### Per-category row ordering
 

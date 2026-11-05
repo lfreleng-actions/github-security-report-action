@@ -500,6 +500,21 @@ def test_excluded_display_governs_the_markdown_footer() -> None:
     assert "[extra](https://github.com/o/extra)" in conditional
 
 
+def test_excluded_test_repositories_link_when_named() -> None:
+    org = report.build_org_report("o", [], repo_count=7, generated_at=WHEN)
+    org.auto_merge = _auto_merge_org().auto_merge
+    org.category_excluded_tests[CategoryKey.AUTO_MERGE] = [_repo("test-a")]
+    counted = markdown.render_org(org)
+    assert "1 Test repositories excluded" in counted
+    assert "test-a" not in counted
+    named = markdown.render_org(
+        org, footer=report.FooterOptions(excluded_tests_names=True)
+    )
+    assert (
+        "**Test repositories excluded:** [test-a](https://github.com/o/test-a)" in named
+    )
+
+
 def test_table_cells_escape_markdown_delimiters() -> None:
     # A workflow or job name holding a pipe, a newline or brackets must not
     # add a column, split the row or close a link label early.
