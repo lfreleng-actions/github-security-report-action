@@ -60,7 +60,6 @@ def _refused(result: Result) -> str:
     return result.output
 
 
-@pytest.mark.xfail(strict=True, reason="configuration errors are not yet caught")
 class TestConfigErrorBoundary:
     def test_unknown_key_names_the_file_and_path(self, tmp_path: Path) -> None:
         path = _write(tmp_path / "config.json", _UNKNOWN)
