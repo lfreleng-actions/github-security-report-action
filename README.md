@@ -392,7 +392,10 @@ its checkout on `PATH`.
 Configuration is JSON, supplied as a plain `vars.` entry or base64-encoded in a
 `secrets.` entry (base64 only to stop JSON braces tripping GitHub's log
 redaction — it is encoding, not encryption). Tokens are referenced by
-environment-variable name, never embedded.
+environment-variable name, never embedded. `github-security-report config keys`
+lists every key with its type, default and description, and
+`github-security-report config check` validates a configuration before a run
+(see [Checking a configuration](#checking-a-configuration)).
 
 ```json
 {
@@ -1848,6 +1851,44 @@ Secrets stay out of the file: reference the token by environment-variable name
 via `token_env` (e.g. `LFRELENG_ACTIONS_REPORT_PAT`, exported in your shell or sourced
 from a secrets file) — the channel ID is the only Slack value the file holds,
 and the Slack **bot token** is consumed by the workflow, not the CLI.
+
+### Checking a configuration
+
+`config check` reads a configuration the way `report` does — a path, then
+`--config-data`, then the per-user file above — and validates it without
+touching GitHub. An empty `--config-data`, such as an unset variable, fails
+the check rather than falling through to the per-user file. `config check`
+exits `0` for a valid configuration and `2` otherwise:
+
+```bash
+github-security-report config check ~/.config/github-security-report/config.json
+github-security-report config check --config-data "$CONFIG_B64"
+```
+
+A configuration with problems lists every one, each by its dotted path, rather
+than stopping at the first:
+
+<!-- markdownlint-disable MD013 -->
+```text
+Configuration config.json is invalid:
+  organizations[0]: unknown key "exclde" (did you mean "exclude"?); valid keys: name, token_env, exclude, releases_exclude, slack, report
+  report.top_n: expected an integer, got "ten"
+  (github-security-report 0.23.1; a key added in a later release needs an upgrade)
+```
+<!-- markdownlint-enable MD013 -->
+
+`report` and `remediate` print the same message, in red, and exit `2` without a
+traceback; `--verbose` adds the underlying exception. A deprecated key is still
+valid: `config check` names it and its replacement, then reports the
+configuration valid.
+
+`config keys` lists the keys a configuration takes, generated from the same
+schema the loader validates against. Give it a dotted path to see one block:
+
+```bash
+github-security-report config keys
+github-security-report config keys report.categories.code_quality
+```
 
 ## Inputs
 

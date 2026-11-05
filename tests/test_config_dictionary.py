@@ -97,6 +97,10 @@ class TestLookup:
         paths = [entry.path for entry in keys_under("report.top_n")]
         assert paths == ["report.top_n"]
 
+    def test_prefix_selects_array_items(self) -> None:
+        paths = [entry.path for entry in keys_under("organizations")]
+        assert "organizations[].name" in paths
+
     def test_empty_prefix_lists_everything(self) -> None:
         assert keys_under("") == config_keys()
 

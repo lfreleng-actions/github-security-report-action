@@ -253,7 +253,9 @@ def keys_under(prefix: str) -> tuple[KeyEntry, ...]:
     return tuple(
         entry
         for entry in config_keys()
-        if not prefix or entry.path == prefix or entry.path.startswith(f"{prefix}.")
+        if not prefix
+        or entry.path == prefix
+        or entry.path.startswith((f"{prefix}.", f"{prefix}["))
     )
 
 

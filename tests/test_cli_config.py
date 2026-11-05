@@ -140,7 +140,6 @@ class TestConfigErrorBoundary:
         assert f"Configuration {path} could not be read: Permission denied" in output
 
 
-@pytest.mark.xfail(strict=True, reason="the config command does not exist yet")
 class TestConfigCommand:
     def test_check_accepts_a_valid_file(self, tmp_path: Path) -> None:
         path = _write(tmp_path / "config.json", {"organizations": [{"name": "o"}]})
