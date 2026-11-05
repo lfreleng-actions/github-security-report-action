@@ -188,6 +188,9 @@ class WorkflowRunsConfig:
     # intermittent. Fewer than ``min_runs`` concluded runs is too few to say.
     persistent_threshold: float = 0.9
     min_runs: int = 3
+    # A repository failing more than this share of its runs has its Fail %
+    # shown as an error; any lower non-zero rate is a warning.
+    fail_rate_error_threshold: float = 0.05
     cache: bool = True
     cache_dir: str | None = None
 

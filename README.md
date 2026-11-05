@@ -165,7 +165,9 @@ tables (org mode):
   pull request could have caught them. Each row gives **Failed** (runs that
   concluded `failure`, `startup_failure`, `timed_out` or `action_required`),
   **Runs** (every concluded run of every workflow in the repository),
-  **Fail %** (failed over failed *plus passed*, so skips never dilute it),
+  **Fail %** (failed over failed *plus passed*, so skips never dilute it;
+  on the terminal, red above `workflow_runs.fail_rate_error_threshold`, 5%
+  by default, and yellow for any lower non-zero rate),
   **Skipped** (skipped, cancelled, neutral and stale runs — a cancelled run
   reached no verdict, and a bulk-merge round cancels hundreds of superseded
   ones), **Retried** (runs that passed on a later attempt, a direct sign of
@@ -1574,6 +1576,7 @@ like every other `report` key. Every key with its default:
       "collapse_matrix": true,
       "persistent_threshold": 0.9,
       "min_runs": 3,
+      "fail_rate_error_threshold": 0.05,
       "cache": true
     }
   },
@@ -1614,6 +1617,13 @@ the root cause), below it *intermittent* (harden the workflow), and with
 fewer than `min_runs` runs that reached a verdict *insufficient* to say. Both
 judge the same pass-or-fail population that Fail % does, so skips count
 towards neither.
+
+`fail_rate_error_threshold` colours the per-repository table's **Fail %**
+on the terminal: a repository failing more than that fraction of its
+pass-or-fail runs shows red, and any lower non-zero rate shows yellow.
+Markdown, HTML and Slack carry no cell colour, so the setting leaves them
+unchanged. It is independent of `persistent_threshold`, which judges
+single workflows.
 
 `cache` and `cache_dir` govern the **run store**, a SQLite file per
 organisation at

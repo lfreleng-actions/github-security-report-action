@@ -153,17 +153,12 @@ def _rate_records(failed: int, passed: int) -> list[WorkflowRunRecord]:
     ]
 
 
-_XFAIL_RED = pytest.mark.xfail(
-    strict=True, reason="Fail % is red only at the persistent threshold"
-)
-
-
 @pytest.mark.parametrize(
     ("failed", "passed", "level"),
     [
         (1, 19, CELL_WARN),
-        pytest.param(3, 47, CELL_BAD, marks=_XFAIL_RED),
-        pytest.param(4, 21, CELL_BAD, marks=_XFAIL_RED),
+        (3, 47, CELL_BAD),
+        (4, 21, CELL_BAD),
     ],
     ids=["5%", "6%", "16%"],
 )
@@ -179,7 +174,6 @@ def test_repo_fail_rate_red_above_five_percent(
     assert all(value is None for i, value in enumerate(levels) if i != 2)
 
 
-@_XFAIL_RED
 def test_repo_fail_rate_level_ignores_persistent_threshold() -> None:
     # The persistent threshold classifies the detail table's Pattern only;
     # a 67% rate is red however high it is set.
@@ -188,7 +182,6 @@ def test_repo_fail_rate_level_ignores_persistent_threshold() -> None:
     assert repo_table.rows[0].cell_levels[2] == CELL_BAD
 
 
-@pytest.mark.xfail(strict=True, reason="fail_rate_error_threshold not supported")
 @pytest.mark.parametrize(
     ("threshold", "level"),
     [(0.2, CELL_WARN), (0.16, CELL_WARN), (0.1, CELL_BAD)],
@@ -204,7 +197,7 @@ def test_repo_fail_rate_level_follows_configured_threshold(
         generated_at=NOW,
         windows=WINDOWS,
         options=WindowOptions(days=7),
-        fail_rate_error_threshold=threshold,  # type: ignore[call-arg]
+        fail_rate_error_threshold=threshold,
     )
     (repo_table, _), _ = tables
     assert repo_table.rows[0].cell_levels[2] == level

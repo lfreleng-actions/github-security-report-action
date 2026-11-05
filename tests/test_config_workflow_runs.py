@@ -37,7 +37,6 @@ def _cfg(block: dict, *, org_block: dict | None = None) -> config.Config:
 
 
 class TestDefaults:
-    @pytest.mark.xfail(strict=True, reason="fail_rate_error_threshold not added")
     def test_fail_rate_error_threshold_defaults_to_five_percent(self) -> None:
         assert ReportConfig().workflow_runs.fail_rate_error_threshold == 0.05
 
@@ -120,7 +119,6 @@ class TestBuildConfig:
         with pytest.raises(ConfigError):
             _cfg(block)
 
-    @pytest.mark.xfail(strict=True, reason="fail_rate_error_threshold not added")
     def test_fail_rate_error_threshold_is_configurable(self) -> None:
         runs = _cfg({"fail_rate_error_threshold": 0.1}).report.workflow_runs
         assert runs.fail_rate_error_threshold == 0.1

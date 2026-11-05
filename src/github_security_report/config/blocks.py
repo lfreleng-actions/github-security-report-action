@@ -178,6 +178,7 @@ def _workflow_runs_from(data: dict, base: WorkflowRunsConfig) -> WorkflowRunsCon
             "collapse_matrix",
             "persistent_threshold",
             "min_runs",
+            "fail_rate_error_threshold",
             "cache",
             "cache_dir",
         }

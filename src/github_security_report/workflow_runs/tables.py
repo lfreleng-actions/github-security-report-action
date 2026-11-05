@@ -84,8 +84,13 @@ def _percent(rate: float) -> str:
     return f"{round(rate * 100)}%"
 
 
+# The repository failure rate above which Fail % reads as an error.
+DEFAULT_FAIL_RATE_ERROR_THRESHOLD = 0.05
+
+
 def _rate_level(rate: float, threshold: float) -> str | None:
-    if rate >= threshold:
+    """Error strictly above ``threshold``, warning for any lower failure."""
+    if rate > threshold:
         return CELL_BAD
     return CELL_WARN if rate > 0 else None
 
@@ -256,6 +261,7 @@ def build_workflow_failure_tables(
     options: WindowOptions,
     unknown: frozenset[str] = frozenset(),
     oldest: Mapping[str, dt.datetime | None] | None = None,
+    fail_rate_error_threshold: float = DEFAULT_FAIL_RATE_ERROR_THRESHOLD,
 ) -> tuple[tuple[TableSection, ...], tuple[TableSection, ...]]:
     """Both tables for every window, shortest window first.
 
@@ -264,6 +270,9 @@ def build_workflow_failure_tables(
     as unreadable rather than as failure-free on every window; ``oldest``
     says how far back each repository's stored history reaches, so a window
     reaching further is noted as truncated in the footer.
+    ``fail_rate_error_threshold`` is the repository failure rate above which
+    the Fail % cell reads as an error rather than a warning; the persistent
+    threshold in ``options`` judges only the detail table's Pattern.
     """
     by_name = {repo.name: repo for repo in in_scope}
     held = list(records)
@@ -305,7 +314,7 @@ def build_workflow_failure_tables(
                 category=category_meta(CategoryKey.WORKFLOW_FAILURES),
                 columns=REPO_COLUMNS,
                 rows=[
-                    _repo_row(by_name[s.repo], s, options.persistent_threshold)
+                    _repo_row(by_name[s.repo], s, fail_rate_error_threshold)
                     for s in failing
                 ],
                 sum_columns=frozenset({1, 2, 4, 5, 6}),
