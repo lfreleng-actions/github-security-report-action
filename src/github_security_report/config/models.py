@@ -10,6 +10,7 @@ defaults they fall back to. Construction from raw JSON lives in
 from __future__ import annotations
 
 import datetime as dt
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -94,7 +95,10 @@ class CategoryToggle:
     ordering of a generic table with a list of column names; ``None`` keeps the
     ordering the table's builder chose. ``repo_list`` overrides which side of a
     boolean feature category is named (see :class:`RepoList`); ``None`` falls
-    back to the report-wide ``repo_list``.
+    back to the report-wide ``repo_list``. ``exclude`` drops the repositories
+    whose name matches any of its regular expressions from this one category
+    (see :data:`~github_security_report.categories.EXCLUDABLE_CATEGORIES`);
+    they are reported on its Excluded footer line rather than dropped silently.
     """
 
     enabled: bool = True
@@ -103,6 +107,7 @@ class CategoryToggle:
     top_n: int | None = None
     sort: tuple[str, ...] | None = None
     repo_list: RepoList | None = None
+    exclude: tuple[re.Pattern[str], ...] = ()
 
     def shows_on(self, output: str) -> bool:
         """Whether this category renders on ``output`` (cli/slack/markdown/html)."""
@@ -403,6 +408,17 @@ class ReportConfig:
         if toggle is not None and toggle.repo_list is not None:
             return toggle.repo_list
         return self.repo_list
+
+    def category_excludes(self, key: CategoryKey, name: str) -> bool:
+        """Whether category ``key`` drops repository ``name`` by its own list.
+
+        Patterns are searched rather than fully matched, so ``^test-`` reads
+        as the prefix it looks like, and compiled case-insensitively, since
+        GitHub repository names are. False for an unconfigured category: only
+        the organisation's ``exclude`` list removes a repository everywhere.
+        """
+        toggle = self.categories.get(key.value)
+        return toggle is not None and any(p.search(name) for p in toggle.exclude)
 
 
 @dataclass(frozen=True)

@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import re
 
 import pytest
 
@@ -21,7 +22,7 @@ from github_security_report.collect.graph import (
     GRAPH_PREFETCH_IN_FLIGHT,
     collect_graph,
 )
-from github_security_report.config import OrgConfig, ReportConfig
+from github_security_report.config import CategoryToggle, OrgConfig, ReportConfig
 from github_security_report.models import Repo, RepoGraphData, RepoState, SignalType
 from github_security_report.report import OrgReport, SignalSection
 from github_security_report.workflow_runs import WorkflowRunRecord
@@ -871,6 +872,69 @@ async def test_collect_org_reads_code_quality_only_where_it_applies(
         client, OrgConfig(name="o"), ReportConfig(), generated_at=WHEN
     )
     assert client.code_quality_reads == expected
+
+
+async def test_collect_org_code_quality_exclude_drops_the_repo_from_that_table() -> (
+    None
+):
+    # git-configure-action is Code Quality's one offender (Go, not configured)
+    # and Auto-merge's too. Excluding it from Code Quality alone must leave
+    # Auto-merge still reporting it, keep it out of the remediation plan, and
+    # record it as excluded for that category, after the organisation's own
+    # exclusions, so the footer can list it.
+    client = PostureClient()
+    client.repos.append(_repo("zz-template"))
+    report = await collect.collect_org(
+        client,
+        OrgConfig(name="o", exclude=("zz-template",)),
+        ReportConfig(
+            categories={
+                CategoryKey.CODE_QUALITY.value: CategoryToggle(
+                    exclude=(re.compile("^git-", re.IGNORECASE),)
+                )
+            }
+        ),
+        generated_at=WHEN,
+    )
+    quality = report.code_quality
+    assert quality is not None
+    assert quality.rows == []
+    assert (quality.fail_count, quality.pass_count) == (0, 1)
+    assert quality.notes == ("Enabled by language: python 1/1",)
+    assert report.code_quality_writes == {}
+    assert [r.name for r in report.excluded_for(CategoryKey.CODE_QUALITY)] == [
+        "git-configure-action",
+        "zz-template",
+    ]
+    # Only that category's list changed.
+    assert [r.name for r in report.excluded_repos] == ["zz-template"]
+    assert [r.name for r in report.excluded_for(CategoryKey.AUTO_MERGE)] == [
+        "zz-template"
+    ]
+    assert report.auto_merge is not None
+    assert [r.repo.name for r in report.auto_merge.rows] == ["git-configure-action"]
+
+
+async def test_collect_org_code_quality_exclude_matching_nothing_leaves_baseline() -> (
+    None
+):
+    # A list that drops no repository gives the category no exclusions of its
+    # own, so a conditional-hide footer still sees it matching the baseline.
+    report = await collect.collect_org(
+        PostureClient(),
+        OrgConfig(name="o"),
+        ReportConfig(
+            categories={
+                CategoryKey.CODE_QUALITY.value: CategoryToggle(
+                    exclude=(re.compile("^test-"),)
+                )
+            }
+        ),
+        generated_at=WHEN,
+    )
+    assert CategoryKey.CODE_QUALITY not in report.category_excluded
+    assert report.code_quality is not None
+    assert [r.repo.name for r in report.code_quality.rows] == ["git-configure-action"]
 
 
 async def test_collect_org_omits_the_personal_queue_without_a_person() -> None:
