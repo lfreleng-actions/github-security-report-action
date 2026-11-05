@@ -16,13 +16,10 @@ from collections.abc import Mapping
 from dataclasses import replace
 from types import MappingProxyType
 
-from github_security_report.config.models import (
-    CategoryToggle,
-    ReportConfig,
-    WorkflowRunsConfig,
-)
+from github_security_report.config.models import CategoryToggle, ReportConfig
 from github_security_report.config.order import order_from
 from github_security_report.config.schema import REPORT_OUTPUTS, ConfigError
+from github_security_report.config.workflow_runs import WorkflowRunsConfig
 from github_security_report.issues import RESERVED_COLUMNS
 from github_security_report.severity import Severity, from_name
 from github_security_report.summary import ExcludedDisplay, RepoList
