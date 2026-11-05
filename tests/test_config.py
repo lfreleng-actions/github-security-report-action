@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from github_security_report import config
 from github_security_report.categories import CategoryKey
 from github_security_report.client import API_DEFAULT_CONCURRENCY
 from github_security_report.config import ConfigError
+from github_security_report.matching import matches
 from github_security_report.severity import Severity
 from github_security_report.summary import ExcludedDisplay, RepoList
 
@@ -964,7 +966,7 @@ class TestRepoList:
 
 
 class TestCategoryExclude:
-    """A category's own ``exclude`` patterns, applied to that category alone."""
+    """The ``exclude`` and ``exclude_tests`` patterns, report-wide and per category."""
 
     def _cfg(self, report: dict, org_report: dict | None = None) -> config.Config:
         org: dict = {"name": "o"}
@@ -972,37 +974,70 @@ class TestCategoryExclude:
             org["report"] = org_report
         return config.build_config({"report": report, "organizations": [org]})
 
+    @staticmethod
+    def _drops(rc: config.ReportConfig, key: CategoryKey, name: str) -> bool:
+        return matches(name, rc.exclude_for(key))
+
+    @staticmethod
+    def _drops_test(rc: config.ReportConfig, key: CategoryKey, name: str) -> bool:
+        return matches(name, rc.exclude_tests_for(key))
+
     def test_defaults_to_no_patterns(self) -> None:
         rc = config.build_config(MINIMAL).report
-        assert (
-            rc.category_excludes(CategoryKey.CODE_QUALITY, "test-go-project") is False
-        )
+        assert (rc.exclude, rc.exclude_tests) == ((), ())
+        for key in CategoryKey:
+            assert rc.exclude_for(key) == ()
+            assert rc.exclude_tests_for(key) == ()
 
     def test_patterns_are_searched_case_insensitively(self) -> None:
         rc = self._cfg({"categories": {"code_quality": {"exclude": ["^test-"]}}}).report
-        excludes = rc.category_excludes
-        assert excludes(CategoryKey.CODE_QUALITY, "test-go-project") is True
-        assert excludes(CategoryKey.CODE_QUALITY, "Test-Gradle-Project") is True
+        key = CategoryKey.CODE_QUALITY
+        assert self._drops(rc, key, "test-go-project")
+        assert self._drops(rc, key, "Test-Gradle-Project")
         # A prefix anchor is a prefix: a later "test-" does not match.
-        assert excludes(CategoryKey.CODE_QUALITY, "python-test-action") is False
+        assert not self._drops(rc, key, "python-test-action")
         # The list belongs to one category; every other still reports the repo.
-        assert excludes(CategoryKey.AUTO_MERGE, "test-go-project") is False
+        assert not self._drops(rc, CategoryKey.AUTO_MERGE, "test-go-project")
 
     def test_any_pattern_matching_excludes(self) -> None:
         rc = self._cfg(
             {"categories": {"code_quality": {"exclude": ["^test-", "-fixture$"]}}}
         ).report
-        assert rc.category_excludes(CategoryKey.CODE_QUALITY, "releases-fixture")
-        assert not rc.category_excludes(CategoryKey.CODE_QUALITY, "java-workflows")
+        assert self._drops(rc, CategoryKey.CODE_QUALITY, "releases-fixture")
+        assert not self._drops(rc, CategoryKey.CODE_QUALITY, "java-workflows")
+
+    def test_report_wide_lists_reach_every_category(self) -> None:
+        rc = self._cfg({"exclude": ["^sandbox$"], "exclude_tests": ["^test-"]}).report
+        for key in CategoryKey:
+            assert self._drops(rc, key, "sandbox")
+            assert self._drops_test(rc, key, "test-go-project")
+
+    def test_category_list_replaces_the_report_wide_one(self) -> None:
+        rc = self._cfg(
+            {
+                "exclude": ["^sandbox$"],
+                "exclude_tests": ["^test-"],
+                "categories": {
+                    "code_quality": {"exclude": [], "exclude_tests": ["-fixture$"]}
+                },
+            }
+        ).report
+        key = CategoryKey.CODE_QUALITY
+        assert not self._drops(rc, key, "sandbox")
+        assert not self._drops_test(rc, key, "test-go-project")
+        assert self._drops_test(rc, key, "releases-fixture")
+        # Every other category keeps the report-wide lists.
+        assert self._drops(rc, CategoryKey.AUTO_MERGE, "sandbox")
+        assert self._drops_test(rc, CategoryKey.AUTO_MERGE, "test-go-project")
 
     def test_org_override_replaces_the_inherited_list(self) -> None:
         cfg = self._cfg(
-            {"categories": {"code_quality": {"exclude": ["^test-"]}}},
-            org_report={"categories": {"code_quality": {"exclude": ["^demo-"]}}},
+            {"categories": {"code_quality": {"exclude_tests": ["^test-"]}}},
+            org_report={"categories": {"code_quality": {"exclude_tests": ["^demo-"]}}},
         )
         rc = cfg.organizations[0].report
-        assert rc.category_excludes(CategoryKey.CODE_QUALITY, "demo-app")
-        assert not rc.category_excludes(CategoryKey.CODE_QUALITY, "test-app")
+        assert self._drops_test(rc, CategoryKey.CODE_QUALITY, "demo-app")
+        assert not self._drops_test(rc, CategoryKey.CODE_QUALITY, "test-app")
 
     def test_org_override_of_another_key_keeps_the_list(self) -> None:
         cfg = self._cfg(
@@ -1010,12 +1045,55 @@ class TestCategoryExclude:
             org_report={"categories": {"code_quality": {"top_n": 0}}},
         )
         rc = cfg.organizations[0].report
-        assert rc.category_excludes(CategoryKey.CODE_QUALITY, "test-app")
+        assert self._drops(rc, CategoryKey.CODE_QUALITY, "test-app")
         assert rc.category_top_n(CategoryKey.CODE_QUALITY, "cli") == 0
 
-    def test_rejects_a_pattern_that_does_not_compile(self) -> None:
-        with pytest.raises(ConfigError, match=r"code_quality\.exclude pattern '\['"):
-            self._cfg({"categories": {"code_quality": {"exclude": ["["]}}})
+    def test_every_category_accepts_both_lists(self) -> None:
+        rc = self._cfg(
+            {"categories": {"auto_merge": {"exclude": ["^a"], "exclude_tests": ["^b"]}}}
+        ).report
+        assert self._drops(rc, CategoryKey.AUTO_MERGE, "alpha")
+        assert self._drops_test(rc, CategoryKey.AUTO_MERGE, "beta")
+
+    @pytest.mark.parametrize(
+        ("data", "where"),
+        [
+            pytest.param({"report": {"exclude": ["["]}}, "report.exclude", id="report"),
+            pytest.param(
+                {"report": {"exclude_tests": ["["]}},
+                "report.exclude_tests",
+                id="report-tests",
+            ),
+            pytest.param(
+                {"report": {"categories": {"code_quality": {"exclude": ["["]}}}},
+                "report.categories.code_quality.exclude",
+                id="category",
+            ),
+            pytest.param(
+                {"report": {"categories": {"auto_merge": {"exclude_tests": ["["]}}}},
+                "report.categories.auto_merge.exclude_tests",
+                id="category-tests",
+            ),
+            pytest.param(
+                {"organization_exclude": ["["]}, "organizations[o].exclude", id="org"
+            ),
+            pytest.param(
+                {"organization_releases_exclude": ["["]},
+                "organizations[o].releases_exclude",
+                id="releases",
+            ),
+        ],
+    )
+    def test_rejects_a_pattern_that_does_not_compile(
+        self, data: dict, where: str
+    ) -> None:
+        org: dict = {"name": "o"}
+        if "organization_exclude" in data:
+            org["exclude"] = data.pop("organization_exclude")
+        if "organization_releases_exclude" in data:
+            org["releases_exclude"] = data.pop("organization_releases_exclude")
+        with pytest.raises(ConfigError, match=re.escape(f"{where} pattern '['")):
+            config.build_config({**data, "organizations": [org]})
 
     @pytest.mark.parametrize(
         "pattern",
@@ -1029,18 +1107,61 @@ class TestCategoryExclude:
     def test_rejects_a_pattern_re_cannot_compile(self, pattern: str) -> None:
         with pytest.raises(ConfigError, match=r"code_quality\.exclude pattern"):
             self._cfg({"categories": {"code_quality": {"exclude": [pattern]}}})
+        with pytest.raises(ConfigError, match=r"report\.exclude_tests pattern"):
+            self._cfg({"exclude_tests": [pattern]})
+        with pytest.raises(ConfigError, match=r"organizations\[o\]\.exclude pattern"):
+            config.build_config(
+                {"organizations": [{"name": "o", "exclude": [pattern]}]}
+            )
 
-    def test_rejects_an_empty_pattern(self) -> None:
+    @pytest.mark.parametrize(
+        ("data", "where"),
+        [
+            pytest.param({"report": {"exclude": [""]}}, "report.exclude", id="report"),
+            pytest.param(
+                {"report": {"exclude_tests": ["^a", ""]}},
+                "report.exclude_tests",
+                id="report-tests",
+            ),
+            pytest.param(
+                {"report": {"categories": {"code_quality": {"exclude": [""]}}}},
+                "report.categories.code_quality.exclude",
+                id="category",
+            ),
+            pytest.param(
+                {"report": {"categories": {"auto_merge": {"exclude_tests": [""]}}}},
+                "report.categories.auto_merge.exclude_tests",
+                id="category-tests",
+            ),
+            pytest.param(
+                {"org": {"exclude": [""]}}, "organizations[o].exclude", id="org"
+            ),
+            pytest.param(
+                {"org": {"releases_exclude": [""]}},
+                "organizations[o].releases_exclude",
+                id="releases",
+            ),
+        ],
+    )
+    def test_rejects_an_empty_pattern(self, data: dict, where: str) -> None:
         # An empty regular expression matches every name, which is never the
-        # intent; the schema refuses it before any repository is dropped.
-        with pytest.raises(ConfigError):
-            self._cfg({"categories": {"code_quality": {"exclude": [""]}}})
+        # intent; the loader refuses it, naming the list, before any
+        # repository is dropped.
+        org = {"name": "o", **data.pop("org", {})}
+        with pytest.raises(
+            ConfigError, match=re.escape(f"{where} pattern '' is empty")
+        ):
+            config.build_config({**data, "organizations": [org]})
 
-    def test_rejected_on_a_category_that_does_not_apply_it(self) -> None:
-        # No builder reads the list for Auto-merge; accepting the key would
-        # validate and then do nothing.
-        with pytest.raises(ConfigError, match="exclude"):
-            self._cfg({"categories": {"auto_merge": {"exclude": ["^test-"]}}})
+    def test_organisation_lists_are_kept_as_written(self) -> None:
+        org = config.build_config(
+            {
+                "organizations": [
+                    {"name": "o", "exclude": ["^zz-"], "releases_exclude": ["^int"]}
+                ]
+            }
+        ).organizations[0]
+        assert (org.exclude, org.releases_exclude) == (("^zz-",), ("^int",))
 
 
 class TestExcludedDisplay:
@@ -1073,3 +1194,22 @@ class TestExcludedDisplay:
     def test_rejects_an_unknown_mode(self) -> None:
         with pytest.raises(ConfigError):
             self._report({"excluded_display": "sometimes"})
+
+    def test_names_and_test_display_defaults(self) -> None:
+        rc = config.build_config(MINIMAL).report
+        assert rc.excluded_names is True
+        assert rc.excluded_tests_display is ExcludedDisplay.ALWAYS_SHOW
+        assert rc.excluded_tests_names is False
+
+    @pytest.mark.parametrize("mode", list(ExcludedDisplay))
+    def test_each_test_mode_parses(self, mode: ExcludedDisplay) -> None:
+        rc = self._report({"excluded_tests_display": mode.value})
+        assert rc.excluded_tests_display is mode
+
+    def test_naming_flags_parse(self) -> None:
+        rc = self._report({"excluded_names": False, "excluded_tests_names": True})
+        assert (rc.excluded_names, rc.excluded_tests_names) == (False, True)
+
+    def test_rejects_an_unknown_test_mode(self) -> None:
+        with pytest.raises(ConfigError):
+            self._report({"excluded_tests_display": "sometimes"})

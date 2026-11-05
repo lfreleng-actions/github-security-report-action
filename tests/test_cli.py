@@ -820,6 +820,38 @@ def test_releases_exclude_allowed_for_a_single_org(tmp_path: Path) -> None:
     assert "--releases-exclude replaces" not in result.stdout
 
 
+@pytest.mark.parametrize(
+    ("pattern", "message"),
+    [("", "non-empty name pattern"), ("[", "not a valid regular expression")],
+)
+def test_releases_exclude_pattern_checked_at_the_boundary(
+    tmp_path: Path, pattern: str, message: str
+) -> None:
+    # The flag bypasses the config loader, so it is held to the same rules
+    # there: an empty pattern would drop every repository, and one that does
+    # not compile would fail only after the organisation had been collected.
+    config = tmp_path / "c.json"
+    config.write_text(
+        json.dumps({"organizations": [{"name": "one"}]}), encoding="utf-8"
+    )
+    result = cli.invoke(
+        app,
+        [
+            "report",
+            "--config",
+            str(config),
+            "--scope",
+            "org",
+            "--releases-exclude",
+            pattern,
+            "--no-color",
+        ],
+    )
+    assert result.exit_code == 2, result.stdout
+    assert "--releases-exclude" in result.stdout
+    assert message in result.stdout
+
+
 class TestTokenEnvOverride:
     """``--token-env`` is an override, not an eager default.
 
@@ -979,6 +1011,31 @@ def test_org_to_dict_lists_category_exclusions() -> None:
     assert (
         _org_to_dict(org, hidden={CategoryKey.CODE_QUALITY})["category_excluded"] == {}
     )
+
+
+def test_org_to_dict_lists_test_exclusions() -> None:
+    # The test repositories are published as a class of their own: the
+    # report-wide baseline and any category whose list differs from it.
+    from github_security_report.categories import CategoryKey
+    from github_security_report.cli import _org_to_dict
+    from github_security_report.models import Repo
+    from github_security_report.report import build_org_report
+
+    def repo(name: str) -> Repo:
+        return Repo(name, f"o/{name}", f"https://github.com/o/{name}")
+
+    org = build_org_report("o", [], repo_count=1, excluded_repos=[repo("fixture")])
+    assert _org_to_dict(org)["excluded_tests"] == []
+    assert _org_to_dict(org)["category_excluded_tests"] == {}
+    org.excluded_default = [repo("fixture"), repo("sandbox")]
+    org.excluded_tests_default = [repo("test-a")]
+    org.category_excluded_tests[CategoryKey.CODE_QUALITY] = [repo("test-b")]
+    data = _org_to_dict(org)
+    assert data["excluded"] == ["o/fixture", "o/sandbox"]
+    assert data["excluded_tests"] == ["o/test-a"]
+    assert data["category_excluded_tests"] == {"code_quality": ["o/test-b"]}
+    hidden = _org_to_dict(org, hidden={CategoryKey.CODE_QUALITY})
+    assert hidden["category_excluded_tests"] == {}
 
 
 def test_org_shorthand_honours_token_env() -> None:

@@ -121,3 +121,28 @@ def test_select_named_keeps_only_the_named_repositories() -> None:
 def test_exclude_matches_case_insensitively() -> None:
     decision = scope.decide(_repo("MyRepo"), exclude=("myrepo",))
     assert (decision.included, decision.reason) == (False, "explicitly excluded")
+
+
+def test_exclude_entries_are_searched_patterns() -> None:
+    # Every entry is a regular expression searched against the name: a prefix
+    # anchor reads as a prefix, and a plain name matches any name containing it.
+    patterns = ("^test-", "fixture")
+
+    def included(name: str) -> bool:
+        # include_test keeps the built-in test-repository rule out of the way.
+        return scope.decide(_repo(name), include_test=True, exclude=patterns).included
+
+    assert not included("test-go-project")
+    assert not included("releases-fixture")
+    assert included("python-test-action")
+    kept = scope.filter_repos(
+        [_repo("test-a"), _repo("keep"), _repo("x-fixture-y")],
+        include_test=True,
+        exclude=patterns,
+    )
+    assert [r.name for r in kept] == ["keep"]
+
+
+def test_an_anchored_exclude_entry_pins_one_repository() -> None:
+    assert not scope.decide(_repo("tool"), exclude=("^tool$",)).included
+    assert scope.decide(_repo("tooling"), exclude=("^tool$",)).included

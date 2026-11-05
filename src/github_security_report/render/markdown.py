@@ -19,9 +19,11 @@ from github_security_report.categories import CategoryKey
 from github_security_report.models import Repo, RepoSignal, SignalType
 from github_security_report.report import (
     DEFAULT_FOOTER,
+    NO_EXCLUSIONS,
     ORG_SETUP_DOC_URL,
     SKIP_MESSAGE,
     SUMMARY_EMOJI,
+    Exclusions,
     FooterOptions,
     LimitFor,
     OrgReport,
@@ -217,7 +219,7 @@ def _description_lines(description: str, url: str) -> list[str]:
 def render_section(
     section: SignalSection,
     *,
-    excluded: Sequence[Repo] = (),
+    exclusions: Exclusions = NO_EXCLUSIONS,
     top_n: int | None = None,
 ) -> str:
     meta = section.signal.meta
@@ -234,13 +236,13 @@ def render_section(
     if section.offenders:
         lines.extend(_table(section, top_n))
         lines.append("")
-    summary = build_summary(section.summary_counts(excluded))
+    summary = build_summary(section.summary_counts(exclusions))
     if not (section.offenders or summary):
         lines.append("_No data available._")
         lines.append("")
         return "\n".join(lines).rstrip() + "\n"
     lines.extend(_description_lines(section.resolved_description(), meta.url))
-    name_to_repo = {r.name: r for r in (*section.nag_repos, *excluded)}
+    name_to_repo = {r.name: r for r in (*section.nag_repos, *exclusions.repos)}
     lines.extend(_summary_lines(summary, name_to_repo, top_n=top_n))
     return "\n".join(lines).rstrip() + "\n"
 
@@ -249,7 +251,7 @@ def render_table_section(
     section: TableSection,
     *,
     level: int = 3,
-    excluded: Sequence[Repo] = (),
+    exclusions: Exclusions = NO_EXCLUSIONS,
     top_n: int | None = None,
     repo_list: RepoList = RepoList.AUTO,
 ) -> str:
@@ -262,7 +264,7 @@ def render_table_section(
     heading = "#" * level
     meta = section.category
     lines = [f"{heading} {section.title}", ""]
-    summary = build_summary(section.summary_counts(excluded, repo_list=repo_list))
+    summary = build_summary(section.summary_counts(exclusions, repo_list=repo_list))
     if not (section.rows or summary):
         lines.append("_No data available._")
         lines.append("")
@@ -295,7 +297,7 @@ def render_table_section(
             lines.append(f"_… and {hidden} more_")
             lines.append("")
     lines.extend(_description_lines(section.resolved_description(), meta.url))
-    name_to_repo = {**section.repos_by_name(), **{r.name: r for r in excluded}}
+    name_to_repo = {**section.repos_by_name(), **{r.name: r for r in exclusions.repos}}
     lines.extend(
         _summary_lines(
             summary,
@@ -342,7 +344,7 @@ def render_org(
             render_table_section(
                 section,
                 level=level,
-                excluded=footer.excluded_shown(org, key),
+                exclusions=footer.exclusions(org, key),
                 top_n=limit_for(key),
                 repo_list=footer.repo_list(key),
             )
@@ -364,7 +366,7 @@ def render_org(
             parts.append(
                 render_section(
                     item.section,
-                    excluded=footer.excluded_shown(org, key),
+                    exclusions=footer.exclusions(org, key),
                     top_n=limit_for(key),
                 )
             )

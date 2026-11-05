@@ -16,11 +16,10 @@ limit is breached, so every block built here is sized by
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 
 from github_security_report import layout
 from github_security_report.categories import CategoryKey
-from github_security_report.models import Repo
 from github_security_report.render.html import slugify
 from github_security_report.render.slack_limits import (
     MAX_TEXT_CHARS,
@@ -44,6 +43,7 @@ from github_security_report.report import (
     ORG_SETUP_DOC_URL,
     SKIP_MESSAGE,
     SUMMARY_EMOJI,
+    Exclusions,
     FooterOptions,
     LimitFor,
     OrgReport,
@@ -64,7 +64,7 @@ def _table_block(
     section: TableSection,
     top_n: int,
     *,
-    excluded: Sequence[Repo],
+    exclusions: Exclusions,
     repo_list: RepoList = RepoList.AUTO,
 ) -> dict | None:
     """A Slack section block for a posture/freshness table (None when empty).
@@ -79,7 +79,7 @@ def _table_block(
     a ``digest`` line is drawn as a bullet per row instead of a fixed-width
     table: it is too wide for a digest, and the line says what matters.
     """
-    lines = build_summary(section.summary_counts(excluded, repo_list=repo_list))
+    lines = build_summary(section.summary_counts(exclusions, repo_list=repo_list))
     row_cap = 0 if section.lists_repos else len(truncate(section.rows, top_n)[0])
     name_cap = _name_cap(lines, top_n)
     if not row_cap and not _summary_text(lines, names=name_cap):
@@ -130,10 +130,10 @@ def _table_block(
 
 
 def _signal_block(
-    section: SignalSection, top_n: int, *, excluded: Sequence[Repo]
+    section: SignalSection, top_n: int, *, exclusions: Exclusions
 ) -> dict:
     """A Slack section block for one signal's offender table and footer."""
-    lines = build_summary(section.summary_counts(excluded))
+    lines = build_summary(section.summary_counts(exclusions))
 
     def build(rows: int, names: int) -> str:
         text = f"*{section.signal.heading}*"
@@ -196,7 +196,7 @@ def render_org_blocks(
         block = _table_block(
             section,
             limit_for(key),
-            excluded=footer.excluded_shown(org, key),
+            exclusions=footer.exclusions(org, key),
             repo_list=footer.repo_list(key),
         )
         if block is not None:
@@ -227,7 +227,7 @@ def render_org_blocks(
                     _signal_block(
                         section,
                         limit_for(key),
-                        excluded=footer.excluded_shown(org, key),
+                        exclusions=footer.exclusions(org, key),
                     )
                 )
         # A signal's sub-tables follow its block.

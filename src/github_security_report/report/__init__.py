@@ -64,6 +64,11 @@ from github_security_report.report.display import (
     truncate,
     window_shown,
 )
+from github_security_report.report.exclusions import (
+    NO_EXCLUSIONS,
+    TESTS_LABEL,
+    Exclusions,
+)
 from github_security_report.report.signals import (
     ORG_SETUP_DOC_URL,
     SKIP_MESSAGE,
@@ -90,10 +95,13 @@ from github_security_report.summary import (
 # ``report`` alongside the structures it decorates.
 __all__ = [
     "DEFAULT_FOOTER",
+    "NO_EXCLUSIONS",
     "ORG_SETUP_DOC_URL",
     "SKIP_MESSAGE",
     "SUMMARY_EMOJI",
+    "TESTS_LABEL",
     "ExcludedDisplay",
+    "Exclusions",
     "FooterOptions",
     "LimitFor",
     "OrgReport",

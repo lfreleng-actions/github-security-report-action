@@ -18,7 +18,7 @@ from pathlib import Path
 
 import jsonschema
 
-from github_security_report.config.blocks import _report_from
+from github_security_report.config.blocks import _report_from, patterns_from
 from github_security_report.config.models import (
     Config,
     OrgConfig,
@@ -126,12 +126,21 @@ def build_config(data: dict) -> Config:
                 "be an environment-variable NAME, not a token value",
                 raw["name"],
             )
+        # Kept as the operator wrote them; validated here so a bad pattern
+        # fails the load, and compiled again where they are matched.
+        exclude = tuple(raw.get("exclude", ()))
+        releases_exclude = tuple(raw.get("releases_exclude", ()))
+        for name, patterns in (
+            ("exclude", exclude),
+            ("releases_exclude", releases_exclude),
+        ):
+            patterns_from(patterns, f"organizations[{raw['name']}].{name}")
         orgs.append(
             OrgConfig(
                 name=raw["name"],
                 token_env=token_env,
-                exclude=tuple(raw.get("exclude", ())),
-                releases_exclude=tuple(raw.get("releases_exclude", ())),
+                exclude=exclude,
+                releases_exclude=releases_exclude,
                 slack=_slack_from(raw.get("slack", {}), global_slack),
                 report=_report_from(raw.get("report", {}), global_report),
             )

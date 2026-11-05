@@ -22,9 +22,11 @@ from github_security_report.models import Repo, RepoSignal
 from github_security_report.render import markdown
 from github_security_report.report import (
     DEFAULT_FOOTER,
+    NO_EXCLUSIONS,
     ORG_SETUP_DOC_URL,
     SKIP_MESSAGE,
     SUMMARY_EMOJI,
+    Exclusions,
     FooterOptions,
     LimitFor,
     OrgReport,
@@ -152,7 +154,7 @@ def _summary_context(
 def _table_context(
     section: TableSection,
     *,
-    excluded: Sequence[Repo] = (),
+    exclusions: Exclusions = NO_EXCLUSIONS,
     top_n: int | None = None,
     repo_list: RepoList = RepoList.AUTO,
 ) -> dict:
@@ -164,7 +166,7 @@ def _table_context(
     rows, hidden = truncate(section.rows, top_n)
     if section.lists_repos:
         rows, hidden = [], 0
-    name_to_repo = {**section.repos_by_name(), **{r.name: r for r in excluded}}
+    name_to_repo = {**section.repos_by_name(), **{r.name: r for r in exclusions.repos}}
     totals = table_column_totals(section, rows)
     return {
         "title": section.title,
@@ -194,7 +196,7 @@ def _table_context(
         "footer_rows": [list(row) for row in table_footer_rows(section, rows)],
         "hidden": hidden,
         "summary": _summary_context(
-            build_summary(section.summary_counts(excluded, repo_list=repo_list)),
+            build_summary(section.summary_counts(exclusions, repo_list=repo_list)),
             name_to_repo,
             top_n=top_n,
         ),
@@ -204,7 +206,7 @@ def _table_context(
 def _section_context(
     section: SignalSection,
     *,
-    excluded: Sequence[Repo] = (),
+    exclusions: Exclusions = NO_EXCLUSIONS,
     top_n: int | None = None,
 ) -> dict:
     meta = section.signal.meta
@@ -235,7 +237,7 @@ def _section_context(
         if section.signal.uses_severity_columns and offenders
         else None
     )
-    name_to_repo = {r.name: r for r in (*section.nag_repos, *excluded)}
+    name_to_repo = {r.name: r for r in (*section.nag_repos, *exclusions.repos)}
     return {
         "title": meta.title,
         "url": meta.url,
@@ -256,7 +258,7 @@ def _section_context(
         "total_cells": total_cells,
         "footer_rows": [],
         "summary": _summary_context(
-            build_summary(section.summary_counts(excluded)),
+            build_summary(section.summary_counts(exclusions)),
             name_to_repo,
             top_n=top_n,
         ),
@@ -285,7 +287,7 @@ def render_org_html(
         key = section.category.key
         return _table_context(
             section,
-            excluded=footer.excluded_shown(org, key),
+            exclusions=footer.exclusions(org, key),
             top_n=limit_for(key),
             repo_list=footer.repo_list(key),
         )
@@ -309,7 +311,7 @@ def render_org_html(
         if visible(key):
             ctx = _section_context(
                 item.section,
-                excluded=footer.excluded_shown(org, key),
+                exclusions=footer.exclusions(org, key),
                 top_n=limit_for(key),
             )
             # When the parent signal is shown, its sub-tables render beneath

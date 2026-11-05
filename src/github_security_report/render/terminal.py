@@ -21,7 +21,7 @@ from rich.text import Text
 
 from github_security_report import layout
 from github_security_report.categories import CategoryKey
-from github_security_report.models import Repo, RepoSignal, SignalType
+from github_security_report.models import RepoSignal, SignalType
 from github_security_report.remediate import CategoryRemediation
 from github_security_report.render import markdown
 from github_security_report.render.terminal_notices import (
@@ -33,9 +33,11 @@ from github_security_report.report import (
     CELL_GOOD,
     CELL_WARN,
     DEFAULT_FOOTER,
+    NO_EXCLUSIONS,
     ORG_SETUP_DOC_URL,
     SKIP_MESSAGE,
     SUMMARY_EMOJI,
+    Exclusions,
     FooterOptions,
     LimitFor,
     OrgReport,
@@ -73,6 +75,7 @@ _SUMMARY_STYLE = {
     "pass": "green",
     "note": "cyan",
     "na": "dim",
+    "tests": "magenta",
     "excluded": "blue",
 }
 
@@ -80,11 +83,7 @@ _SUMMARY_STYLE = {
 # (see ``report.CELL_LEVELS``). The terminal is the only surface that renders
 # these: Markdown and Slack have no colour, and the HTML pages style their
 # tables from the stylesheet.
-_CELL_LEVEL_STYLE = {
-    CELL_GOOD: "green",
-    CELL_WARN: "yellow",
-    CELL_BAD: "red",
-}
+_CELL_LEVEL_STYLE = {CELL_GOOD: "green", CELL_WARN: "yellow", CELL_BAD: "red"}
 
 
 def _add_columns(
@@ -159,7 +158,7 @@ def render_section(
     section: SignalSection,
     console: Console,
     *,
-    excluded: Sequence[Repo] = (),
+    exclusions: Exclusions = NO_EXCLUSIONS,
     top_n: int | None = None,
 ) -> None:
     if section.skipped:
@@ -194,7 +193,7 @@ def render_section(
             console.print(f"  [dim]\u2026 and {hidden_offenders} more[/dim]")
     else:
         console.print(f"[bold]{section.signal.heading}[/bold]")
-    lines = build_summary(section.summary_counts(excluded))
+    lines = build_summary(section.summary_counts(exclusions))
     if lines:
         _render_summary(console, lines, top_n=top_n)
     elif not offenders:
@@ -220,7 +219,7 @@ def render_table_section(
     section: TableSection,
     console: Console,
     *,
-    excluded: Sequence[Repo] = (),
+    exclusions: Exclusions = NO_EXCLUSIONS,
     top_n: int | None = None,
     repo_list: RepoList = RepoList.AUTO,
 ) -> None:
@@ -270,7 +269,7 @@ def render_table_section(
         console.print(table)
         if hidden:
             console.print(f"  [dim]\u2026 and {hidden} more[/dim]")
-    lines = build_summary(section.summary_counts(excluded, repo_list=repo_list))
+    lines = build_summary(section.summary_counts(exclusions, repo_list=repo_list))
     if lines:
         _render_summary(console, lines, top_n=top_n)
     elif not rows:
@@ -301,7 +300,7 @@ def render_org(
         render_table_section(
             section,
             console,
-            excluded=footer.excluded_shown(org, section.category.key),
+            exclusions=footer.exclusions(org, section.category.key),
             top_n=limit_for(section.category.key),
             repo_list=footer.repo_list(section.category.key),
         )
@@ -326,7 +325,7 @@ def render_org(
             render_section(
                 item.section,
                 console,
-                excluded=footer.excluded_shown(org, key),
+                exclusions=footer.exclusions(org, key),
                 top_n=limit_for(key),
             )
         for child in item.children:

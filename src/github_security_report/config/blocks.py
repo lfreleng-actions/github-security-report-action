@@ -11,8 +11,7 @@ with a usable error. Those parsers live here; the top-level loader in
 
 from __future__ import annotations
 
-import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from types import MappingProxyType
 
@@ -21,12 +20,31 @@ from github_security_report.config.order import order_from
 from github_security_report.config.schema import REPORT_OUTPUTS, ConfigError
 from github_security_report.config.workflow_runs import WorkflowRunsConfig
 from github_security_report.issues import RESERVED_COLUMNS
+from github_security_report.matching import Pattern, compile_patterns
 from github_security_report.severity import Severity, from_name
 from github_security_report.summary import ExcludedDisplay, RepoList
 
 # Characters that would break the surfaces a column header is rendered into:
 # a pipe ends a Markdown table cell, a backtick can close the Slack code fence.
 _UNSAFE_COLUMN = ("|", "`")
+
+
+def patterns_from(raw: Iterable[str], where: str) -> tuple[Pattern, ...]:
+    """Compile an exclusion list, turning a bad pattern into a ConfigError.
+
+    An empty pattern is found in every name, so it would drop every
+    repository; it is refused here rather than by the schema, whose error
+    would not say which list holds it.
+    """
+    raw = tuple(raw)
+    if not all(raw):
+        raise ConfigError(
+            f"{where} pattern '' is empty: it would match every repository name"
+        )
+    try:
+        return compile_patterns(raw, where)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
 
 
 def _issue_labels_from(data: Mapping[str, list[str]]) -> Mapping[str, tuple[str, ...]]:
@@ -117,9 +135,20 @@ def _report_from(data: dict, base: ReportConfig) -> ReportConfig:
                 "gating",
                 "graph_batch",
                 "concurrency",
+                "excluded_names",
+                "excluded_tests_names",
             }
         },
     )
+    if "exclude" in data:
+        result = replace(
+            result, exclude=patterns_from(data["exclude"], "report.exclude")
+        )
+    if "exclude_tests" in data:
+        result = replace(
+            result,
+            exclude_tests=patterns_from(data["exclude_tests"], "report.exclude_tests"),
+        )
     if "ruleset_workflows" in data:
         # Merge so the built-in defaults (e.g. zizmor) survive unless overridden.
         merged = {**base.ruleset_workflows, **data["ruleset_workflows"]}
@@ -149,6 +178,11 @@ def _report_from(data: dict, base: ReportConfig) -> ReportConfig:
     if "excluded_display" in data:
         result = replace(
             result, excluded_display=ExcludedDisplay(data["excluded_display"])
+        )
+    if "excluded_tests_display" in data:
+        result = replace(
+            result,
+            excluded_tests_display=ExcludedDisplay(data["excluded_tests_display"]),
         )
     _require_reachable_warning(
         result, "dependabot_warn_threshold", "dependabot_error_threshold"
@@ -225,27 +259,6 @@ def _require_reachable_warning(
         )
 
 
-def _exclude_patterns_from(key: str, raw: list[str]) -> tuple[re.Pattern[str], ...]:
-    """Compile a category's ``exclude`` list, naming the pattern that fails.
-
-    Compiled once here rather than on every repository, and rejected at load
-    time rather than mid-run: a pattern that does not compile would otherwise
-    surface only after the whole organisation had been read. An oversized
-    repeat count raises ``OverflowError`` and deep nesting ``RecursionError``
-    rather than ``re.error``, so those are caught too.
-    """
-    patterns: list[re.Pattern[str]] = []
-    for text in raw:
-        try:
-            patterns.append(re.compile(text, re.IGNORECASE))
-        except (re.error, OverflowError, RecursionError) as exc:
-            raise ConfigError(
-                f"report.categories.{key}.exclude pattern {text!r} is not a "
-                f"valid regular expression: {exc}"
-            ) from exc
-    return tuple(patterns)
-
-
 def _categories_from(
     data: dict, base: Mapping[str, CategoryToggle]
 ) -> Mapping[str, CategoryToggle]:
@@ -253,7 +266,8 @@ def _categories_from(
 
     Each category is merged independently and key-by-key, so an org override
     that flips a single output leaves the inherited ``enabled`` switch and the
-    other outputs untouched.
+    other outputs untouched. An exclusion list is one key: an override
+    replaces the inherited list rather than adding to it, like ``sort``.
     """
     merged: dict[str, CategoryToggle] = dict(base)
     for key, raw in data.items():
@@ -287,9 +301,16 @@ def _categories_from(
                 RepoList(raw["repo_list"]) if "repo_list" in raw else current.repo_list
             ),
             exclude=(
-                _exclude_patterns_from(key, raw["exclude"])
+                patterns_from(raw["exclude"], f"report.categories.{key}.exclude")
                 if "exclude" in raw
                 else current.exclude
+            ),
+            exclude_tests=(
+                patterns_from(
+                    raw["exclude_tests"], f"report.categories.{key}.exclude_tests"
+                )
+                if "exclude_tests" in raw
+                else current.exclude_tests
             ),
         )
     return MappingProxyType(merged)

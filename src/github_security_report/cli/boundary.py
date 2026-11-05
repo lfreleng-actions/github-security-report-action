@@ -28,6 +28,7 @@ from github_security_report.categories import CategoryKey
 from github_security_report.cli.modes import _abort_auth, _abort_network
 from github_security_report.client import AuthError, NetworkError
 from github_security_report.config import Config
+from github_security_report.matching import compile_patterns
 
 
 def check_non_negative(console: Console, name: str, value: int | None) -> None:
@@ -134,6 +135,28 @@ def reject_org_only(console: Console, supplied: Sequence[str]) -> None:
         markup=False,
     )
     raise typer.Exit(2)
+
+
+def check_patterns(console: Console, name: str, patterns: Sequence[str] | None) -> None:
+    """Reject an empty or uncompilable name pattern given on the command line.
+
+    Mirrors the configuration loader's rules for the same list. An override
+    skips the loader, so without this an empty pattern, which every name
+    contains, would silently drop every repository, and one that does not
+    compile would fail only after the organisation had been collected.
+    """
+    if not patterns:
+        return
+    if not all(patterns):
+        console.print(f"[red]{name} takes a non-empty name pattern[/red]")
+        raise typer.Exit(2)
+    try:
+        compile_patterns(patterns, name)
+    except ValueError as exc:
+        # markup=False: the pattern is printed literally, so a bracket in it
+        # cannot be read as Rich markup.
+        console.print(str(exc), style="red", markup=False)
+        raise typer.Exit(2) from exc
 
 
 def check_releases_exclude(

@@ -10,7 +10,6 @@ defaults they fall back to. Construction from raw JSON lives in
 from __future__ import annotations
 
 import datetime as dt
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -18,6 +17,7 @@ from types import MappingProxyType
 from github_security_report.categories import CategoryKey
 from github_security_report.config.order import OrderConfig
 from github_security_report.config.workflow_runs import WorkflowRunsConfig
+from github_security_report.matching import Pattern
 from github_security_report.severity import Severity
 from github_security_report.summary import ExcludedDisplay, RepoList
 
@@ -96,10 +96,10 @@ class CategoryToggle:
     ordering of a generic table with a list of column names; ``None`` keeps the
     ordering the table's builder chose. ``repo_list`` overrides which side of a
     boolean feature category is named (see :class:`RepoList`); ``None`` falls
-    back to the report-wide ``repo_list``. ``exclude`` drops the repositories
-    whose name matches any of its regular expressions from this one category
-    (see :data:`~github_security_report.categories.EXCLUDABLE_CATEGORIES`);
-    they are reported on its Excluded footer line rather than dropped silently.
+    back to the report-wide ``repo_list``. ``exclude`` and ``exclude_tests``
+    are this category's own exclusion lists (see
+    :mod:`github_security_report.matching`), each replacing the report-wide
+    list of the same name; ``None`` inherits it.
     """
 
     enabled: bool = True
@@ -108,7 +108,8 @@ class CategoryToggle:
     top_n: int | None = None
     sort: tuple[str, ...] | None = None
     repo_list: RepoList | None = None
-    exclude: tuple[re.Pattern[str], ...] = ()
+    exclude: tuple[Pattern, ...] | None = None
+    exclude_tests: tuple[Pattern, ...] | None = None
 
     def shows_on(self, output: str) -> bool:
         """Whether this category renders on ``output`` (cli/slack/markdown/html)."""
@@ -241,10 +242,25 @@ class ReportConfig:
     # counts, on every surface. ``auto`` names the shorter list; a category's
     # own ``repo_list`` overrides this.
     repo_list: RepoList = RepoList.AUTO
-    # When each category's footer shows the organisation's excluded
-    # repositories: always (the default), never, or only for a category whose
-    # exclusions differ from the organisation's own list.
+    # Repositories every category leaves out, on top of the organisation's
+    # own ``exclude`` list, as two classes of name pattern: ``exclude`` for
+    # the general case and ``exclude_tests`` for test repositories and
+    # fixtures, which the footers count on a line of their own. A category's
+    # own list replaces either. Unlike the organisation's list these
+    # repositories are still analysed, so one category can keep reporting
+    # what another leaves out.
+    exclude: tuple[Pattern, ...] = ()
+    exclude_tests: tuple[Pattern, ...] = ()
+    # When each category's footer shows its excluded repositories: always
+    # (the default), never, or only for a category whose exclusions differ
+    # from the report-wide list; and whether the line names them or only
+    # counts them. The general exclusions change rarely and are named by
+    # default; the test repositories are counted alone by default, since a
+    # reader wants to know how many there are, not which.
     excluded_display: ExcludedDisplay = ExcludedDisplay.ALWAYS_SHOW
+    excluded_names: bool = True
+    excluded_tests_display: ExcludedDisplay = ExcludedDisplay.ALWAYS_SHOW
+    excluded_tests_names: bool = False
     # Read-only mapping (frozen dataclasses do not deep-freeze a plain dict, so a
     # MappingProxyType prevents in-place mutation of a shared config).
     ruleset_workflows: Mapping[str, str] = field(
@@ -338,25 +354,31 @@ class ReportConfig:
             return toggle.repo_list
         return self.repo_list
 
-    def category_excludes(self, key: CategoryKey, name: str) -> bool:
-        """Whether category ``key`` drops repository ``name`` by its own list.
-
-        Patterns are searched rather than fully matched, so ``^test-`` reads
-        as the prefix it looks like, and compiled case-insensitively, since
-        GitHub repository names are. False for an unconfigured category: only
-        the organisation's ``exclude`` list removes a repository everywhere.
-        """
+    def exclude_for(self, key: CategoryKey) -> tuple[Pattern, ...]:
+        """The general exclusion patterns category ``key`` applies."""
         toggle = self.categories.get(key.value)
-        return toggle is not None and any(p.search(name) for p in toggle.exclude)
+        if toggle is not None and toggle.exclude is not None:
+            return toggle.exclude
+        return self.exclude
+
+    def exclude_tests_for(self, key: CategoryKey) -> tuple[Pattern, ...]:
+        """The test-repository patterns category ``key`` applies."""
+        toggle = self.categories.get(key.value)
+        if toggle is not None and toggle.exclude_tests is not None:
+            return toggle.exclude_tests
+        return self.exclude_tests
 
 
 @dataclass(frozen=True)
 class OrgConfig:
     name: str
     token_env: str = "GITHUB_TOKEN"
+    # Name patterns (see :mod:`github_security_report.matching`) for the
+    # repositories removed from analysis altogether: never probed, counted as
+    # excluded by every category.
     exclude: tuple[str, ...] = ()
-    # Repositories excluded from the Releases/Tagging table only (e.g. repos
-    # that are never released/consumed externally).
+    # Patterns for the repositories excluded from the Releases/Tagging table
+    # only (e.g. repos that are never released/consumed externally).
     releases_exclude: tuple[str, ...] = ()
     slack: SlackConfig = field(default_factory=SlackConfig)
     report: ReportConfig = field(default_factory=ReportConfig)
