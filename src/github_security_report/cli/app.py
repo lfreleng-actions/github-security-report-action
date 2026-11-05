@@ -244,7 +244,7 @@ def report(
         run_cache_dir=run_cache_dir,
     )
 
-    cfg, config_path = _load_config(config_file, config_data, org, token_env)
+    cfg, config_path = _load_config(config_file, config_data, org, token_env, console)
     detected = boundary.detect_target(console, repo, scope)
     mode = boundary.resolve_mode(console, scope, cfg=cfg, detected=detected)
 
@@ -406,7 +406,7 @@ def remediate(
         )
         raise typer.Exit(2)
 
-    cfg, config_path = _load_config(config_file, config_data, org, token_env)
+    cfg, config_path = _load_config(config_file, config_data, org, token_env, console)
     if cfg is None:
         console.print(
             "[red]No configuration: provide --config, --config-data or --org.[/red]"

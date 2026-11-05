@@ -23,6 +23,12 @@ from rich.console import Console
 from github_security_report import collect, config, layout, runner
 from github_security_report.categories import CategoryKey
 from github_security_report.cli import publish
+from github_security_report.cli.config_source import (
+    ConfigLoadError,
+    abort_config,
+    find_config,
+    read_config,
+)
 from github_security_report.cli.options import (
     OrgPair,
     OrgRunOptions,
@@ -59,6 +65,7 @@ def _load_config(
     config_data: str | None,
     org: str | None,
     token_env: str | None = None,
+    console: Console | None = None,
 ) -> tuple[Config | None, Path | None]:
     """Resolve the configuration, applying an explicit ``--token-env`` over it.
 
@@ -74,21 +81,31 @@ def _load_config(
     value that was actually typed now wins over every organisation's configured
     ``token_env``, which is the one thing an operator can mean by passing it
     alongside ``--config``.
+
+    A configuration that cannot be used raises
+    :class:`~github_security_report.cli.config_source.ConfigLoadError`, naming
+    the file or ``--config-data`` it came from. Given a ``console``, it is
+    printed there instead and the command exits 2, with no traceback.
     """
+    if console is not None:
+        try:
+            return _load_config(config_file, config_data, org, token_env)
+        except ConfigLoadError as exc:
+            abort_config(console, exc)
     cfg: Config | None = None
     default_path: Path | None = None
     if config_file:
-        cfg = config.load_file(config_file)
+        cfg = read_config(config_file, config.load_file, config_file)
     elif config_data:
-        cfg = config.loads(config_data)
+        cfg = read_config("--config-data", config.loads, config_data)
     elif org:
         cfg = Config(organizations=(OrgConfig(name=org),))
     else:
         # No explicit configuration: fall back to the per-user config file if
         # one exists, so a local run with no flags works instead of erroring.
-        default_path = config.find_default_config()
+        default_path = find_config()
         if default_path is not None:
-            cfg = config.load_file(str(default_path))
+            cfg = read_config(str(default_path), config.load_file, str(default_path))
     if cfg is None or token_env is None:
         return cfg, default_path
     return (

@@ -11,6 +11,8 @@ The command surface is split across:
 
 - :mod:`cli.app` -- the Typer application, options and validation
 - :mod:`cli.modes` -- the org, repo and remediate run modes
+- :mod:`cli.config_cmd` -- the ``config check`` and ``config keys`` commands
+- :mod:`cli.config_source` -- reading a configuration, reporting its errors
 - :mod:`cli.options` -- what a run takes from the command line
 - :mod:`cli.publish` -- the Pages files, Slack digest and job summary
 - :mod:`cli.outputs` -- offender limits, category visibility, file writing
@@ -26,6 +28,7 @@ from github_security_report.cli.app import (
     remediate,
     report,
 )
+from github_security_report.cli.config_cmd import config_app
 from github_security_report.cli.modes import (
     _abort_auth,
     _abort_network,
@@ -42,6 +45,10 @@ from github_security_report.cli.outputs import (
     write_org_files,
 )
 from github_security_report.cli.serialise import _org_to_dict, _table_to_dict
+
+# Registered here rather than in cli.app, which holds the run commands; the
+# entry point is this package's ``app``, so the group is always present.
+app.add_typer(config_app, name="config")
 
 # The package façade: every name the module split moved is still importable
 # from ``github_security_report.cli``, including the private helpers the tests

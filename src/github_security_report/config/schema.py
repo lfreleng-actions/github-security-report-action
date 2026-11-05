@@ -8,6 +8,9 @@ weekdays), the error raised on invalid input, and ``CONFIG_SCHEMA`` itself.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+
 from github_security_report.categories import (
     REPO_LIST_CATEGORIES,
     CategoryMeta,
@@ -83,7 +86,30 @@ _PATTERN_LIST = {
 
 
 class ConfigError(ValueError):
-    """Raised when configuration is malformed or fails validation."""
+    """Raised when configuration is malformed or fails validation.
+
+    Carries one finding per problem, each ``<dotted.path>: <message>`` where
+    the problem has a location in the configuration; ``str()`` puts each
+    finding on its own line.
+    """
+
+    def __init__(self, *findings: str) -> None:
+        super().__init__("\n".join(findings))
+        self.findings: tuple[str, ...] = findings
+
+
+@contextmanager
+def collecting(problems: list[str]) -> Iterator[None]:
+    """Record a check's findings in ``problems`` instead of stopping there.
+
+    Wraps each independent check of a block, so one that fails leaves the
+    setting it guards at its inherited value and the checks after it still
+    run: a block with several mistakes reports them all in one run.
+    """
+    try:
+        yield
+    except ConfigError as exc:
+        problems.extend(exc.findings)
 
 
 def _category_schema(meta: CategoryMeta) -> dict:

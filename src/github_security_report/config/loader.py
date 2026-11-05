@@ -10,15 +10,20 @@ config location, and looks up organisation tokens from the environment.
 from __future__ import annotations
 
 import base64
-import binascii
 import json
 import logging
 import os
+from collections.abc import Callable
+from functools import partial
 from pathlib import Path
-
-import jsonschema
+from typing import TypeVar
 
 from github_security_report.config.blocks import _report_from, patterns_from
+from github_security_report.config.errors import (
+    check_schema,
+    deprecation_findings,
+    located,
+)
 from github_security_report.config.models import (
     Config,
     OrgConfig,
@@ -28,13 +33,15 @@ from github_security_report.config.models import (
 )
 from github_security_report.config.schema import (
     _TOKEN_PREFIXES,
-    CONFIG_SCHEMA,
     WEEKDAYS,
     ConfigError,
+    collecting,
 )
 from github_security_report.models import SignalType
 
 log = logging.getLogger(__name__)
+
+_Block = TypeVar("_Block", SlackConfig, ReportConfig)
 
 
 def parse_report_day(value: str | list[str] | None) -> ReportDay:
@@ -53,42 +60,52 @@ def parse_report_day(value: str | list[str] | None) -> ReportDay:
         return ReportDay(never=True)
     for day in normalised:
         if day in {"always", "never"}:
-            raise ConfigError(f"'{day}' cannot be combined with weekdays in report_day")
+            raise ConfigError(f"'{day}' cannot be combined with weekdays")
         if day not in WEEKDAYS:
-            raise ConfigError(f"invalid report_day value: {day!r}")
+            raise ConfigError(f"{day!r} is not a weekday, 'always' or 'never'")
     if not normalised:
         return ReportDay(days=frozenset({"tuesday"}))
     return ReportDay(days=frozenset(normalised))
 
 
 def _slack_from(data: dict, base: SlackConfig) -> SlackConfig:
+    report_day = base.report_day
+    if "report_day" in data:
+        try:
+            report_day = parse_report_day(data["report_day"])
+        except ConfigError as exc:
+            raise located(exc, "slack.report_day: ") from exc
     return SlackConfig(
         channel=data.get("channel", base.channel),
-        report_day=(
-            parse_report_day(data["report_day"])
-            if "report_day" in data
-            else base.report_day
-        ),
+        report_day=report_day,
     )
 
 
-def build_config(data: dict) -> Config:
-    """Validate a config mapping and build the typed :class:`Config`."""
+def _block(
+    problems: list[str],
+    prefix: str,
+    parse: Callable[[dict, _Block], _Block],
+    data: dict,
+    base: _Block,
+) -> _Block:
+    """Parse one block, recording its findings under ``prefix`` on failure."""
     try:
-        jsonschema.validate(data, CONFIG_SCHEMA)
-    except jsonschema.ValidationError as exc:
-        raise ConfigError(f"configuration is invalid: {exc.message}") from exc
+        return parse(data, base)
+    except ConfigError as exc:
+        problems.extend(located(exc, prefix).findings)
+        return base
 
-    # The deprecated `release_min_age_days` alias can appear in the global report
-    # block and in any org override; warn exactly once however many blocks use
-    # it, so users are not alarmed by a repeated message.
+
+def _warn_dead_keys(data: dict) -> None:
+    """Warn about keys a schema-valid configuration sets to no effect."""
+    # A deprecated key (the `release_min_age_days` alias) can appear in the
+    # global report block and in any org override; warn exactly once, naming
+    # every place it appears, so users are not alarmed by a repeated message.
+    deprecated = deprecation_findings(data)
+    if deprecated:
+        log.warning("deprecated configuration keys:\n  %s", "\n  ".join(deprecated))
     report_blocks = [data.get("report", {})]
     report_blocks += [o.get("report", {}) for o in data.get("organizations", [])]
-    if any("release_min_age_days" in block for block in report_blocks):
-        log.warning(
-            "config key 'release_min_age_days' is deprecated; use "
-            "'repo_min_age_days' (the repository-age grace period) instead"
-        )
 
     # `fail_severity` only governs the severity-ranked signals (their classifier
     # is the sole reader, via fail_severity_for); setting it on a binary
@@ -113,38 +130,85 @@ def build_config(data: dict) -> Config:
             ", ".join(misplaced),
             ", ".join(sorted(signal_keys)),
         )
-
-    global_slack = _slack_from(data.get("slack", {}), SlackConfig())
-    global_report = _report_from(data.get("report", {}), ReportConfig())
-
-    orgs: list[OrgConfig] = []
     for raw in data["organizations"]:
-        token_env = raw.get("token_env", "GITHUB_TOKEN")
-        if token_env.startswith(_TOKEN_PREFIXES):
+        if raw.get("token_env", "").startswith(_TOKEN_PREFIXES):
             log.warning(
                 "organization %r token_env looks like a literal token; it must "
                 "be an environment-variable NAME, not a token value",
                 raw["name"],
             )
+
+
+def build_config(data: dict) -> Config:
+    """Validate a config mapping and build the typed :class:`Config`.
+
+    Every block is checked even after one fails, so a configuration with
+    several mistakes reports them all in one run. A block the schema rejects
+    is not parsed further, since its values are not the types its checks
+    expect, but every block the schema leaves intact still gets its
+    semantic checks, and both kinds of finding are reported together in path
+    order. A failed block's parent falls back to the defaults so its children
+    can still be checked; the defaults are not what the parent asked for, so
+    an override of a failed report block skips the checks that compare it
+    against inherited values rather than report a finding against the wrong
+    ones.
+    """
+    schema = check_schema(data)
+    if not schema:
+        _warn_dead_keys(data)
+
+    problems: list[str] = []
+    global_slack = SlackConfig()
+    if not schema.touches(("slack",)):
+        global_slack = _block(
+            problems, "", _slack_from, data.get("slack", {}), SlackConfig()
+        )
+    found = len(problems)
+    global_report = ReportConfig()
+    report_ok = not schema.touches(("report",))
+    if report_ok:
+        global_report = _block(
+            problems, "", _report_from, data.get("report", {}), ReportConfig()
+        )
+        report_ok = len(problems) == found
+    org_report = _report_from if report_ok else partial(_report_from, inherited=False)
+
+    raw_orgs = data.get("organizations")
+    orgs: list[OrgConfig] = []
+    for index, raw in enumerate(raw_orgs if isinstance(raw_orgs, list) else []):
+        if not isinstance(raw, dict):
+            continue
+        here = ("organizations", index)
+        where = f"organizations[{index}]."
         # Kept as the operator wrote them; validated here so a bad pattern
         # fails the load, and compiled again where they are matched.
-        exclude = tuple(raw.get("exclude", ()))
-        releases_exclude = tuple(raw.get("releases_exclude", ()))
-        for name, patterns in (
-            ("exclude", exclude),
-            ("releases_exclude", releases_exclude),
-        ):
-            patterns_from(patterns, f"organizations[{raw['name']}].{name}")
-        orgs.append(
-            OrgConfig(
-                name=raw["name"],
-                token_env=token_env,
-                exclude=exclude,
-                releases_exclude=releases_exclude,
-                slack=_slack_from(raw.get("slack", {}), global_slack),
-                report=_report_from(raw.get("report", {}), global_report),
+        for name in ("exclude", "releases_exclude"):
+            if name in raw and not schema.touches((*here, name)):
+                with collecting(problems):
+                    patterns_from(raw[name], f"{where}{name}")
+        slack = global_slack
+        if not schema.touches((*here, "slack")):
+            slack = _block(
+                problems, where, _slack_from, raw.get("slack", {}), global_slack
             )
-        )
+        report = global_report
+        if not schema.touches((*here, "report")):
+            report = _block(
+                problems, where, org_report, raw.get("report", {}), global_report
+            )
+        if not schema:
+            orgs.append(
+                OrgConfig(
+                    name=raw["name"],
+                    token_env=raw.get("token_env", "GITHUB_TOKEN"),
+                    exclude=tuple(raw.get("exclude", ())),
+                    releases_exclude=tuple(raw.get("releases_exclude", ())),
+                    slack=slack,
+                    report=report,
+                )
+            )
+    if schema or problems:
+        raise ConfigError(*schema.findings(problems))
     return Config(organizations=tuple(orgs), slack=global_slack, report=global_report)
 
 
@@ -158,16 +222,29 @@ def loads(raw: str) -> Config:
     text = raw.strip()
     try:
         data = json.loads(text)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as json_exc:
         try:
             decoded = base64.b64decode(text, validate=True).decode("utf-8")
             data = json.loads(decoded)
-        except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        # ValueError covers every way the fallback can fail but one:
+        # binascii.Error, UnicodeDecodeError and JSONDecodeError are all
+        # subclasses, and b64decode raises a bare ValueError for text that is
+        # not ASCII. RecursionError is the exception: over-deep nesting.
+        except (ValueError, RecursionError) as exc:
             raise ConfigError(
-                "configuration is neither valid JSON nor base64-encoded JSON"
+                "configuration is neither valid JSON "
+                f"({json_exc.msg} at line {json_exc.lineno} column "
+                f"{json_exc.colno}) nor base64-encoded JSON"
             ) from exc
+    # Valid JSON the decoder still refuses: an integer longer than Python's
+    # int_max_str_digits limit (ValueError) or nesting deeper than the
+    # interpreter's recursion limit (RecursionError).
+    except (ValueError, RecursionError) as exc:
+        raise ConfigError(f"configuration could not be decoded: {exc}") from exc
     if not isinstance(data, dict):
-        raise ConfigError("configuration must be a JSON object")
+        raise ConfigError(
+            f"configuration must be a JSON object, not {type(data).__name__}"
+        )
     return build_config(data)
 
 

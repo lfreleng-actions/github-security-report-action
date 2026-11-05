@@ -17,7 +17,11 @@ from types import MappingProxyType
 
 from github_security_report.config.models import CategoryToggle, ReportConfig
 from github_security_report.config.order import order_from
-from github_security_report.config.schema import REPORT_OUTPUTS, ConfigError
+from github_security_report.config.schema import (
+    REPORT_OUTPUTS,
+    ConfigError,
+    collecting,
+)
 from github_security_report.config.workflow_runs import WorkflowRunsConfig
 from github_security_report.issues import RESERVED_COLUMNS
 from github_security_report.matching import Pattern, compile_patterns
@@ -34,17 +38,24 @@ def patterns_from(raw: Iterable[str], where: str) -> tuple[Pattern, ...]:
 
     An empty pattern is found in every name, so it would drop every
     repository; it is refused here rather than by the schema, whose error
-    would not say which list holds it.
+    would not say which list holds it. Every bad pattern in the list is
+    reported, each as ``<where>: pattern ...``.
     """
-    raw = tuple(raw)
-    if not all(raw):
-        raise ConfigError(
-            f"{where} pattern '' is empty: it would match every repository name"
-        )
-    try:
-        return compile_patterns(raw, where)
-    except ValueError as exc:
-        raise ConfigError(str(exc)) from exc
+    compiled: list[Pattern] = []
+    problems: list[str] = []
+    for text in raw:
+        if not text:
+            problems.append(
+                f"{where}: pattern '' is empty: it would match every repository name"
+            )
+            continue
+        try:
+            compiled.extend(compile_patterns((text,), f"{where}:"))
+        except ValueError as exc:
+            problems.append(str(exc))
+    if problems:
+        raise ConfigError(*problems)
+    return tuple(compiled)
 
 
 def _issue_labels_from(data: Mapping[str, list[str]]) -> Mapping[str, tuple[str, ...]]:
@@ -70,40 +81,84 @@ def _issue_labels_from(data: Mapping[str, list[str]]) -> Mapping[str, tuple[str,
     """
     reserved = {column.casefold(): column for column in RESERVED_COLUMNS}
     seen: set[str] = set()
+    problems: list[str] = []
     for column in data:
-        folded = column.casefold()
-        if not column.strip():
-            raise ConfigError("issue_labels column names cannot be blank")
-        if column != column.strip():
-            raise ConfigError(
-                f"issue_labels column {column!r} has leading or trailing "
-                "whitespace; sort terms are stripped before matching, so this "
-                "column could never be named in a `sort` list"
-            )
-        if not column.isprintable() or any(ch in column for ch in _UNSAFE_COLUMN):
-            raise ConfigError(
-                f"issue_labels column {column!r} contains a character that "
-                "would corrupt the rendered tables; column names go into "
-                "Markdown headers and Slack code fences verbatim, so they must "
-                "be printable single-line text without '|' or backticks"
-            )
-        if folded in reserved:
-            raise ConfigError(
-                f"issue_labels column {column!r} collides with {reserved[folded]!r}, "
-                "one of the columns the Issues table always supplies "
-                f"({', '.join(RESERVED_COLUMNS)}); choose a different name"
-            )
-        if folded in seen:
-            raise ConfigError(
-                f"issue_labels column {column!r} duplicates an earlier column "
-                "differing only in case; column names must be distinct "
-                "case-insensitively so they can be sorted on unambiguously"
-            )
-        seen.add(folded)
+        problem = _column_problem(column, reserved, seen)
+        if problem:
+            problems.append(f"report.issue_labels: column {problem}")
+        seen.add(column.casefold())
+    if problems:
+        raise ConfigError(*problems)
     return MappingProxyType({column: tuple(labels) for column, labels in data.items()})
 
 
-def _report_from(data: dict, base: ReportConfig) -> ReportConfig:
+def _column_problem(column: str, reserved: Mapping[str, str], seen: set[str]) -> str:
+    """What is wrong with one ``issue_labels`` column name, or ``""``."""
+    folded = column.casefold()
+    if not column.strip():
+        return "names cannot be blank"
+    if column != column.strip():
+        return (
+            f"{column!r} has leading or trailing whitespace; sort terms are "
+            "stripped before matching, so this column could never be named in "
+            "a `sort` list"
+        )
+    if not column.isprintable() or any(ch in column for ch in _UNSAFE_COLUMN):
+        return (
+            f"{column!r} contains a character that would corrupt the rendered "
+            "tables; column names go into Markdown headers and Slack code "
+            "fences verbatim, so they must be printable single-line text "
+            "without '|' or backticks"
+        )
+    if folded in reserved:
+        return (
+            f"{column!r} collides with {reserved[folded]!r}, one of the columns "
+            f"the Issues table always supplies ({', '.join(RESERVED_COLUMNS)}); "
+            "choose a different name"
+        )
+    if folded in seen:
+        return (
+            f"{column!r} duplicates an earlier column differing only in case; "
+            "column names must be distinct case-insensitively so they can be "
+            "sorted on unambiguously"
+        )
+    return ""
+
+
+# The report keys whose value is taken as written, with no conversion.
+_REPORT_SCALARS = frozenset(
+    {
+        "top_n",
+        "top_n_report",
+        "top_n_cli",
+        "top_n_slack",
+        "include_archived",
+        "include_test",
+        "repo_min_age_days",
+        "release_max_age_days",
+        "codeql_stale_days",
+        "dependabot_warn_threshold",
+        "dependabot_error_threshold",
+        "issue_age_warn_days",
+        "issue_age_error_days",
+        "gating",
+        "graph_batch",
+        "concurrency",
+        "excluded_names",
+        "excluded_tests_names",
+    }
+)
+
+
+def _report_from(
+    data: dict, base: ReportConfig, *, inherited: bool = True
+) -> ReportConfig:
+    """Merge a ``report`` block over ``base``, the settings it inherits.
+
+    ``inherited=False`` says ``base`` only stands in for a parent block that
+    failed to parse: the checks that compare this block against an inherited
+    value are skipped, since the value is not the one the parent asked for.
+    """
     data = dict(data)
     # Back-compat: `release_min_age_days` was the original (misleading) name for
     # the repository-age grace period now called `repo_min_age_days`. Accept it
@@ -112,66 +167,13 @@ def _report_from(data: dict, base: ReportConfig) -> ReportConfig:
     if "release_min_age_days" in data:
         legacy = data.pop("release_min_age_days")
         data.setdefault("repo_min_age_days", legacy)
-    result = replace(
-        base,
-        **{
-            k: v
-            for k, v in data.items()
-            if k
-            in {
-                "top_n",
-                "top_n_report",
-                "top_n_cli",
-                "top_n_slack",
-                "include_archived",
-                "include_test",
-                "repo_min_age_days",
-                "release_max_age_days",
-                "codeql_stale_days",
-                "dependabot_warn_threshold",
-                "dependabot_error_threshold",
-                "issue_age_warn_days",
-                "issue_age_error_days",
-                "gating",
-                "graph_batch",
-                "concurrency",
-                "excluded_names",
-                "excluded_tests_names",
-            }
-        },
-    )
-    if "exclude" in data:
-        result = replace(
-            result, exclude=patterns_from(data["exclude"], "report.exclude")
-        )
-    if "exclude_tests" in data:
-        result = replace(
-            result,
-            exclude_tests=patterns_from(data["exclude_tests"], "report.exclude_tests"),
-        )
+    result = replace(base, **{k: v for k, v in data.items() if k in _REPORT_SCALARS})
     if "ruleset_workflows" in data:
         # Merge so the built-in defaults (e.g. zizmor) survive unless overridden.
         merged = {**base.ruleset_workflows, **data["ruleset_workflows"]}
         result = replace(result, ruleset_workflows=MappingProxyType(merged))
-    if "issue_labels" in data:
-        # Replace rather than merge: the mapping defines the Issues table's
-        # column set, so merging would keep default columns the operator
-        # deliberately left out.
-        result = replace(result, issue_labels=_issue_labels_from(data["issue_labels"]))
-    if "categories" in data:
-        result = replace(
-            result,
-            categories=_categories_from(data["categories"], base.categories),
-        )
-    if "order" in data:
-        result = replace(result, order=order_from(data["order"], base.order))
-    if "workflow_runs" in data:
-        result = replace(
-            result,
-            workflow_runs=_workflow_runs_from(
-                data["workflow_runs"], base.workflow_runs
-            ),
-        )
+    problems: list[str] = []
+    result = _nested_from(data, result, problems, inherited=inherited)
     if "repo_list" in data:
         # The schema constrains the value to a RepoList member.
         result = replace(result, repo_list=RepoList(data["repo_list"]))
@@ -184,20 +186,82 @@ def _report_from(data: dict, base: ReportConfig) -> ReportConfig:
             result,
             excluded_tests_display=ExcludedDisplay(data["excluded_tests_display"]),
         )
-    _require_reachable_warning(
-        result, "dependabot_warn_threshold", "dependabot_error_threshold"
-    )
-    _require_reachable_warning(result, "issue_age_warn_days", "issue_age_error_days")
+    for warn_name, error_name in (
+        ("dependabot_warn_threshold", "dependabot_error_threshold"),
+        ("issue_age_warn_days", "issue_age_error_days"),
+    ):
+        if inherited or (warn_name in data and error_name in data):
+            with collecting(problems):
+                _require_reachable_warning(result, warn_name, error_name)
+    if problems:
+        raise ConfigError(*problems)
     return result
 
 
-def _workflow_runs_from(data: dict, base: WorkflowRunsConfig) -> WorkflowRunsConfig:
+def _nested_from(
+    data: dict, result: ReportConfig, problems: list[str], *, inherited: bool
+) -> ReportConfig:
+    """Merge the report block's lists and nested blocks over ``result``.
+
+    Each is checked on its own and its findings recorded in ``problems``, so
+    one that fails leaves its setting inherited and the others still run.
+    """
+    if "exclude" in data:
+        with collecting(problems):
+            result = replace(
+                result, exclude=patterns_from(data["exclude"], "report.exclude")
+            )
+    if "exclude_tests" in data:
+        with collecting(problems):
+            result = replace(
+                result,
+                exclude_tests=patterns_from(
+                    data["exclude_tests"], "report.exclude_tests"
+                ),
+            )
+    if "issue_labels" in data:
+        # Replace rather than merge: the mapping defines the Issues table's
+        # column set, so merging would keep default columns the operator
+        # deliberately left out.
+        with collecting(problems):
+            result = replace(
+                result, issue_labels=_issue_labels_from(data["issue_labels"])
+            )
+    if "categories" in data:
+        with collecting(problems):
+            result = replace(
+                result,
+                categories=_categories_from(data["categories"], result.categories),
+            )
+    if "order" in data:
+        with collecting(problems):
+            result = replace(
+                result,
+                order=order_from(data["order"], result.order, inherited=inherited),
+            )
+    if "workflow_runs" in data:
+        with collecting(problems):
+            result = replace(
+                result,
+                workflow_runs=_workflow_runs_from(
+                    data["workflow_runs"], result.workflow_runs, inherited=inherited
+                ),
+            )
+    return result
+
+
+def _workflow_runs_from(
+    data: dict, base: WorkflowRunsConfig, *, inherited: bool = True
+) -> WorkflowRunsConfig:
     """Merge a ``workflow_runs`` block over the inherited settings.
 
     ``windows`` merges per surface, so an organisation that narrows the Slack
     windows keeps the inherited report ones. A retention shorter than the
     longest window is rejected: the store would prune records a table still
-    needs, and the window would quietly show less than it claims.
+    needs, and the window would quietly show less than it claims. Without
+    ``inherited`` settings only the retention and windows this block sets
+    itself are compared: a longer inherited window could only make a
+    shortfall worse, but an inherited retention is unknown.
     """
     scalars = {
         k: v
@@ -224,14 +288,18 @@ def _workflow_runs_from(data: dict, base: WorkflowRunsConfig) -> WorkflowRunsCon
         result = replace(result, windows=MappingProxyType(merged))
     if "exclude_workflows" in data:
         result = replace(result, exclude_workflows=tuple(data["exclude_workflows"]))
-    if (
-        result.retention_days is not None
-        and result.retention_days < result.longest_window
-    ):
+    retention: int | None = result.retention_days
+    longest = result.longest_window
+    if not inherited:
+        retention = data.get("retention_days")
+        longest = max(
+            (d for days in data.get("windows", {}).values() for d in days), default=0
+        )
+    if retention is not None and retention < longest:
         raise ConfigError(
-            f"report.workflow_runs.retention_days ({result.retention_days}) is "
+            f"report.workflow_runs.retention_days: {retention} is "
             f"shorter than the longest configured window "
-            f"({result.longest_window} days); the store would prune records a "
+            f"({longest} days); the store would prune records a "
             "table still shows"
         )
     return result
@@ -253,7 +321,7 @@ def _require_reachable_warning(
     error = getattr(report, error_name)
     if error and error <= warn:
         raise ConfigError(
-            f"report.{error_name} ({error}) must be greater than "
+            f"report.{error_name}: {error} must be greater than "
             f"report.{warn_name} ({warn}), or 0 to disable the error level; "
             "otherwise the warning level can never be reached"
         )
@@ -270,47 +338,57 @@ def _categories_from(
     replaces the inherited list rather than adding to it, like ``sort``.
     """
     merged: dict[str, CategoryToggle] = dict(base)
+    problems: list[str] = []
     for key, raw in data.items():
-        current = merged.get(key, CategoryToggle())
-        outputs = current.outputs
-        if "outputs" in raw:
-            outputs = replace(
-                outputs,
-                **{
-                    output: value
-                    for output, value in raw["outputs"].items()
-                    if output in REPORT_OUTPUTS
-                },
-            )
-        fail_severity = current.fail_severity
-        if "fail_severity" in raw:
-            # The schema constrains the value to a known severity name, so
-            # from_name resolves it; informational is handled explicitly as it
-            # is below the security-severity scale from_name covers.
-            name = raw["fail_severity"]
-            fail_severity = (
-                Severity.INFORMATIONAL if name == "informational" else from_name(name)
-            )
-        merged[key] = CategoryToggle(
-            enabled=raw.get("enabled", current.enabled),
-            outputs=outputs,
-            fail_severity=fail_severity,
-            top_n=raw.get("top_n", current.top_n),
-            sort=tuple(raw["sort"]) if "sort" in raw else current.sort,
-            repo_list=(
-                RepoList(raw["repo_list"]) if "repo_list" in raw else current.repo_list
-            ),
-            exclude=(
-                patterns_from(raw["exclude"], f"report.categories.{key}.exclude")
-                if "exclude" in raw
-                else current.exclude
-            ),
-            exclude_tests=(
-                patterns_from(
-                    raw["exclude_tests"], f"report.categories.{key}.exclude_tests"
-                )
-                if "exclude_tests" in raw
-                else current.exclude_tests
-            ),
-        )
+        with collecting(problems):
+            merged[key] = _category_from(key, raw, merged.get(key, CategoryToggle()))
+    if problems:
+        raise ConfigError(*problems)
     return MappingProxyType(merged)
+
+
+def _category_from(key: str, raw: dict, current: CategoryToggle) -> CategoryToggle:
+    """Merge one category's block over the toggle it inherits."""
+    outputs = current.outputs
+    if "outputs" in raw:
+        outputs = replace(
+            outputs,
+            **{
+                output: value
+                for output, value in raw["outputs"].items()
+                if output in REPORT_OUTPUTS
+            },
+        )
+    fail_severity = current.fail_severity
+    if "fail_severity" in raw:
+        # The schema constrains the value to a known severity name, so
+        # from_name resolves it; informational is handled explicitly as it
+        # is below the security-severity scale from_name covers.
+        name = raw["fail_severity"]
+        fail_severity = (
+            Severity.INFORMATIONAL if name == "informational" else from_name(name)
+        )
+    # Both exclusion lists are checked before either error is raised, so a
+    # category with a bad pattern in each reports both.
+    problems: list[str] = []
+    lists = {"exclude": current.exclude, "exclude_tests": current.exclude_tests}
+    for name in lists:
+        if name in raw:
+            with collecting(problems):
+                lists[name] = patterns_from(
+                    raw[name], f"report.categories.{key}.{name}"
+                )
+    if problems:
+        raise ConfigError(*problems)
+    return CategoryToggle(
+        enabled=raw.get("enabled", current.enabled),
+        outputs=outputs,
+        fail_severity=fail_severity,
+        top_n=raw.get("top_n", current.top_n),
+        sort=tuple(raw["sort"]) if "sort" in raw else current.sort,
+        repo_list=(
+            RepoList(raw["repo_list"]) if "repo_list" in raw else current.repo_list
+        ),
+        exclude=lists["exclude"],
+        exclude_tests=lists["exclude_tests"],
+    )
