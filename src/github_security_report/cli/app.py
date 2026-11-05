@@ -155,7 +155,7 @@ def report(
     releases_exclude: list[str] | None = typer.Option(
         None,
         "--releases-exclude",
-        help="Repository name to omit from the Releases/Tagging table (repeatable; replaces the configured list, so it is refused when the run covers more than one organisation).",
+        help="Repository name pattern to omit from the Releases/Tagging table: a regular expression searched case-insensitively (repeatable; replaces the configured list, so it is refused when the run covers more than one organisation).",
     ),
     hide: list[str] | None = typer.Option(
         None,
@@ -227,6 +227,7 @@ def report(
         console, "--concurrency", concurrency, maximum=CONCURRENCY_MAX
     )
     hidden = boundary.resolve_hidden(console, hide)
+    boundary.check_patterns(console, "--releases-exclude", releases_exclude)
     overrides = ReportOverrides(
         repo_min_age_days=repo_min_age_days,
         release_max_age_days=release_max_age_days,
@@ -353,7 +354,7 @@ def remediate(
     repos: list[str] | None = typer.Option(
         None,
         "--repos",
-        help="Limit every selected category to these repositories: comma-separated and/or repeatable, each 'name' (in any configured org) or 'owner/name'. Each org's repository list is checked first: a name matching nothing, a name matching only excluded repositories, or an incomplete list stops the run before any per-repository read or any write.",
+        help="Limit every selected category to these repositories: comma-separated and/or repeatable, each 'name' (in any configured org) or 'owner/name'. Naming a repository opts it into every category's exclude/exclude_tests patterns for this run; the organisation's own exclude list still holds. Each org's repository list is checked first: a name matching nothing, a name matching only excluded repositories, or an incomplete list stops the run before any per-repository read or any write.",
     ),
     no_color: bool = typer.Option(False, "--no-color", help="Disable coloured output."),
     no_progress: bool = typer.Option(

@@ -65,7 +65,7 @@ class SummaryCount:
     ``All <pass>`` when the section is only partially clean.
     """
 
-    kind: str  # "fail" | "disabled" | "unknown" | "pass" | "note" | "na" | "excluded"
+    kind: str  # "fail" | "disabled" | "unknown" | "pass" | "note" | "na" | "tests" | "excluded"
     count: int
     label: str
     names: tuple[str, ...] = ()
@@ -97,9 +97,9 @@ class SummaryLine:
 
 # Footer ordering: actionable items first (failures, then not-enabled, then
 # unknown), then the healthy pass line and any note qualifying it, then the
-# neutral lines last: repositories the category does not apply to, and the
-# excluded ones. This tool drives remediation, so the work to do sits at the
-# top.
+# neutral lines last: repositories the category does not apply to, the test
+# repositories it leaves out, and the excluded ones. This tool drives
+# remediation, so the work to do sits at the top.
 _SUMMARY_ORDER = {
     "fail": 0,
     "disabled": 1,
@@ -107,7 +107,8 @@ _SUMMARY_ORDER = {
     "pass": 3,
     "note": 4,
     "na": 5,
-    "excluded": 6,
+    "tests": 6,
+    "excluded": 7,
 }
 
 # Glyph per summary kind, shared by every render surface.
@@ -118,6 +119,7 @@ SUMMARY_EMOJI = {
     "pass": "\u2705",
     "note": "\U0001f4ca",
     "na": "\u2796",
+    "tests": "\U0001f9ea",
     "excluded": "\u23e9",
 }
 
@@ -128,10 +130,11 @@ def build_summary(counts: Sequence[SummaryCount]) -> list[SummaryLine]:
     The single place every surface builds its under-table footer, so the
     wording, ordering and the ``All <pass>`` collapse behave identically
     everywhere. The pass line reads ``All <pass_label>`` -- with no number --
-    only when nothing else needs attention (no failures, not-enabled, unknown
-    or excluded repositories); otherwise every present bucket shows its count.
-    Zero-valued buckets are dropped, as are buckets flagged ``render=False``
-    (which still count towards the collapse test but emit no visible line).
+    only when nothing else needs attention (no failures, not-enabled, unknown,
+    excluded or excluded test repositories); otherwise every present bucket
+    shows its count. Zero-valued buckets are dropped, as are buckets flagged
+    ``render=False`` (which still count towards the collapse test but emit no
+    visible line).
     A ``note`` bucket is not a count: its ``label`` is the whole line, shown
     when ``count`` is non-zero, and it never blocks the collapse.
     """

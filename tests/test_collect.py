@@ -937,6 +937,104 @@ async def test_collect_org_code_quality_exclude_matching_nothing_leaves_baseline
     assert [r.repo.name for r in report.code_quality.rows] == ["git-configure-action"]
 
 
+async def test_collect_org_exclude_tests_is_a_class_of_its_own() -> None:
+    # A category's exclude_tests list drops the repository exactly as exclude
+    # does, but records it as a test exclusion, leaving the general list at
+    # the organisation's baseline.
+    report = await collect.collect_org(
+        PostureClient(),
+        OrgConfig(name="o"),
+        ReportConfig(
+            categories={
+                CategoryKey.CODE_QUALITY.value: CategoryToggle(
+                    exclude_tests=(re.compile("^git-"),)
+                )
+            }
+        ),
+        generated_at=WHEN,
+    )
+    assert report.code_quality is not None
+    assert report.code_quality.rows == []
+    assert report.code_quality_writes == {}
+    assert [r.name for r in report.excluded_tests_for(CategoryKey.CODE_QUALITY)] == [
+        "git-configure-action"
+    ]
+    assert report.excluded_for(CategoryKey.CODE_QUALITY) == []
+    assert CategoryKey.CODE_QUALITY not in report.category_excluded
+    assert report.excluded_tests_for(CategoryKey.AUTO_MERGE) == []
+
+
+async def test_collect_org_report_wide_lists_reach_every_category() -> None:
+    # The report-wide lists narrow the signal sections, the nested Dependabot
+    # sub-tables and the standalone tables alike. They are the baseline, so
+    # no category records a list of its own.
+    report = await collect.collect_org(
+        PostureClient(),
+        OrgConfig(name="o"),
+        ReportConfig(exclude_tests=(re.compile("^git-"),)),
+        generated_at=WHEN,
+    )
+    sections = _sections(report)
+    assert sections[SignalType.CODEQL].clean_count == 0
+    assert "git-configure-action" not in [
+        r.name for r in sections[SignalType.SCORECARD].nag_repos
+    ]
+    names = {
+        row.repo.name
+        for table in report.dependabot_tables
+        for row in table.rows
+        if row.repo is not None
+    }
+    assert "git-configure-action" not in names
+    assert report.auto_merge is not None
+    assert report.auto_merge.rows == []
+    assert report.code_quality is not None
+    assert report.code_quality.rows == []
+    assert [r.name for r in report.excluded_tests_default] == ["git-configure-action"]
+    assert report.category_excluded == {}
+    assert report.category_excluded_tests == {}
+    assert report.baseline_excluded == []
+
+
+async def test_collect_org_a_repository_matching_both_lists_is_a_test() -> None:
+    report = await collect.collect_org(
+        PostureClient(),
+        OrgConfig(name="o"),
+        ReportConfig(
+            exclude=(re.compile("^git-"),), exclude_tests=(re.compile("configure"),)
+        ),
+        generated_at=WHEN,
+    )
+    assert [r.name for r in report.excluded_tests_default] == ["git-configure-action"]
+    assert report.baseline_excluded == []
+    assert report.excluded_for(CategoryKey.AUTO_MERGE) == []
+
+
+async def test_collect_org_selected_repositories_are_opted_in() -> None:
+    # Naming a repository for the run (remediate --repos) opts it into every
+    # category, so it is a row and a remediation target despite the lists.
+    report = await collect.collect_org(
+        PostureClient(),
+        OrgConfig(name="o"),
+        ReportConfig(
+            exclude_tests=(re.compile("^git-"),),
+            categories={
+                CategoryKey.CODE_QUALITY.value: CategoryToggle(
+                    exclude=(re.compile("^git-"),)
+                )
+            },
+        ),
+        generated_at=WHEN,
+        selected=[_repo("git-configure-action")],
+    )
+    assert report.auto_merge is not None
+    assert [r.repo.name for r in report.auto_merge.rows] == ["git-configure-action"]
+    assert report.code_quality is not None
+    assert [r.repo.name for r in report.code_quality.rows] == ["git-configure-action"]
+    assert report.excluded_tests_default == []
+    assert report.category_excluded == {}
+
+
 async def test_collect_org_omits_the_personal_queue_without_a_person() -> None:
     # A bot or App token has no inbox, so an "Assigned to Me" section reporting
     # every repository clean would reassure the reader about a queue that does

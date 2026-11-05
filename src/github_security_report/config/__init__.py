@@ -35,7 +35,6 @@ from github_security_report.config.loader import (
 from github_security_report.config.models import (
     DEFAULT_ISSUE_LABELS,
     DEFAULT_RULESET_WORKFLOWS,
-    DEFAULT_RUN_WINDOWS,
     CategoryToggle,
     Config,
     OrgConfig,
@@ -43,7 +42,6 @@ from github_security_report.config.models import (
     ReportConfig,
     ReportDay,
     SlackConfig,
-    WorkflowRunsConfig,
 )
 from github_security_report.config.order import (
     DEFAULT_BAU,
@@ -61,6 +59,10 @@ from github_security_report.config.schema import (
     SEVERITY_NAMES,
     WEEKDAYS,
     ConfigError,
+)
+from github_security_report.config.workflow_runs import (
+    DEFAULT_RUN_WINDOWS,
+    WorkflowRunsConfig,
 )
 
 __all__ = [

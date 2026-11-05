@@ -9,10 +9,10 @@ in ``docs/BRIEF.md`` sections 4-6.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from github_security_report.models import Repo, RepoSignal, SignalType
+from github_security_report.report.exclusions import NO_EXCLUSIONS, Exclusions
 from github_security_report.summary import SummaryCount
 
 # Wording and pointer for a feature-gated (skipped) section, shared by every
@@ -54,13 +54,15 @@ class SignalSection:
         """The worst N offenders (used for the Slack digest only)."""
         return self.offenders[:n]
 
-    def summary_counts(self, excluded: Sequence[Repo] = ()) -> list[SummaryCount]:
+    def summary_counts(
+        self, exclusions: Exclusions = NO_EXCLUSIONS
+    ) -> list[SummaryCount]:
         """Footer count buckets for this signal (offenders are the table).
 
         Severity signals enumerate their failures as table rows, so there is no
         single failure count here -- the footer carries the not-enabled (nag)
-        count, the unknown count, the clean (pass) count, and the org-level
-        excluded repositories passed in by the caller.
+        count, the unknown count, the clean (pass) count, and the excluded
+        repositories passed in by the caller.
         """
         meta = self.signal.meta
         return [
@@ -86,10 +88,5 @@ class SignalSection:
                 meta.pass_label,
                 all_label=meta.pass_all_label,
             ),
-            SummaryCount(
-                "excluded",
-                len(excluded),
-                "Excluded",
-                tuple(r.name for r in excluded),
-            ),
+            *exclusions.counts(),
         ]

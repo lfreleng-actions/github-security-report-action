@@ -37,6 +37,7 @@ from github_security_report.collect.context import (
     gather_all,
     gather_in_batches,
 )
+from github_security_report.collect.exclusions import CategoryScope
 from github_security_report.collect.extras import attach_extra_tables
 from github_security_report.collect.graph import collect_graph
 from github_security_report.collect.protocols import ClientProtocol
@@ -317,6 +318,12 @@ def _classify(
     ]
 
 
+def _narrow_signals(signals: list, categories: CategoryScope) -> list:
+    """Drop each signal's results for the repositories its category leaves out."""
+    dropped = {signal: categories.dropped(signal.category_key) for signal in SignalType}
+    return [sig for sig in signals if sig.repo.name not in dropped[sig.signal]]
+
+
 # --------------------------------------------------------------------------- #
 # The pipeline
 # --------------------------------------------------------------------------- #
@@ -370,15 +377,24 @@ async def collect_org(
     facts = await gather_in_batches(
         scoped.in_scope, lambda repo: _facts_for_repo(repo, ctx), progress=progress
     )
+    # A repository named for this run (remediate --repos) is the operator
+    # opting it in, so the per-category lists leave it alone.
+    categories = CategoryScope(
+        report_cfg,
+        scoped.in_scope,
+        excluded_repos=scoped.excluded,
+        opted_in=[repo.name for repo in selected] if selected is not None else (),
+    )
     report = build_org_report(
         org,
-        _classify(facts, report_cfg, skipped),
+        _narrow_signals(_classify(facts, report_cfg, skipped), categories),
         repo_count=len(scoped.in_scope),
         generated_at=generated_at,
         partial=scoped.partial,
         excluded_repos=scoped.excluded,
         skipped_signals=skipped,
     )
+    categories.attach(report)
     await attach_extra_tables(
         report,
         scoped.in_scope,
@@ -386,5 +402,6 @@ async def collect_org(
         org_cfg,
         report_cfg,
         extras=wanted,
+        categories=categories,
     )
     return report

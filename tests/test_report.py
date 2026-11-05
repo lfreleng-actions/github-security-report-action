@@ -441,7 +441,95 @@ class TestExcludedDisplay:
         # out, so once no Excluded line qualifies it "All Clean" is accurate.
         section = report.SignalSection(signal=SignalType.CODEQL, clean_count=3)
         org = self._org()
-        shown = report.build_summary(section.summary_counts(org.excluded_repos))
-        hidden = report.build_summary(section.summary_counts(()))
+        shown = report.build_summary(
+            section.summary_counts(
+                report.Exclusions(excluded=tuple(org.excluded_repos))
+            )
+        )
+        hidden = report.build_summary(section.summary_counts(report.NO_EXCLUSIONS))
         assert [line.text for line in shown] == ["3 Clean", "2 Excluded"]
         assert [line.text for line in hidden] == ["All Clean"]
+
+    def test_tests_line_follows_not_applicable_and_blocks_the_collapse(
+        self,
+    ) -> None:
+        section = report.SignalSection(signal=SignalType.CODEQL, clean_count=3)
+        exclusions = report.Exclusions(
+            excluded=(_repo("fixture"),), tests=(_repo("test-a"), _repo("test-b"))
+        )
+        lines = report.build_summary(section.summary_counts(exclusions))
+        assert [(line.kind, line.text) for line in lines] == [
+            ("pass", "3 Clean"),
+            ("tests", "2 Test repositories excluded"),
+            ("excluded", "1 Excluded"),
+        ]
+        # Counted, not named, by default; the general class names its own.
+        assert [line.names for line in lines[1:]] == [(), ("fixture",)]
+        only_tests = report.Exclusions(tests=(_repo("test-a"),))
+        texts = [
+            line.text
+            for line in report.build_summary(section.summary_counts(only_tests))
+        ]
+        assert texts == ["3 Clean", "1 Test repositories excluded"]
+        assert report.SUMMARY_EMOJI["tests"] == "\U0001f9ea"
+
+    def test_naming_flags_choose_what_each_line_lists(self) -> None:
+        exclusions = report.Exclusions(
+            excluded=(_repo("fixture"),),
+            tests=(_repo("test-a"),),
+            excluded_names=False,
+            tests_names=True,
+        )
+        counts = {c.kind: c.names for c in exclusions.counts()}
+        assert counts == {"tests": ("test-a",), "excluded": ()}
+        assert [r.name for r in exclusions.repos] == ["test-a", "fixture"]
+
+
+class TestExcludedTestsDisplay:
+    """The test-repository line: its own display mode against its own baseline."""
+
+    def _org(self) -> report.OrgReport:
+        org = report.build_org_report("o", [], repo_count=3, generated_at=WHEN)
+        org.excluded_tests_default = [_repo("test-a")]
+        return org
+
+    def test_baselines_fall_back_without_a_report_wide_list(self) -> None:
+        org = report.build_org_report(
+            "o", [], repo_count=1, generated_at=WHEN, excluded_repos=[_repo("x")]
+        )
+        assert [r.name for r in org.baseline_excluded] == ["x"]
+        assert [r.name for r in org.excluded_for(report.CategoryKey.CODEQL)] == ["x"]
+        assert org.excluded_tests_for(report.CategoryKey.CODEQL) == []
+        org.excluded_default = [_repo("x"), _repo("y")]
+        assert [r.name for r in org.excluded_for(report.CategoryKey.CODEQL)] == [
+            "x",
+            "y",
+        ]
+
+    def test_conditional_hide_compares_with_the_report_wide_tests(self) -> None:
+        org = self._org()
+        org.category_excluded_tests[report.CategoryKey.CODE_QUALITY] = [
+            _repo("test-a"),
+            _repo("test-b"),
+        ]
+        options = report.FooterOptions(
+            excluded_tests=report.ExcludedDisplay.CONDITIONAL_HIDE
+        )
+        quality = options.exclusions(org, report.CategoryKey.CODE_QUALITY)
+        codeql = options.exclusions(org, report.CategoryKey.CODEQL)
+        assert [r.name for r in quality.tests] == ["test-a", "test-b"]
+        assert codeql.tests == ()
+
+    def test_each_class_honours_its_own_mode(self) -> None:
+        org = self._org()
+        org.excluded_repos = [_repo("fixture")]
+        options = report.FooterOptions(
+            excluded=report.ExcludedDisplay.ALWAYS_SHOW,
+            excluded_tests=report.ExcludedDisplay.ALWAYS_HIDE,
+            excluded_names=False,
+            excluded_tests_names=True,
+        )
+        shown = options.exclusions(org, report.CategoryKey.CODEQL)
+        assert [r.name for r in shown.excluded] == ["fixture"]
+        assert shown.tests == ()
+        assert (shown.excluded_names, shown.tests_names) == (False, True)

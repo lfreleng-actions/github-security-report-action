@@ -55,16 +55,22 @@ class OrgReport:
     partial: bool = False
     # Repositories removed from analysis by the per-org ``exclude`` list. These
     # are reported as "excluded" (counted, never analysed) so an explicit
-    # exclusion is visible and distinct from a "not enabled" nag. This is the
-    # organisation's baseline: every category reports it unless
-    # ``category_excluded`` gives that category a list of its own.
+    # exclusion is visible and distinct from a "not enabled" nag.
     excluded_repos: list[Repo] = field(default_factory=list)
-    # Exclusions for a category that differ from the organisation baseline:
-    # the baseline plus the repositories the category's own ``exclude``
-    # patterns dropped (see ``categories.EXCLUDABLE_CATEGORIES``). Absent keys
-    # inherit ``excluded_repos``. This is what the conditional-hide footer
-    # setting compares against the baseline.
+    # What a category with no exclusion list of its own reports, per class:
+    # the general exclusions (``excluded_repos`` plus the repositories the
+    # report-wide ``exclude`` patterns dropped) and the test repositories the
+    # report-wide ``exclude_tests`` patterns dropped. ``None`` for the general
+    # class means no report-wide list was resolved (repo mode, or a report
+    # built directly), so ``excluded_repos`` alone is the baseline.
+    excluded_default: list[Repo] | None = None
+    excluded_tests_default: list[Repo] = field(default_factory=list)
+    # Exclusions for a category that differ from those baselines: a category
+    # with an ``exclude`` or ``exclude_tests`` list of its own. Absent keys
+    # inherit the baseline. This is what the conditional-hide footer setting
+    # compares against it.
     category_excluded: dict[CategoryKey, list[Repo]] = field(default_factory=dict)
+    category_excluded_tests: dict[CategoryKey, list[Repo]] = field(default_factory=dict)
     # Extra Dependabot posture tables rendered as sub-sections beneath the
     # Dependabot signal heading (alerts not enabled, security updates not
     # enabled, cooldown settings). Empty in repo mode / when not collected.
@@ -198,9 +204,22 @@ class OrgReport:
             return tuple(self.dependabot_tables)
         return ()
 
+    @property
+    def baseline_excluded(self) -> list[Repo]:
+        """The general exclusions a category without a list of its own reports."""
+        return (
+            self.excluded_default
+            if self.excluded_default is not None
+            else self.excluded_repos
+        )
+
     def excluded_for(self, key: CategoryKey) -> list[Repo]:
         """The repositories category ``key`` reports as excluded."""
-        return self.category_excluded.get(key, self.excluded_repos)
+        return self.category_excluded.get(key, self.baseline_excluded)
+
+    def excluded_tests_for(self, key: CategoryKey) -> list[Repo]:
+        """The test repositories category ``key`` reports as excluded."""
+        return self.category_excluded_tests.get(key, self.excluded_tests_default)
 
 
 @dataclass

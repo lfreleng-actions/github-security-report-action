@@ -500,6 +500,34 @@ def test_excluded_display_governs_the_markdown_footer() -> None:
     assert "[extra](https://github.com/o/extra)" in conditional
 
 
+def test_test_exclusions_get_a_markdown_line_of_their_own() -> None:
+    org = report.build_org_report(
+        "o", [], repo_count=7, generated_at=WHEN, excluded_repos=[_repo("fixture")]
+    )
+    org.auto_merge = _auto_merge_org().auto_merge
+    org.excluded_tests_default = [_repo("test-a")]
+    org.category_excluded_tests[CategoryKey.AUTO_MERGE] = [
+        _repo("test-a"),
+        _repo("test-b"),
+    ]
+
+    def render(footer: report.FooterOptions = report.DEFAULT_FOOTER) -> str:
+        return markdown.render_org(org, footer=footer)
+
+    default = render()
+    assert "2 Test repositories excluded" in default
+    assert "**Test repositories excluded:**" not in default
+    named = render(report.FooterOptions(excluded_tests_names=True))
+    assert "[test-b](https://github.com/o/test-b)" in named
+    conditional = render(
+        report.FooterOptions(excluded_tests=report.ExcludedDisplay.CONDITIONAL_HIDE)
+    )
+    assert conditional.count("Test repositories excluded") == 1
+    unnamed = render(report.FooterOptions(excluded_names=False))
+    assert "1 Excluded" in unnamed
+    assert "**Excluded:**" not in unnamed
+
+
 def test_table_cells_escape_markdown_delimiters() -> None:
     # A workflow or job name holding a pipe, a newline or brackets must not
     # add a column, split the row or close a link label early.

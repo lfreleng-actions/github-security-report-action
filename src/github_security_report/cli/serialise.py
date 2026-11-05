@@ -81,15 +81,24 @@ def _org_to_dict(org: OrgReport, hidden: Collection[CategoryKey] = ()) -> dict:
         # Surfaced so JSON consumers can distinguish a complete result from a
         # partial one (the repository listing could not be fully read).
         "partial": org.partial,
-        # Repositories explicitly excluded from analysis (per-org exclude list).
-        "excluded": [r.full_name for r in org.excluded_repos],
-        # Categories excluding repositories of their own (a category's
-        # `exclude` patterns), each with its full list: the organisation's
-        # exclusions above plus the category's. Absent categories report the
-        # organisation's list alone.
+        # The repositories every category reports as excluded: the per-org
+        # exclude list (never analysed) plus the report-wide `exclude`
+        # patterns.
+        "excluded": [r.full_name for r in org.baseline_excluded],
+        # The test repositories every category leaves out (the report-wide
+        # `exclude_tests` patterns).
+        "excluded_tests": [r.full_name for r in org.excluded_tests_default],
+        # Categories whose exclusions differ from those baselines (a category
+        # with `exclude` or `exclude_tests` patterns of its own), each with
+        # its full list; absent categories report the baselines alone.
         "category_excluded": {
             key.value: [r.full_name for r in repos]
             for key, repos in org.category_excluded.items()
+            if key not in suppressed
+        },
+        "category_excluded_tests": {
+            key.value: [r.full_name for r in repos]
+            for key, repos in org.category_excluded_tests.items()
             if key not in suppressed
         },
         # Every category below, in the order the rendered surfaces drew it.
