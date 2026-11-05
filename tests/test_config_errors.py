@@ -22,7 +22,8 @@ from github_security_report.config.errors import (
 def _findings(data: object) -> tuple[str, ...]:
     with pytest.raises(ConfigError) as caught:
         config.build_config(data)  # type: ignore[arg-type]
-    return caught.value.findings
+    findings: tuple[str, ...] = caught.value.findings
+    return findings
 
 
 class TestSchemaFindings:
