@@ -57,12 +57,24 @@ that **deletes**: a configuration's analyses, and with them its alert history.
    not uploading, an upload from outside GitHub Actions, a workflow disabled
    by hand, one active but not uploading, an unreadable state) is left for a
    person, and `remediate` lists it as skipped, with its cause, beside the
-   deletions and refusals, so an operator sees what remains.
+   deletions and refusals, so an operator sees what remains. "Analyses
+   failing" presumes a setup that still exists and still runs, so it yields
+   to a cause whose setup is gone or blocked (default setup off or no longer
+   listing the language, workflow removed, superseded by default setup):
+   default setup drops a language whose last run found no code for it, and
+   that run uploads an error, so reading the error as the cause would leave
+   a configuration that can never upload again waiting for a fix that cannot
+   come. It does not yield to superseded-within-workflow, which is inferred
+   from a sibling's activity rather than the setup's own state: a fresh
+   errored attempt under the category shows the workflow still uploads to it.
 
 3. **Guards refuse rather than fail.** A deletion is refused when:
    - no current configuration scans its language, since the stale results are
      then the only record of it (add scanning first; the refusal names the
-     language);
+     language). This does not apply to a language default setup itself
+     dropped: its language list is the only inventory the report has, so
+     nothing would ever call for scanning it again, and Language Coverage
+     shows no gap to close;
    - it would help close an open alert. The guard judges the repository's
      **whole planned deletion set**, not each deletion alone: an alert closes
      once every configuration holding it is deleted, so two configurations
