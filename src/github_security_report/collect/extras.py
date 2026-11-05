@@ -20,6 +20,7 @@ import asyncio
 import logging
 
 from github_security_report import codeql, layout, malware, posture
+from github_security_report.categories import CategoryKey
 from github_security_report.code_quality import CodeQualitySetup, applicable_languages
 from github_security_report.collect.codeql import collect_codeql_facts
 from github_security_report.collect.context import (
@@ -45,7 +46,7 @@ from github_security_report.pulls import (
     build_assigned_pull_requests_table,
     build_pull_requests_table,
 )
-from github_security_report.report import OrgReport
+from github_security_report.report import OrgReport, TableSection
 
 log = logging.getLogger(__name__)
 
@@ -120,6 +121,31 @@ async def _posture_for_repo(repo: Repo, ctx: OrgCollectContext) -> RepoPosture:
         latest_release=graph.latest_release,
         last_published_release=graph.last_published_release,
     )
+
+
+def _build_code_quality(
+    report: OrgReport, postures: list[RepoPosture], report_cfg: ReportConfig
+) -> tuple[TableSection, dict[str, tuple[str, ...]]]:
+    """The Code Quality table and its remediation plan, less the excluded.
+
+    A repository the category's own ``exclude`` patterns match is dropped
+    before the table is built, so it is neither a row nor a count nor a
+    remediation target, and is recorded as excluded for this category alone:
+    its footer then lists it alongside the organisation's own exclusions,
+    while every other category still reports the repository.
+    """
+    kept: list[RepoPosture] = []
+    dropped: list[Repo] = []
+    for p in postures:
+        if report_cfg.category_excludes(CategoryKey.CODE_QUALITY, p.repo.name):
+            dropped.append(p.repo)
+        else:
+            kept.append(p)
+    if dropped:
+        report.category_excluded[CategoryKey.CODE_QUALITY] = sorted(
+            (*report.excluded_repos, *dropped), key=lambda r: r.name
+        )
+    return posture.build_code_quality_table(kept), posture.code_quality_writes(kept)
 
 
 async def _attach_author_tables(
@@ -251,8 +277,9 @@ async def attach_extra_tables(
         sweep_readable=ctx.sweep_status.get("dependabot") == 200,
         generated_at=report.generated_at,
     )
-    report.code_quality = posture.build_code_quality_table(postures)
-    report.code_quality_writes = posture.code_quality_writes(postures)
+    report.code_quality, report.code_quality_writes = _build_code_quality(
+        report, postures, report_cfg
+    )
     report.codeql_tables = codeql.build_codeql_tables(
         codeql_facts, stale_days=report_cfg.codeql_stale_days
     )

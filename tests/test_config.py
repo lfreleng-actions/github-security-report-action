@@ -972,14 +972,12 @@ class TestCategoryExclude:
             org["report"] = org_report
         return config.build_config({"report": report, "organizations": [org]})
 
-    @pytest.mark.xfail(strict=True, reason="category exclude not implemented")
     def test_defaults_to_no_patterns(self) -> None:
         rc = config.build_config(MINIMAL).report
         assert (
             rc.category_excludes(CategoryKey.CODE_QUALITY, "test-go-project") is False
         )
 
-    @pytest.mark.xfail(strict=True, reason="category exclude not implemented")
     def test_patterns_are_searched_case_insensitively(self) -> None:
         rc = self._cfg({"categories": {"code_quality": {"exclude": ["^test-"]}}}).report
         excludes = rc.category_excludes
@@ -990,7 +988,6 @@ class TestCategoryExclude:
         # The list belongs to one category; every other still reports the repo.
         assert excludes(CategoryKey.AUTO_MERGE, "test-go-project") is False
 
-    @pytest.mark.xfail(strict=True, reason="category exclude not implemented")
     def test_any_pattern_matching_excludes(self) -> None:
         rc = self._cfg(
             {"categories": {"code_quality": {"exclude": ["^test-", "-fixture$"]}}}
@@ -998,7 +995,6 @@ class TestCategoryExclude:
         assert rc.category_excludes(CategoryKey.CODE_QUALITY, "releases-fixture")
         assert not rc.category_excludes(CategoryKey.CODE_QUALITY, "java-workflows")
 
-    @pytest.mark.xfail(strict=True, reason="category exclude not implemented")
     def test_org_override_replaces_the_inherited_list(self) -> None:
         cfg = self._cfg(
             {"categories": {"code_quality": {"exclude": ["^test-"]}}},
@@ -1008,7 +1004,6 @@ class TestCategoryExclude:
         assert rc.category_excludes(CategoryKey.CODE_QUALITY, "demo-app")
         assert not rc.category_excludes(CategoryKey.CODE_QUALITY, "test-app")
 
-    @pytest.mark.xfail(strict=True, reason="category exclude not implemented")
     def test_org_override_of_another_key_keeps_the_list(self) -> None:
         cfg = self._cfg(
             {"categories": {"code_quality": {"exclude": ["^test-"]}}},
@@ -1018,12 +1013,10 @@ class TestCategoryExclude:
         assert rc.category_excludes(CategoryKey.CODE_QUALITY, "test-app")
         assert rc.category_top_n(CategoryKey.CODE_QUALITY, "cli") == 0
 
-    @pytest.mark.xfail(strict=True, reason="category exclude not implemented")
     def test_rejects_a_pattern_that_does_not_compile(self) -> None:
         with pytest.raises(ConfigError, match=r"code_quality\.exclude pattern '\['"):
             self._cfg({"categories": {"code_quality": {"exclude": ["["]}}})
 
-    @pytest.mark.xfail(strict=True, reason="category exclude not implemented")
     @pytest.mark.parametrize(
         "pattern",
         [

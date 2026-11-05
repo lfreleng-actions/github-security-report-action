@@ -958,7 +958,6 @@ def test_org_to_dict_includes_partial_flag() -> None:
     assert partial["partial"] is True
 
 
-@pytest.mark.xfail(strict=True, reason="category exclude not implemented")
 def test_org_to_dict_lists_category_exclusions() -> None:
     # A category excluding repositories of its own publishes its full list, so
     # a JSON consumer can tell which repositories that one category left out
