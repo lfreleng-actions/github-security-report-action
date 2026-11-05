@@ -145,17 +145,62 @@ def test_repo_row_counts_and_worst_workflow() -> None:
     assert row.cell_urls[:-1] == (None,) * 6
 
 
+def _rate_records(failed: int, passed: int) -> list[WorkflowRunRecord]:
+    """Repo ``a`` alone, failing ``failed`` of its pass-or-fail runs."""
+    return [
+        *(_run("a", Outcome.FAIL, Trigger.MERGE, days_ago=1) for _ in range(failed)),
+        *(_run("a", Outcome.PASS, Trigger.MERGE, days_ago=1) for _ in range(passed)),
+    ]
+
+
 @pytest.mark.parametrize(
-    ("threshold", "level"), [(0.5, CELL_BAD), (0.9, CELL_WARN)], ids=["at", "below"]
+    ("failed", "passed", "level"),
+    [
+        (1, 19, CELL_WARN),
+        (3, 47, CELL_BAD),
+        (4, 21, CELL_BAD),
+    ],
+    ids=["5%", "6%", "16%"],
 )
-def test_repo_fail_rate_level_follows_threshold(threshold: float, level: str) -> None:
-    # The Fail % cell is bad at or above the persistent threshold, a warning
-    # below it; no other repo cell carries emphasis.
-    options = WindowOptions(days=7, persistent_threshold=threshold)
-    (repo_table, _), _ = _build(options)
+def test_repo_fail_rate_red_above_five_percent(
+    failed: int, passed: int, level: str
+) -> None:
+    # By default the Fail % cell turns red strictly above 5%; at or below
+    # it a non-zero rate stays a warning. No other repo cell is emphasised.
+    options = WindowOptions(days=7)
+    (repo_table, _), _ = _build(options, records=_rate_records(failed, passed))
     levels = repo_table.rows[0].cell_levels
     assert levels[2] == level
     assert all(value is None for i, value in enumerate(levels) if i != 2)
+
+
+def test_repo_fail_rate_level_ignores_persistent_threshold() -> None:
+    # The persistent threshold classifies the detail table's Pattern only;
+    # a 67% rate is red however high it is set.
+    options = WindowOptions(days=7, persistent_threshold=0.9)
+    (repo_table, _), _ = _build(options)
+    assert repo_table.rows[0].cell_levels[2] == CELL_BAD
+
+
+@pytest.mark.parametrize(
+    ("threshold", "level"),
+    [(0.2, CELL_WARN), (0.16, CELL_WARN), (0.1, CELL_BAD)],
+    ids=["above-rate", "at-rate", "below-rate"],
+)
+def test_repo_fail_rate_level_follows_configured_threshold(
+    threshold: float, level: str
+) -> None:
+    # A 16% rate is red only when the configured cutoff lies below it.
+    tables = build_workflow_failure_tables(
+        _rate_records(4, 21),
+        IN_SCOPE,
+        generated_at=NOW,
+        windows=WINDOWS,
+        options=WindowOptions(days=7),
+        fail_rate_error_threshold=threshold,
+    )
+    (repo_table, _), _ = tables
+    assert repo_table.rows[0].cell_levels[2] == level
 
 
 def test_repo_footer_counts_and_notes() -> None:

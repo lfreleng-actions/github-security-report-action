@@ -37,6 +37,9 @@ def _cfg(block: dict, *, org_block: dict | None = None) -> config.Config:
 
 
 class TestDefaults:
+    def test_fail_rate_error_threshold_defaults_to_five_percent(self) -> None:
+        assert ReportConfig().workflow_runs.fail_rate_error_threshold == 0.05
+
     def test_windows_per_surface(self) -> None:
         # The week everywhere; the published report adds month and quarter.
         runs = ReportConfig().workflow_runs
@@ -94,16 +97,32 @@ class TestBuildConfig:
         [
             {"persistent_threshold": 0},
             {"persistent_threshold": 1.5},
+            {"fail_rate_error_threshold": -0.1},
+            {"fail_rate_error_threshold": 1.5},
             {"windows": {"cli": [7, 7]}},
             {"windows": {"cli": [0]}},
             {"min_runs": 0},
             {"no_such_key": True},
         ],
-        ids=["zero-rate", "rate-over-one", "repeat", "zero-day", "no-runs", "unknown"],
+        ids=[
+            "zero-rate",
+            "rate-over-one",
+            "negative-fail-rate",
+            "fail-rate-over-one",
+            "repeat",
+            "zero-day",
+            "no-runs",
+            "unknown",
+        ],
     )
     def test_schema_rejects_an_invalid_block(self, block: dict) -> None:
         with pytest.raises(ConfigError):
             _cfg(block)
+
+    def test_fail_rate_error_threshold_is_configurable(self) -> None:
+        runs = _cfg({"fail_rate_error_threshold": 0.1}).report.workflow_runs
+        assert runs.fail_rate_error_threshold == 0.1
+        assert runs.persistent_threshold == 0.9
 
     def test_schema_accepts_every_tuning_key(self) -> None:
         runs = _cfg(

@@ -274,6 +274,11 @@ CONFIG_SCHEMA: dict = {
                             "maximum": 1,
                         },
                         "min_runs": {"type": "integer", "minimum": 1},
+                        "fail_rate_error_threshold": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1,
+                        },
                         "cache": {"type": "boolean"},
                         "cache_dir": {"type": "string", "minLength": 1},
                     },
