@@ -33,7 +33,7 @@ def _encode_datetime(value: dt.datetime) -> str:
     """
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"datetime {value!r} must be timezone-aware")
-    return value.astimezone(dt.timezone.utc).isoformat(timespec="microseconds")
+    return value.astimezone(dt.UTC).isoformat(timespec="microseconds")
 
 
 def _decode_datetime(text: str | None) -> dt.datetime | None:

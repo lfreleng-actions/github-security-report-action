@@ -17,7 +17,7 @@ from github_security_report.models import (
 )
 from github_security_report.render import slack
 
-WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.timezone.utc)
+WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.UTC)
 
 
 def _repo(name: str) -> Repo:

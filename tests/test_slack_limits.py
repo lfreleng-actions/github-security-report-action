@@ -26,7 +26,7 @@ from github_security_report.models import (
 from github_security_report.render import slack
 from github_security_report.render import slack_limits as limits
 
-WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.timezone.utc)
+WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.UTC)
 
 # The GitHub Issues table is the widest the tool renders, so it reaches the
 # character limit soonest; mirror its shape when building synthetic tables.

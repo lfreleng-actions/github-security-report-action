@@ -16,7 +16,7 @@ from github_security_report.models import (
     SignalType,
 )
 
-WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.timezone.utc)
+WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.UTC)
 
 
 def _repo(name: str, **flags: bool) -> Repo:

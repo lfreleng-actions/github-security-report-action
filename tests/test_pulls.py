@@ -33,7 +33,7 @@ from github_security_report.report import (
     table_footer_rows,
 )
 
-WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.timezone.utc)
+WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.UTC)
 
 # The unremarkable case every helper defaults to: a human who is an
 # organisation member, so a plain `_pull()` exercises no classification edge.

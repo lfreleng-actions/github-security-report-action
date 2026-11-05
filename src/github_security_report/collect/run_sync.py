@@ -89,7 +89,7 @@ class RepoRunSync:
 
 def _date(when: dt.datetime) -> str:
     """The calendar date GitHub's ``created`` filter takes."""
-    return when.astimezone(dt.timezone.utc).date().isoformat()
+    return when.astimezone(dt.UTC).date().isoformat()
 
 
 def _merge(

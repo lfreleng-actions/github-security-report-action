@@ -206,7 +206,7 @@ class CodeQLConfiguration:
 
 # Aware sentinel so a configuration that never succeeded sorts ahead of every
 # dated one, without comparing a naive and an aware value.
-_NEVER = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+_NEVER = dt.datetime.min.replace(tzinfo=dt.UTC)
 
 
 @dataclass(frozen=True)

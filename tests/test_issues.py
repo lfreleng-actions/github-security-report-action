@@ -19,7 +19,7 @@ from github_security_report.report import (
     table_column_totals,
 )
 
-WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.timezone.utc)
+WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.UTC)
 _DEFAULTS = ReportConfig()
 
 

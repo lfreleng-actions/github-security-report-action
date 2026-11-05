@@ -97,7 +97,7 @@ async def test_workflow_runs_parses_and_classifies(client: GitHubClient) -> None
     assert by_id[2].trigger is Trigger.DYNAMIC and by_id[2].outcome is Outcome.FAIL
     assert by_id[1].outcome is Outcome.SKIP and by_id[1].attempt == 2
     assert by_id[1].trigger is Trigger.MERGE
-    assert by_id[1].created_at == dt.datetime(2026, 10, 10, 8, tzinfo=dt.timezone.utc)
+    assert by_id[1].created_at == dt.datetime(2026, 10, 10, 8, tzinfo=dt.UTC)
 
 
 @respx.mock
@@ -116,7 +116,7 @@ async def test_workflow_runs_stops_at_the_watermark(client: GitHubClient) -> Non
         "o",
         "r",
         default_branch="main",
-        stop_before=dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc),
+        stop_before=dt.datetime(2026, 10, 5, tzinfo=dt.UTC),
     )
     assert [r.id for r in listing.records] == [3]
     assert listing.stopped is True

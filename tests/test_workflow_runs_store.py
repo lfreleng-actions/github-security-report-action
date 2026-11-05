@@ -24,7 +24,7 @@ from github_security_report.workflow_runs import (
 )
 from github_security_report.workflow_runs.store import SCHEMA_VERSION
 
-UTC = dt.timezone.utc
+UTC = dt.UTC
 T0 = dt.datetime(2026, 3, 1, 12, 0, 0, tzinfo=UTC)
 
 

@@ -214,7 +214,7 @@ async def _run_org(cfg: Config, options: OrgRunOptions, *, console: Console) -> 
     summaries as the collections ended would have stacked them all above the
     first report.
     """
-    now = dt.datetime.now(dt.timezone.utc)
+    now = dt.datetime.now(dt.UTC)
     collected = await _collect_reports(cfg, console=console, now=now, options=options)
     if collected is None:
         return 2
@@ -285,7 +285,7 @@ async def _run_repo(
     if not token:
         console.print(f"[red]No token in ${token_env}[/red]")
         return 2
-    now = dt.datetime.now(dt.timezone.utc)
+    now = dt.datetime.now(dt.UTC)
     # One repository, so the live line has no counter to drive; the spinner
     # and the request counts still cover the probes and the run listing.
     tracker = make_tracker(console, no_progress=no_progress)

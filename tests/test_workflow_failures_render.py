@@ -18,7 +18,7 @@ from github_security_report.models import Repo
 from github_security_report.render import html, markdown, slack, terminal
 from github_security_report.report import TableRow, TableSection, window_shown
 
-WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.timezone.utc)
+WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.UTC)
 WINDOWS = (7, 30, 90)
 LINK = "https://github.com/o/a/actions/workflows/testing.yaml"
 FAILURES = CategoryKey.WORKFLOW_FAILURES
