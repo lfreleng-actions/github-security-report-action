@@ -21,7 +21,10 @@ A deletion is *refused* while no current configuration scans its language.
 The stale results are then the only record of that language, and removing
 them would turn "scanned, but out of date" into "never scanned" without
 anything having improved. Add scanning for the language first; the refusal
-names it. Whether a deletion would close an open alert needs a network read,
+names it. The refusal does not apply when default setup itself dropped the
+language: its language list is the only inventory the report has, so nothing
+would ever call for scanning it again, and Language Coverage shows no gap to
+close. Whether a deletion would close an open alert needs a network read,
 so the remediator checks that separately before any write.
 """
 
@@ -148,8 +151,14 @@ def _plan_one(
         return CleanupItem(facts.repo, config, cause, CleanupAction.REENABLE_WORKFLOW)
     if not cause.orphaned:
         return None
+    # Default setup no longer lists a removed language, so no current
+    # configuration can scan it and none is expected to: the coverage
+    # refusal would ask for scanning that the setup has ruled out.
+    uncovered = cause is not StaleCause.LANGUAGE_REMOVED and (
+        config.language is None or config.language not in current
+    )
     refusal = None
-    if config.language is None or config.language not in current:
+    if uncovered:
         refusal = (
             f"no current configuration scans {config.language or 'its language'}; "
             "add scanning for it first"

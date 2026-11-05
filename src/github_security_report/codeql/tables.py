@@ -135,16 +135,22 @@ def stale_cause(
 ) -> StaleCause:
     """Why a stale configuration stopped scanning, as far as the API can tell.
 
-    An errored newest attempt comes first: the setup still exists and still
-    runs, so whatever its state, the reader's next step is its failing logs.
-    ``stale_days`` is the threshold the configuration was found stale by,
-    which also decides whether another configuration is current.
+    An errored newest attempt is the cause while the setup still exists and
+    still runs: whatever its state, the reader's next step is its failing
+    logs. It is not the cause once the setup is gone or blocked. Default
+    setup drops a language whose last run found no code for it, and that
+    run uploads an error; reading the error as the cause would leave a
+    configuration that can never upload again waiting for a fix that cannot
+    come. ``stale_days`` is the threshold the configuration was found stale
+    by, which also decides whether another configuration is current.
     """
-    if config.failing:
-        return StaleCause.ANALYSES_FAILING
     if config.setup is SetupType.DEFAULT:
-        return _default_setup_cause(config, facts)
-    return _advanced_setup_cause(config, facts, stale_days)
+        cause = _default_setup_cause(config, facts)
+    else:
+        cause = _advanced_setup_cause(config, facts, stale_days)
+    if config.failing and not cause.setup_gone:
+        return StaleCause.ANALYSES_FAILING
+    return cause
 
 
 def build_stale_configurations_table(

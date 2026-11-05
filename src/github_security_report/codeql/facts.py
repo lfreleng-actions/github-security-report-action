@@ -94,7 +94,8 @@ class StaleCause(str, Enum):
     """
 
     # The setup still runs, but its newest attempt errored: never deleted,
-    # since fixing the run is what brings the scan back.
+    # since fixing the run is what brings the scan back. Yields to a cause
+    # whose setup is gone (see ``setup_gone``): there is no run to fix.
     ANALYSES_FAILING = "Analyses failing; check the latest run"
     DEFAULT_SETUP_DISABLED = "Default setup disabled; orphaned"
     LANGUAGE_REMOVED = "Language removed from default setup"
@@ -128,6 +129,21 @@ class StaleCause(str, Enum):
         return self in _ORPHANED_CAUSES
 
     @property
+    def setup_gone(self) -> bool:
+        """Whether the setup behind the configuration is gone or blocked.
+
+        Default setup off or no longer listing the language, the workflow
+        file removed, or advanced uploads rejected while default setup is on:
+        no attempt of any kind can follow, so an errored newest attempt is
+        the setup's last act, not a run anybody can fix, and this cause
+        outranks "analyses failing". The one orphaned cause left out is
+        superseded-within-workflow: that is inferred from a sibling's
+        activity, not the setup's own state, and a fresh errored attempt
+        under this category shows the workflow still uploads to it.
+        """
+        return self in _SETUP_GONE_CAUSES
+
+    @property
     def reenable_workflow(self) -> bool:
         """Whether re-enabling the workflow is the fix, rather than deleting.
 
@@ -138,16 +154,16 @@ class StaleCause(str, Enum):
         return self is StaleCause.WORKFLOW_INACTIVE
 
 
-_ORPHANED_CAUSES = frozenset(
+_SETUP_GONE_CAUSES = frozenset(
     {
         StaleCause.DEFAULT_SETUP_DISABLED,
         StaleCause.LANGUAGE_REMOVED,
         StaleCause.WORKFLOW_REMOVED,
-        StaleCause.SUPERSEDED_IN_WORKFLOW,
         StaleCause.SUPERSEDED,
         StaleCause.SUPERSEDED_DISABLED,
     }
 )
+_ORPHANED_CAUSES = _SETUP_GONE_CAUSES | {StaleCause.SUPERSEDED_IN_WORKFLOW}
 
 
 @dataclass(frozen=True)

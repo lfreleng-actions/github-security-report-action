@@ -2084,6 +2084,13 @@ cause:
 
 <!-- markdownlint-enable MD013 -->
 
+"Analyses failing" is reported only while the setup still exists and still
+runs. When the setup is gone or blocked (default setup off or no longer
+listing the language, workflow removed, superseded by default setup) that
+cause stands even if the newest attempt errored: default setup drops a
+language whose last run found no code for it, and that run uploads an error,
+but nothing can upload under the category again, so there is no run to fix.
+
 Deleting removes a configuration's analyses, which clears GitHub's *"Code
 Scanning results may be out of date"* warning but also removes its alert
 history. A deletion is therefore **refused**, in a dry run as in an apply,
@@ -2091,7 +2098,9 @@ when:
 
 - no current configuration scans its language: the stale results are then
   the only record of it, so add scanning for the language first (the refusal
-  names it, and **CodeQL: Language Coverage** lists the gap);
+  names it, and **CodeQL: Language Coverage** lists the gap). A language
+  default setup itself dropped is exempt: nothing lists it as a gap, so
+  nothing would ever call for scanning it again;
 - it would help close an open alert. This is judged across **every deletion
   planned in the repository**, not one at a time: an alert held by two stale
   configurations would close if both went, so both are refused, although

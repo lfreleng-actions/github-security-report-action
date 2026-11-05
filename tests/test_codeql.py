@@ -32,6 +32,7 @@ from github_security_report.codeql import (
     build_stale_configurations_table,
     normalise_language,
     plan_cleanup,
+    skipped_configurations,
     stale_cause,
 )
 from github_security_report.models import Repo
@@ -769,13 +770,98 @@ def test_a_failing_configuration_is_never_planned_for_deletion() -> None:
         "r",
         _config("python", ADVANCED_KEY, days_behind=0),
         failing,
-        setup=DefaultSetup(configured=False, languages=frozenset({"python"})),
+        setup=DefaultSetup(configured=True, languages=frozenset({"python"})),
     )
     assert (
         stale_cause(failing, facts, stale_days=STALE_DAYS)
         is StaleCause.ANALYSES_FAILING
     )
     assert not StaleCause.ANALYSES_FAILING.orphaned
+    assert plan_cleanup([facts], stale_days=STALE_DAYS) == []
+
+
+def test_a_language_default_setup_dropped_is_deleted_despite_the_error() -> None:
+    # docker-release-detect-action: the last javascript-typescript run found
+    # no code and uploaded an error, and default setup then dropped the
+    # language. Nothing can upload under that category again, so the error
+    # is not a run to fix, and the coverage refusal does not apply: the
+    # setup's own language list no longer asks for javascript-typescript.
+    dropped = replace(
+        _with_ids(_config("javascript-typescript", days_behind=31), 2, 1),
+        failing=True,
+    )
+    facts = _facts(
+        "docker-release-detect-action",
+        _config("python", days_behind=0),
+        _config("actions", days_behind=0),
+        dropped,
+        setup=DefaultSetup(configured=True, languages=frozenset({"actions", "python"})),
+    )
+    assert (
+        stale_cause(dropped, facts, stale_days=STALE_DAYS)
+        is StaleCause.LANGUAGE_REMOVED
+    )
+    (item,) = plan_cleanup([facts], stale_days=STALE_DAYS)
+    assert (item.action, item.refusal) == (CleanupAction.DELETE, None)
+    assert skipped_configurations([facts], stale_days=STALE_DAYS) == []
+
+
+@pytest.mark.parametrize(
+    ("setup", "workflows", "expected"),
+    [
+        (
+            DefaultSetup(configured=False, languages=frozenset({"python"})),
+            {},
+            StaleCause.DEFAULT_SETUP_DISABLED,
+        ),
+        (
+            DefaultSetup(configured=True, languages=frozenset({"python"})),
+            {".github/workflows/codeql.yml": "active"},
+            StaleCause.SUPERSEDED,
+        ),
+        (
+            DefaultSetup(configured=False, languages=frozenset({"python"})),
+            {".github/workflows/codeql.yml": "missing"},
+            StaleCause.WORKFLOW_REMOVED,
+        ),
+    ],
+    ids=["default-off", "superseded", "workflow-removed"],
+)
+def test_a_gone_setup_outranks_a_failing_newest_attempt(
+    setup: DefaultSetup, workflows: dict[str, str], expected: StaleCause
+) -> None:
+    # With the setup gone or blocked there is no run left to fix, so the
+    # structural cause stands, and with it the cleanup it permits.
+    key = DEFAULT_KEY if expected is StaleCause.DEFAULT_SETUP_DISABLED else ADVANCED_KEY
+    failing = replace(_config("python", key, days_behind=60), failing=True)
+    facts = _facts("r", failing, setup=setup, workflows=workflows)
+    assert stale_cause(failing, facts, stale_days=STALE_DAYS) is expected
+    assert expected.setup_gone and expected.orphaned
+
+
+def test_failing_outranks_superseded_within_workflow() -> None:
+    # Superseded-within-workflow is inferred from a sibling's activity; a
+    # fresh errored attempt under this category shows the workflow still
+    # uploads to it, so it is a failing run, not an orphan to delete.
+    failing = replace(
+        _with_ids(_config("python", ADVANCED_KEY, days_behind=60), 1), failing=True
+    )
+    sibling = replace(
+        _config("python", ADVANCED_KEY, days_behind=0),
+        category=f"{ADVANCED_KEY}/build-mode:autobuild/language:python",
+    )
+    facts = _facts(
+        "r",
+        failing,
+        sibling,
+        setup=DefaultSetup(configured=False, languages=frozenset({"python"})),
+        workflows={".github/workflows/codeql.yml": "active"},
+    )
+    assert (
+        stale_cause(failing, facts, stale_days=STALE_DAYS)
+        is StaleCause.ANALYSES_FAILING
+    )
+    assert not StaleCause.SUPERSEDED_IN_WORKFLOW.setup_gone
     assert plan_cleanup([facts], stale_days=STALE_DAYS) == []
 
 
