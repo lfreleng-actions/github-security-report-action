@@ -958,6 +958,30 @@ def test_org_to_dict_includes_partial_flag() -> None:
     assert partial["partial"] is True
 
 
+@pytest.mark.xfail(strict=True, reason="category exclude not implemented")
+def test_org_to_dict_lists_category_exclusions() -> None:
+    # A category excluding repositories of its own publishes its full list, so
+    # a JSON consumer can tell which repositories that one category left out
+    # without reconstructing it from the organisation's baseline.
+    from github_security_report.categories import CategoryKey
+    from github_security_report.cli import _org_to_dict
+    from github_security_report.models import Repo
+    from github_security_report.report import build_org_report
+
+    def repo(name: str) -> Repo:
+        return Repo(name, f"o/{name}", f"https://github.com/o/{name}")
+
+    org = build_org_report("o", [], repo_count=1, excluded_repos=[repo("fixture")])
+    assert _org_to_dict(org)["category_excluded"] == {}
+    org.category_excluded[CategoryKey.CODE_QUALITY] = [repo("fixture"), repo("test-a")]
+    assert _org_to_dict(org)["category_excluded"] == {
+        "code_quality": ["o/fixture", "o/test-a"]
+    }
+    assert (
+        _org_to_dict(org, hidden={CategoryKey.CODE_QUALITY})["category_excluded"] == {}
+    )
+
+
 def test_org_shorthand_honours_token_env() -> None:
     # --org with a custom --token-env must build an OrgConfig that reads the
     # token from that env var, not the default GITHUB_TOKEN.
