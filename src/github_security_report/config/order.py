@@ -19,7 +19,7 @@ from enum import Enum
 from typing import Any
 
 from github_security_report.categories import CategoryKey
-from github_security_report.config.schema import ConfigError
+from github_security_report.config.schema import ConfigError, collecting
 
 
 class OrderStyle(str, Enum):
@@ -111,7 +111,7 @@ def _check_style_reads(data: Mapping[str, Any], style: OrderStyle) -> None:
     ignored = sorted(key for key in _LIST_KEYS if key in data and key not in reads)
     if ignored:
         raise ConfigError(
-            f"report.order.style {style.value!r} does not read "
+            f"report.order.style: {style.value!r} does not read "
             f"{', '.join(repr(key) for key in ignored)}; "
             f"it reads {', '.join(repr(key) for key in reads) or 'no list keys'}. "
             "Use style 'dual' for priority/bau lists, or 'single' for a sequence."
@@ -134,43 +134,85 @@ def _keys(
     for item in raw:
         if item in seen:
             raise ConfigError(
-                f"report.order.{name} lists {item!r} more than once; a category "
+                f"report.order.{name}: lists {item!r} more than once; a category "
                 "can hold only one position"
             )
         seen.add(item)
     return tuple(CategoryKey(item) for item in raw)
 
 
-def order_from(data: Mapping[str, Any], base: OrderConfig) -> OrderConfig:
-    """Validate and build the ``report.order`` block over an inherited one."""
+def order_from(
+    data: Mapping[str, Any], base: OrderConfig, *, inherited: bool = True
+) -> OrderConfig:
+    """Validate and build the ``report.order`` block over an inherited one.
+
+    ``inherited=False`` says ``base`` only stands in for a parent block that
+    failed to parse, so a check that reads an inherited value is skipped.
+
+    Every check runs and their findings are raised together: a style that
+    does not read a list, a list naming a category twice, and a ``single``
+    style without a sequence are independent mistakes. Only a comparison
+    whose input failed to parse is skipped.
+    """
     style = _style_from(data, base)
-    _check_style_reads(data, style)
-    if style is OrderStyle.AUTO:
-        # ``auto`` is defined as the built-in bands, and it reads no list keys,
-        # so it must not inherit them either. Without this, an organisation
-        # switching a global ``dual`` back to ``auto`` would silently keep the
-        # parent's custom bands -- the one thing naming ``auto`` rules out.
+    # Without inherited settings and without a style of its own, the block's
+    # style is only the default's stand-in: the checks on what that style
+    # reads are skipped, but the lists the block sets are still checked.
+    placeholder = not inherited and "style" not in data
+    problems: list[str] = []
+    if not placeholder:
+        with collecting(problems):
+            _check_style_reads(data, style)
+    # ``auto`` is defined as the built-in bands, and it reads no list keys,
+    # so it must not inherit them either. Without this, an organisation
+    # switching a global ``dual`` back to ``auto`` would silently keep the
+    # parent's custom bands -- the one thing naming ``auto`` rules out. Its
+    # inherited lists are not compared, but those it writes are still
+    # checked for repeats.
+    builtin = style is OrderStyle.AUTO and not placeholder
+    lists: dict[str, tuple[CategoryKey, ...]] = {}
+    for name, fallback in (
+        ("priority", base.priority),
+        ("bau", base.bau),
+        ("sequence", base.sequence),
+    ):
+        with collecting(problems):
+            lists[name] = _keys(data, name, fallback)
+    if builtin:
+        if problems:
+            raise ConfigError(*problems)
         return OrderConfig()
-    priority = _keys(data, "priority", base.priority)
-    bau = _keys(data, "bau", base.bau)
-    sequence = _keys(data, "sequence", base.sequence)
     # Checked against the effective value, not the block as written: an
     # organisation restating `style: single` without repeating the global
     # sequence has inherited a perfectly good one, and rejecting that would
     # contradict the inheritance the rest of the config offers.
-    if style is OrderStyle.SINGLE and not sequence:
-        raise ConfigError(
-            "report.order.style 'single' needs a non-empty 'sequence' listing "
+    if (
+        style is OrderStyle.SINGLE
+        and "sequence" in lists
+        and not lists["sequence"]
+        and (inherited or "sequence" in data)
+    ):
+        problems.append(
+            "report.order.style: 'single' needs a non-empty 'sequence' listing "
             "the categories in the order you want them; without one it is "
             "equivalent to style 'fixed'"
         )
-    overlap = sorted({key.value for key in priority} & {key.value for key in bau})
-    if overlap:
-        raise ConfigError(
-            f"report.order lists {', '.join(repr(key) for key in overlap)} in "
-            "both 'priority' and 'bau'; a category cannot be both the first "
-            "thing a reader sees and the last"
+    if "priority" in lists and "bau" in lists:
+        overlap = sorted(
+            {key.value for key in lists["priority"]}
+            & {key.value for key in lists["bau"]}
         )
+        if overlap and (inherited or ("priority" in data and "bau" in data)):
+            problems.append(
+                f"report.order: lists {', '.join(repr(key) for key in overlap)} "
+                "in both 'priority' and 'bau'; a category cannot be both the "
+                "first thing a reader sees and the last"
+            )
+    if problems:
+        raise ConfigError(*problems)
+    priority, bau, sequence = lists["priority"], lists["bau"], lists["sequence"]
+    if style is OrderStyle.AUTO:
+        return OrderConfig()
     return OrderConfig(
         style=style,
         priority=priority,

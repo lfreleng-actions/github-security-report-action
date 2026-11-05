@@ -291,7 +291,7 @@ class TestBuildConfig:
             "organizations": [{"name": "o"}],
         }
         with pytest.raises(
-            ConfigError, match=r"report\.issue_age_error_days \(\d+\) must be greater"
+            ConfigError, match=r"report\.issue_age_error_days: \d+ must be greater"
         ):
             config.build_config(data)
 
@@ -309,7 +309,9 @@ class TestBuildConfig:
             "report": {"issue_age_warn_days": -1},
             "organizations": [{"name": "o"}],
         }
-        with pytest.raises(ConfigError, match="less than the minimum"):
+        with pytest.raises(
+            ConfigError, match=r"report\.issue_age_warn_days: expected at least 0"
+        ):
             config.build_config(data)
 
     def test_releases_exclude_parsed(self) -> None:
@@ -1075,11 +1077,11 @@ class TestCategoryExclude:
                 id="category-tests",
             ),
             pytest.param(
-                {"organization_exclude": ["["]}, "organizations[o].exclude", id="org"
+                {"organization_exclude": ["["]}, "organizations[0].exclude", id="org"
             ),
             pytest.param(
                 {"organization_releases_exclude": ["["]},
-                "organizations[o].releases_exclude",
+                "organizations[0].releases_exclude",
                 id="releases",
             ),
         ],
@@ -1092,7 +1094,7 @@ class TestCategoryExclude:
             org["exclude"] = data.pop("organization_exclude")
         if "organization_releases_exclude" in data:
             org["releases_exclude"] = data.pop("organization_releases_exclude")
-        with pytest.raises(ConfigError, match=re.escape(f"{where} pattern '['")):
+        with pytest.raises(ConfigError, match=re.escape(f"{where}: pattern '['")):
             config.build_config({**data, "organizations": [org]})
 
     @pytest.mark.parametrize(
@@ -1105,11 +1107,11 @@ class TestCategoryExclude:
         ],
     )
     def test_rejects_a_pattern_re_cannot_compile(self, pattern: str) -> None:
-        with pytest.raises(ConfigError, match=r"code_quality\.exclude pattern"):
+        with pytest.raises(ConfigError, match=r"code_quality\.exclude: pattern"):
             self._cfg({"categories": {"code_quality": {"exclude": [pattern]}}})
-        with pytest.raises(ConfigError, match=r"report\.exclude_tests pattern"):
+        with pytest.raises(ConfigError, match=r"report\.exclude_tests: pattern"):
             self._cfg({"exclude_tests": [pattern]})
-        with pytest.raises(ConfigError, match=r"organizations\[o\]\.exclude pattern"):
+        with pytest.raises(ConfigError, match=r"organizations\[0\]\.exclude: pattern"):
             config.build_config(
                 {"organizations": [{"name": "o", "exclude": [pattern]}]}
             )
@@ -1134,11 +1136,11 @@ class TestCategoryExclude:
                 id="category-tests",
             ),
             pytest.param(
-                {"org": {"exclude": [""]}}, "organizations[o].exclude", id="org"
+                {"org": {"exclude": [""]}}, "organizations[0].exclude", id="org"
             ),
             pytest.param(
                 {"org": {"releases_exclude": [""]}},
-                "organizations[o].releases_exclude",
+                "organizations[0].releases_exclude",
                 id="releases",
             ),
         ],
@@ -1149,7 +1151,7 @@ class TestCategoryExclude:
         # repository is dropped.
         org = {"name": "o", **data.pop("org", {})}
         with pytest.raises(
-            ConfigError, match=re.escape(f"{where} pattern '' is empty")
+            ConfigError, match=re.escape(f"{where}: pattern '' is empty")
         ):
             config.build_config({**data, "organizations": [org]})
 

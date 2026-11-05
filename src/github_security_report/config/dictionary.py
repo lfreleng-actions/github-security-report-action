@@ -95,27 +95,27 @@ def schema_parts(parts: Sequence[str | int]) -> tuple[str, ...]:
     return tuple(names)
 
 
-def _kind(schema: Mapping[str, Any]) -> str:
+def kind_of(schema: Mapping[str, Any]) -> str:
     """A short description of the values a schema accepts."""
     if "$ref" in schema:
         return "object"
     if "enum" in schema:
         return "one of: " + ", ".join(str(value) for value in schema["enum"])
     if "oneOf" in schema:
-        return " or ".join(_kind(option) for option in schema["oneOf"])
+        return " or ".join(kind_of(option) for option in schema["oneOf"])
     kind = schema.get("type", "any")
     if kind == "array":
         items = schema.get("items", {})
         text = (
             "list of category keys"
             if items.get("enum") == CATEGORY_KEYS
-            else f"list of {_kind(items)}"
+            else f"list of {kind_of(items)}"
         )
         return f"{text} (unique)" if schema.get("uniqueItems") else text
     if kind == "object":
         values = schema.get("additionalProperties")
         if isinstance(values, Mapping):
-            return f"map of name to {_kind(values)}"
+            return f"map of name to {kind_of(values)}"
         return "object"
     if kind == "string" and schema.get("minLength"):
         return "non-empty string"
@@ -199,7 +199,7 @@ def _entry(
     note = NOTES.get(path)
     return KeyEntry(
         path=".".join(parts),
-        kind=_kind(schema),
+        kind=kind_of(schema),
         default=note.default if note and note.default else _format(default),
         description=note.description if note else "",
         replacement=DEPRECATED.get(path),
