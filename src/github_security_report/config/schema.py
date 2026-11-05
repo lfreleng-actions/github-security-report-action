@@ -9,6 +9,7 @@ weekdays), the error raised on invalid input, and ``CONFIG_SCHEMA`` itself.
 from __future__ import annotations
 
 from github_security_report.categories import (
+    EXCLUDABLE_CATEGORIES,
     REPO_LIST_CATEGORIES,
     CategoryMeta,
     all_categories,
@@ -81,8 +82,9 @@ def _category_schema(meta: CategoryMeta) -> dict:
     """The schema for one category's block under ``report.categories``.
 
     ``repo_list`` is offered only to the boolean feature categories, the only
-    ones with an enabled list to name: anywhere else it would validate and then
-    do nothing, so it is left out and the schema rejects it by name.
+    ones with an enabled list to name, and ``exclude`` only to the categories
+    whose builders apply it: anywhere else either would validate and then do
+    nothing, so it is left out and the schema rejects it by name.
     """
     properties: dict = {
         "enabled": {"type": "boolean"},
@@ -110,6 +112,15 @@ def _category_schema(meta: CategoryMeta) -> dict:
     }
     if meta.key in REPO_LIST_CATEGORIES:
         properties["repo_list"] = {"enum": REPO_LIST_VALUES}
+    if meta.key in EXCLUDABLE_CATEGORIES:
+        # Regular expressions searched against the repository name, case-
+        # insensitively; a match drops the repository from this category only
+        # and lists it on the category's Excluded footer line. The loader
+        # rejects a pattern that does not compile, which JSON Schema cannot.
+        properties["exclude"] = {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+        }
     return {"type": "object", "additionalProperties": False, "properties": properties}
 
 

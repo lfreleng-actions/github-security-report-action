@@ -83,6 +83,15 @@ def _org_to_dict(org: OrgReport, hidden: Collection[CategoryKey] = ()) -> dict:
         "partial": org.partial,
         # Repositories explicitly excluded from analysis (per-org exclude list).
         "excluded": [r.full_name for r in org.excluded_repos],
+        # Categories excluding repositories of their own (a category's
+        # `exclude` patterns), each with its full list: the organisation's
+        # exclusions above plus the category's. Absent categories report the
+        # organisation's list alone.
+        "category_excluded": {
+            key.value: [r.full_name for r in repos]
+            for key, repos in org.category_excluded.items()
+            if key not in suppressed
+        },
         # Every category below, in the order the rendered surfaces drew it.
         # The keyed structure that follows is stable regardless, but a consumer
         # building its own view can reproduce the published layout instead of

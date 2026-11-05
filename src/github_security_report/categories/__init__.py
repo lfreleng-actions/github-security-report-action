@@ -24,6 +24,7 @@ from github_security_report.categories.signals import SIGNAL_CATEGORIES
 from github_security_report.categories.tables import TABLE_CATEGORIES
 
 __all__ = [
+    "EXCLUDABLE_CATEGORIES",
     "NESTED_CATEGORIES",
     "REPO_LIST_CATEGORIES",
     "CategoryKey",
@@ -74,6 +75,15 @@ REPO_LIST_CATEGORIES: frozenset[CategoryKey] = frozenset(
         CategoryKey.AUTO_MERGE,
     }
 )
+
+
+# Categories that take an ``exclude`` list of their own, dropping repositories
+# from that one category while every other still reports them. A repository
+# excluded this way is counted on the category's Excluded footer line, so the
+# omission stays visible, and remediation never writes it. Only the categories
+# whose builders apply the list are named: the schema refuses it anywhere else,
+# where it would validate and then do nothing.
+EXCLUDABLE_CATEGORIES: frozenset[CategoryKey] = frozenset({CategoryKey.CODE_QUALITY})
 
 
 def orderable_categories() -> tuple[CategoryMeta, ...]:

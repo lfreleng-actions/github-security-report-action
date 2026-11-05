@@ -11,6 +11,7 @@ with a usable error. Those parsers live here; the top-level loader in
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import replace
 from types import MappingProxyType
@@ -227,6 +228,27 @@ def _require_reachable_warning(
         )
 
 
+def _exclude_patterns_from(key: str, raw: list[str]) -> tuple[re.Pattern[str], ...]:
+    """Compile a category's ``exclude`` list, naming the pattern that fails.
+
+    Compiled once here rather than on every repository, and rejected at load
+    time rather than mid-run: a pattern that does not compile would otherwise
+    surface only after the whole organisation had been read. An oversized
+    repeat count raises ``OverflowError`` and deep nesting ``RecursionError``
+    rather than ``re.error``, so those are caught too.
+    """
+    patterns: list[re.Pattern[str]] = []
+    for text in raw:
+        try:
+            patterns.append(re.compile(text, re.IGNORECASE))
+        except (re.error, OverflowError, RecursionError) as exc:
+            raise ConfigError(
+                f"report.categories.{key}.exclude pattern {text!r} is not a "
+                f"valid regular expression: {exc}"
+            ) from exc
+    return tuple(patterns)
+
+
 def _categories_from(
     data: dict, base: Mapping[str, CategoryToggle]
 ) -> Mapping[str, CategoryToggle]:
@@ -266,6 +288,11 @@ def _categories_from(
             sort=tuple(raw["sort"]) if "sort" in raw else current.sort,
             repo_list=(
                 RepoList(raw["repo_list"]) if "repo_list" in raw else current.repo_list
+            ),
+            exclude=(
+                _exclude_patterns_from(key, raw["exclude"])
+                if "exclude" in raw
+                else current.exclude
             ),
         )
     return MappingProxyType(merged)
