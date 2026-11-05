@@ -457,7 +457,6 @@ class TestLoads:
             config.loads(raw)
         assert type(excinfo.value.__cause__) is ValueError
 
-    @pytest.mark.xfail(strict=True, reason="nesting message not yet normalised")
     def test_over_deep_nesting_is_a_config_error(self) -> None:
         with pytest.raises(
             ConfigError,

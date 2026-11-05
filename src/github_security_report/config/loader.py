@@ -236,10 +236,15 @@ def loads(raw: str) -> Config:
                 f"({json_exc.msg} at line {json_exc.lineno} column "
                 f"{json_exc.colno}) nor base64-encoded JSON"
             ) from exc
-    # Valid JSON the decoder still refuses: an integer longer than Python's
-    # int_max_str_digits limit (ValueError) or nesting deeper than the
-    # interpreter's recursion limit (RecursionError).
-    except (ValueError, RecursionError) as exc:
+    # Valid JSON the decoder still refuses. Nesting deeper than the
+    # interpreter's recursion limit gets fixed wording, because CPython's own
+    # RecursionError text differs between versions and platforms.
+    except RecursionError as exc:
+        raise ConfigError(
+            "configuration could not be decoded: nesting is too deep"
+        ) from exc
+    # An integer longer than Python's int_max_str_digits limit.
+    except ValueError as exc:
         raise ConfigError(f"configuration could not be decoded: {exc}") from exc
     if not isinstance(data, dict):
         raise ConfigError(
