@@ -36,7 +36,7 @@ from github_security_report.codeql import (
 )
 from github_security_report.models import Repo
 
-HEAD = dt.datetime(2026, 9, 24, 7, 26, tzinfo=dt.timezone.utc)
+HEAD = dt.datetime(2026, 9, 24, 7, 26, tzinfo=dt.UTC)
 STALE_DAYS = 30
 DEFAULT_KEY = "dynamic/github-code-scanning/codeql:analyze"
 ADVANCED_KEY = ".github/workflows/codeql.yml:analyze"
@@ -426,12 +426,12 @@ def test_a_configuration_that_never_succeeded_has_never_scanned() -> None:
         ]
     )
     assert (_scanned_on(config), config.failing) == (None, True)
-    assert config.is_stale(dt.datetime(2026, 7, 1, tzinfo=dt.timezone.utc), 30)
+    assert config.is_stale(dt.datetime(2026, 7, 1, tzinfo=dt.UTC), 30)
     facts = _facts(
         "r",
         replace(config, language="python"),
         setup=DefaultSetup(configured=False, languages=frozenset({"python"})),
-        head=dt.datetime(2026, 9, 24, tzinfo=dt.timezone.utc),
+        head=dt.datetime(2026, 9, 24, tzinfo=dt.UTC),
     )
     stale = build_stale_configurations_table([facts], stale_days=STALE_DAYS)
     assert [row.cells[2:] for row in stale.rows] == [
@@ -877,7 +877,7 @@ def test_an_inactive_workflow_is_not_reenabled_without_knowing_default_setup() -
 # Three repositories moved their CodeQL job to a reusable workflow, keeping the
 # same workflow file. Job id and matrix changed, so the categories they used to
 # upload under froze while the file stayed active. Keys and dates as observed.
-_RESTRUCTURE_HEAD = dt.datetime(2026, 10, 28, 12, tzinfo=dt.timezone.utc)
+_RESTRUCTURE_HEAD = dt.datetime(2026, 10, 28, 12, tzinfo=dt.UTC)
 _WORKFLOW = ".github/workflows/codeql.yml"
 _ANALYZE = f"{_WORKFLOW}:analyze"
 _OTHER = f"{_WORKFLOW}:other-languages"
@@ -930,7 +930,7 @@ def _uploaded(category: str, key: str, day: str, *ids: int) -> CodeQLConfigurati
     return CodeQLConfiguration(
         category=category,
         analysis_key=key,
-        last_scan_at=dt.datetime.fromisoformat(day).replace(tzinfo=dt.timezone.utc),
+        last_scan_at=dt.datetime.fromisoformat(day).replace(tzinfo=dt.UTC),
         language=category.rpartition("language:")[2],
         analysis_ids=ids,
     )

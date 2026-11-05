@@ -28,7 +28,7 @@ from github_security_report.workflow_runs import (
     workflow_stats,
 )
 
-UTC = dt.timezone.utc
+UTC = dt.UTC
 NOW = dt.datetime(2026, 3, 1, 12, 0, 0, tzinfo=UTC)
 WEEK = WindowOptions(days=7)
 

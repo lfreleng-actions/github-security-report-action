@@ -18,7 +18,7 @@ from github_security_report.report import TableRow, TableSection
 
 # Aware sentinel so releases lacking a publish timestamp sort oldest (last) when
 # ordering most-recent-first, without ever comparing a naive and aware value.
-_MIN_AWARE = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+_MIN_AWARE = dt.datetime.min.replace(tzinfo=dt.UTC)
 
 
 def _age_days(when: dt.datetime | None, now: dt.datetime) -> int | None:

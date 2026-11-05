@@ -27,7 +27,7 @@ from github_security_report.workflow_runs.tables import (
     build_workflow_failure_tables,
 )
 
-UTC = dt.timezone.utc
+UTC = dt.UTC
 NOW = dt.datetime(2026, 3, 1, 12, 0, 0, tzinfo=UTC)
 DAY = dt.timedelta(days=1)
 WINDOWS = (30, 7)

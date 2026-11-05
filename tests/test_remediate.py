@@ -26,7 +26,7 @@ from github_security_report.report import (
     TableSection,
 )
 
-WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.timezone.utc)
+WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.UTC)
 
 
 def _repo(name: str) -> Repo:
@@ -361,7 +361,7 @@ async def test_code_quality_without_its_table_has_nothing_to_do() -> None:
 # --------------------------------------------------------------------------- #
 # CodeQL stale-configuration cleanup
 # --------------------------------------------------------------------------- #
-_HEAD = dt.datetime(2026, 9, 24, tzinfo=dt.timezone.utc)
+_HEAD = dt.datetime(2026, 9, 24, tzinfo=dt.UTC)
 _DEFAULT_KEY = "dynamic/github-code-scanning/codeql:analyze"
 _WORKFLOW_KEY = ".github/workflows/codeql.yml:analyze"
 

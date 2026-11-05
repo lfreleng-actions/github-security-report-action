@@ -55,7 +55,7 @@ async def _run_remediate(
     auto-discovered config file, printed under each org's divider. Returns 2
     for a bad selection, 1 when any write failed, else 0.
     """
-    now = dt.datetime.now(dt.timezone.utc)
+    now = dt.datetime.now(dt.UTC)
     failures = 0
     # One live line per organisation, kept up through the writes too: the
     # paced CodeQL cleanup is otherwise a silent second per deletion.

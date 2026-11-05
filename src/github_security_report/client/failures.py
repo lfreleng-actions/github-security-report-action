@@ -52,7 +52,7 @@ async def _endpoint_diagnostics(url: str) -> str:
         )
         ips = sorted({str(info[4][0]) for info in infos})
         addr = ", ".join(ips) if ips else "no addresses"
-    except asyncio.TimeoutError:
+    except TimeoutError:
         addr = "unresolved (timed out)"
     except OSError as exc:
         detail = exc.strerror or str(exc) or "resolution failed"

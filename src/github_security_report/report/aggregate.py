@@ -225,7 +225,7 @@ def build_org_report(
     because organisation feature gating found no supporting workflows; such a
     section renders as a single skip line on every surface.
     """
-    when = generated_at or dt.datetime.now(dt.timezone.utc)
+    when = generated_at or dt.datetime.now(dt.UTC)
     by_signal: dict[SignalType, list[RepoSignal]] = {s: [] for s in SIGNAL_ORDER}
     for sig in repo_signals:
         by_signal.setdefault(sig.signal, []).append(sig)

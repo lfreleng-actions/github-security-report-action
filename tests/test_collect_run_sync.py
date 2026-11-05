@@ -40,7 +40,7 @@ from github_security_report.workflow_runs import (
     WorkflowRunRecord,
 )
 
-NOW = dt.datetime(2026, 10, 21, 12, tzinfo=dt.timezone.utc)
+NOW = dt.datetime(2026, 10, 21, 12, tzinfo=dt.UTC)
 DAY = dt.timedelta(days=1)
 
 

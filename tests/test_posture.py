@@ -14,7 +14,7 @@ from github_security_report.models import ReleaseRef, Repo
 from github_security_report.render import markdown
 from github_security_report.report import RepoList
 
-NOW = dt.datetime(2026, 6, 18, 12, 0, tzinfo=dt.timezone.utc)
+NOW = dt.datetime(2026, 6, 18, 12, 0, tzinfo=dt.UTC)
 
 
 def _repo(name: str, *, age_days: int | None = 365) -> Repo:

@@ -963,10 +963,9 @@ async def test_endpoint_diagnostics_dns_timeout_falls_back(
     # to "unresolved (timed out)" rather than blocking on socket.getaddrinfo.
     async def _timeout(awaitable: Coroutine[Any, Any, Any], timeout: float) -> object:
         awaitable.close()  # the real wait_for awaits it; close to avoid a warning
-        # asyncio.wait_for raises asyncio.TimeoutError on every supported Python
-        # version; on 3.10 it is distinct from the builtin TimeoutError (an
-        # OSError subclass), so raise the exact type wait_for would raise.
-        raise transport_mod.asyncio.TimeoutError
+        # asyncio.TimeoutError is an alias of the builtin TimeoutError on every
+        # supported Python version, so raise what wait_for raises on timeout.
+        raise TimeoutError
 
     monkeypatch.setattr(transport_mod.asyncio, "wait_for", _timeout)
     line = await _endpoint_diagnostics("https://api.github.com/repos/o/r")
