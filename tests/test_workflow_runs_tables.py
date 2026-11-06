@@ -10,6 +10,7 @@ import datetime as dt
 import pytest
 
 from github_security_report.models import Repo
+from github_security_report.ordering import sort_rows
 from github_security_report.report import CELL_BAD, CELL_WARN, TableSection
 from github_security_report.workflow_runs import (
     PATTERN_INSUFFICIENT,
@@ -143,6 +144,38 @@ def test_repo_row_counts_and_worst_workflow() -> None:
     assert row.sort_values == (4, 7, pytest.approx(4 / 6), 1, 0, 2, "Testing")
     assert row.cell_urls[-1] == TESTING_URL
     assert row.cell_urls[:-1] == (None,) * 6
+
+
+def test_repo_rows_default_to_fail_rate_then_failed() -> None:
+    # ``a`` has the most failures at the lowest rate; ``b`` and ``c`` tie on
+    # rate and split on failed count. The default order must match the
+    # documented ``"sort": ["fail %", "failed"]`` configuration exactly.
+    records = [
+        *(_run("a", Outcome.FAIL, Trigger.MERGE, days_ago=1) for _ in range(3)),
+        *(_run("a", Outcome.PASS, Trigger.MERGE, days_ago=1) for _ in range(7)),
+        _run("b", Outcome.FAIL, Trigger.MERGE, days_ago=1),
+        _run("b", Outcome.PASS, Trigger.MERGE, days_ago=1),
+        *(_run("c", Outcome.FAIL, Trigger.MERGE, days_ago=1) for _ in range(2)),
+        *(_run("c", Outcome.PASS, Trigger.MERGE, days_ago=1) for _ in range(2)),
+    ]
+    (repo_table, _), _ = _build(records=records)
+    assert [row.repo.name for row in repo_table.rows] == ["c", "b", "a"]
+    assert repo_table.rows == sort_rows(repo_table, ["fail %", "failed"])
+
+
+def test_repo_rows_rank_on_raw_rate_not_displayed_percent() -> None:
+    # 2/19 and 1/9 both display as 11%, but 1/9 is the higher raw rate, so
+    # ``b`` must outrank ``a`` despite failing fewer runs.
+    records = [
+        *(_run("a", Outcome.FAIL, Trigger.MERGE, days_ago=1) for _ in range(2)),
+        *(_run("a", Outcome.PASS, Trigger.MERGE, days_ago=1) for _ in range(17)),
+        _run("b", Outcome.FAIL, Trigger.MERGE, days_ago=1),
+        *(_run("b", Outcome.PASS, Trigger.MERGE, days_ago=1) for _ in range(8)),
+    ]
+    (repo_table, _), _ = _build(records=records)
+    assert [row.cells[2] for row in repo_table.rows] == ["11%", "11%"]
+    assert [row.repo.name for row in repo_table.rows] == ["b", "a"]
+    assert repo_table.rows == sort_rows(repo_table, ["fail %", "failed"])
 
 
 def _rate_records(failed: int, passed: int) -> list[WorkflowRunRecord]:
