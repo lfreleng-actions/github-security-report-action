@@ -146,7 +146,6 @@ def test_repo_row_counts_and_worst_workflow() -> None:
     assert row.cell_urls[:-1] == (None,) * 6
 
 
-@pytest.mark.xfail(strict=True, reason="default still ranks by failed")
 def test_repo_rows_default_to_fail_rate_then_failed() -> None:
     # ``a`` has the most failures at the lowest rate; ``b`` and ``c`` tie on
     # rate and split on failed count. The default order must match the
@@ -164,7 +163,6 @@ def test_repo_rows_default_to_fail_rate_then_failed() -> None:
     assert repo_table.rows == sort_rows(repo_table, ["fail %", "failed"])
 
 
-@pytest.mark.xfail(strict=True, reason="default still ranks by failed")
 def test_repo_rows_rank_on_raw_rate_not_displayed_percent() -> None:
     # 2/19 and 1/9 both display as 11%, but 1/9 is the higher raw rate, so
     # ``b`` must outrank ``a`` despite failing fewer runs.

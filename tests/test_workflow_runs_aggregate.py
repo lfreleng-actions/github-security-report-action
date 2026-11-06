@@ -322,7 +322,6 @@ class TestRepoStats:
             Trigger.TAG: 1,
         }
 
-    @pytest.mark.xfail(strict=True, reason="default still ranks by failed")
     def test_sorted_by_rate_then_failed_then_repo(self) -> None:
         # ``busy`` fails most often in absolute terms but at the lowest rate,
         # so it ranks below both half-failing repositories; their tie on rate
@@ -349,7 +348,6 @@ class TestRepoStats:
             "clean",
         ]
 
-    @pytest.mark.xfail(strict=True, reason="default still ranks by failed")
     def test_sorted_by_raw_rate_not_rounded_percent(self) -> None:
         # 2/19 and 1/9 both round to 11%, but 1/9 is the higher raw rate, so
         # ``nine`` ranks first despite failing fewer runs.
