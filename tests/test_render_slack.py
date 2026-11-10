@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import datetime as dt
 
+import pytest
+
 from github_security_report import report
 from github_security_report.categories import CategoryKey, category_meta
 from github_security_report.models import (
@@ -449,3 +451,71 @@ def test_excluded_display_is_resolved_per_organisation() -> None:
     )
     assert "Excluded: x" not in text
     assert "Excluded: y" in text
+
+
+def _issues_like(**extra: object) -> report.TableSection:
+    """A four-column summable table, optionally narrowed for Slack."""
+    return report.TableSection(
+        category=category_meta(CategoryKey.GITHUB_ISSUES),
+        columns=("Repository", "Open", "Bug", "Oldest"),
+        rows=[
+            report.TableRow(repo=_repo("alpha"), cells=("12", "3", "2026-01-01")),
+            report.TableRow(repo=_repo("b"), cells=("5", "40", "2026-02-01")),
+        ],
+        sum_columns=frozenset({1, 2}),
+        fail_count=2,
+        **extra,  # type: ignore[arg-type]
+    )
+
+
+def _issues_text(table: report.TableSection) -> str:
+    org = _org([])
+    org.issues = table
+    payload = slack.render_payload([org], channel="C")
+    return next(
+        str(b["text"]["text"])
+        for b in payload["blocks"]
+        if b.get("type") == "section" and "```" in b["text"]["text"]
+    )
+
+
+def _fenced_lines(text: str) -> list[str]:
+    return text.split("```")[1].strip("\n").splitlines()
+
+
+def test_table_without_slack_columns_is_drawn_in_full() -> None:
+    lines = _fenced_lines(_issues_text(_issues_like()))
+    assert lines[0].split() == ["Repository", "Open", "Bug", "Oldest"]
+    assert lines[1].split() == ["alpha", "12", "3", "2026-01-01"]
+    assert lines[-1].split() == ["Total", "17", "43"]
+
+
+@pytest.mark.xfail(strict=True, reason="slack_columns not yet supported")
+def test_slack_columns_project_rows_and_totals_onto_the_header() -> None:
+    # Totals are summed over the full table, then projected with the rows,
+    # so the Total cells sit under the same headers as the row cells.
+    lines = _fenced_lines(_issues_text(_issues_like(slack_columns=(0, 2))))
+    header, *rows, total = lines
+    assert header.split() == ["Repository", "Bug"]
+    assert [row.split() for row in rows] == [["alpha", "3"], ["b", "40"]]
+    assert total.split() == ["Total", "43"]
+    column = header.index("Bug")
+    assert total[column:].strip() == "43"
+    assert rows[1][column:].strip() == "40"
+    assert "Oldest" not in "\n".join(lines)
+
+
+@pytest.mark.xfail(strict=True, reason="slack_columns not yet supported")
+def test_reordered_slack_columns_draw_a_footer_value_once() -> None:
+    # A declaration that reorders the columns and keeps the table's last one
+    # must not repeat a footer value: it is drawn once, under the last column.
+    table = _issues_like(slack_columns=(0, 3, 1), footer_labels=("Human",))
+    table.rows = [
+        report.TableRow(repo=row.repo, cells=row.cells, footer_values=(index + 1,))
+        for index, row in enumerate(table.rows)
+    ]
+    lines = _fenced_lines(_issues_text(table))
+    assert lines[0].split() == ["Repository", "Oldest", "Open"]
+    assert lines[-1].split() == ["Human", "3"]
+    column = lines[0].index("Open")
+    assert lines[-1][column:].strip() == "3"

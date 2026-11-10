@@ -407,6 +407,16 @@ def test_repo_rows_all_carry_digests_end_to_end() -> None:
     assert repo_table.rows and all(row.digest for row in repo_table.rows)
 
 
+@pytest.mark.xfail(strict=True, reason="slack_columns not yet declared")
+def test_repo_table_declares_its_slack_columns() -> None:
+    # Slack draws the ranking narrowed to its headline columns, the width of
+    # the Scorecard table; the detail table declares none and stays whole.
+    (repo_table, _), (detail, _) = _build()
+    shown = [REPO_COLUMNS[i] for i in repo_table.slack_columns]  # type: ignore[attr-defined]
+    assert shown == ["Repository", "Failed", "Runs", "Fail %"]
+    assert detail.slack_columns == ()  # type: ignore[attr-defined]
+
+
 def test_workflow_url_encodes_the_file_name() -> None:
     # A file name holding '#' or '?' is one path segment, not a fragment.
     odd = _run(
