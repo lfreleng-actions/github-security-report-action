@@ -388,8 +388,9 @@ def repo_stats(
     """One entry per repository with a concluded run in the window.
 
     Repositories with no failures are included, so the caller decides whether
-    a clean repository is worth a row. Sorted by failures descending, then
-    fail rate descending, then repository.
+    a clean repository is worth a row. Sorted by fail rate descending, then
+    failures descending, then repository: how often a repository fails is the
+    actionable signal, while its raw failure count tracks how busy it is.
     """
     admitted = window_records(records, generated_at=generated_at, options=options)
     # The workflow list is already worst-first, so the first entry seen for a
@@ -401,5 +402,5 @@ def repo_stats(
     for record in sorted(admitted, key=_ORDER):
         groups[record.repo].append(record)
     out = [_repo(repo, runs, worst.get(repo)) for repo, runs in groups.items()]
-    out.sort(key=lambda s: (-s.failed, -s.fail_rate, s.repo))
+    out.sort(key=lambda s: (-s.fail_rate, -s.failed, s.repo))
     return out

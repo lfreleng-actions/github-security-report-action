@@ -195,7 +195,12 @@ the organisation listing already carries under `security_and_analysis`.
 10. **Two categories, the detail shipped collected but disabled.**
     `workflow_failures` is the per-repository ranking (`Repository | Failed |
     Runs | Fail % | Skipped | Retried | Workflows | Worst workflow`), shown
-    everywhere by default and ranked by failures, then fail rate.
+    everywhere by default and ranked by fail rate, then failures, then
+    repository: how often a repository's workflows fail is the actionable
+    signal, while the raw failure count mostly tracks how busy a repository
+    is, so a busy repository failing 3% of its runs should not outrank a
+    small one failing 11%. The default matches the explicit
+    `"sort": ["fail %", "failed"]` configuration row for row.
     `workflow_failures_detail` is one row per failing workflow (`Repository |
     Workflow | File | Failing job | Failed | Runs | Fail % | Pattern |
     Triggers | Reading | Last failure`). The detail is **collected on every

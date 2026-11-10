@@ -160,7 +160,7 @@ tables (org mode):
   `code_quality` render toggle, or leave test repositories out of it alone
   with its `exclude_tests` patterns (see [Per-category exclusions](#per-category-exclusions)).
 - **Workflow Failures** — repositories whose GitHub Actions workflows failed
-  in the window, ranked by failed runs. The motivating case is the bulk
+  in the window, ranked by fail rate, then failed runs. The motivating case is the bulk
   Dependabot merge whose integration tests need credentials, so they run
   only once merged and never fail on the pull request; the table exists to
   show which workflows fail, how often, and (in the detail table) whether a

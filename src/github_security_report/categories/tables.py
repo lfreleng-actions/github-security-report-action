@@ -230,9 +230,10 @@ TABLE_CATEGORIES: dict[CategoryKey, CategoryMeta] = {
         ),
         description=(
             "Repositories whose GitHub Actions workflows failed in the window, "
-            "ranked by failed runs. Runs counts the concluded runs of every "
-            "workflow in the repository; Fail % is failed over failed plus "
-            "passed, so skipped and cancelled runs (Skipped) never dilute it. "
+            "ranked by fail rate, then failed runs. Runs counts the concluded "
+            "runs of every workflow in the repository; Fail % is failed over "
+            "failed plus passed, so skipped and cancelled runs (Skipped) never "
+            "dilute it. "
             "Retried counts runs that passed on a later attempt, a direct sign "
             "of flakiness. Workflows is how many distinct workflows failed, and "
             "Worst workflow the one with the most failures. GitHub-managed "

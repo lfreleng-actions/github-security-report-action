@@ -322,15 +322,42 @@ class TestRepoStats:
             Trigger.TAG: 1,
         }
 
-    def test_sorted_by_failed_then_rate_then_repo(self) -> None:
+    def test_sorted_by_rate_then_failed_then_repo(self) -> None:
+        # ``busy`` fails most often in absolute terms but at the lowest rate,
+        # so it ranks below both half-failing repositories; their tie on rate
+        # is broken by failed count, and an equal rate and count by name.
         passed = {"outcome": Outcome.PASS, "conclusion": "success"}
         records = [
-            _run(repo="c"),
-            _run(repo="c", **passed),
-            _run(repo="b"),
-            _run(repo="a"),
-            _run(repo="a"),
-            _run(repo="z", **passed),
+            *(_run(repo="busy") for _ in range(3)),
+            *(_run(repo="busy", **passed) for _ in range(7)),
+            _run(repo="small"),
+            _run(repo="small", **passed),
+            *(_run(repo="tied") for _ in range(2)),
+            *(_run(repo="tied", **passed) for _ in range(2)),
+            _run(repo="y"),
+            _run(repo="x"),
+            _run(repo="clean", **passed),
         ]
         stats = repo_stats(records, generated_at=NOW, options=WEEK)
-        assert [s.repo for s in stats] == ["a", "b", "c", "z"]
+        assert [s.repo for s in stats] == [
+            "x",
+            "y",
+            "tied",
+            "small",
+            "busy",
+            "clean",
+        ]
+
+    def test_sorted_by_raw_rate_not_rounded_percent(self) -> None:
+        # 2/19 and 1/9 both round to 11%, but 1/9 is the higher raw rate, so
+        # ``nine`` ranks first despite failing fewer runs.
+        passed = {"outcome": Outcome.PASS, "conclusion": "success"}
+        records = [
+            *(_run(repo="nineteen") for _ in range(2)),
+            *(_run(repo="nineteen", **passed) for _ in range(17)),
+            _run(repo="nine"),
+            *(_run(repo="nine", **passed) for _ in range(8)),
+        ]
+        stats = repo_stats(records, generated_at=NOW, options=WEEK)
+        assert [round(s.fail_rate * 100) for s in stats] == [11, 11]
+        assert [s.repo for s in stats] == ["nine", "nineteen"]
