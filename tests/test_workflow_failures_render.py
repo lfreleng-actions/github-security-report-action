@@ -8,7 +8,6 @@ from __future__ import annotations
 import datetime as dt
 import re
 
-import pytest
 from rich.console import Console
 
 from github_security_report import layout, report
@@ -33,8 +32,7 @@ def _repo(name: str) -> Repo:
 
 
 def _table(key: CategoryKey, days: int, *, rows: int = 1) -> TableSection:
-    """A one-row windowed table; repo rows carry a digest, detail rows none."""
-    digest = f"a: {days}-day digest" if key is FAILURES else ""
+    """A one-row windowed table of either grain."""
     return TableSection(
         category=category_meta(key),
         columns=("Repository", "Failed", "Worst workflow"),
@@ -43,7 +41,6 @@ def _table(key: CategoryKey, days: int, *, rows: int = 1) -> TableSection:
                 repo=_repo("a"),
                 cells=(str(days), "Testing"),
                 cell_urls=(None, LINK),
-                digest=digest,
             )
             for _ in range(rows)
         ],
@@ -174,17 +171,17 @@ def _block_text(blocks: list[dict], title: str) -> str | None:
     return None
 
 
-def test_slack_draws_digest_rows_as_bullets() -> None:
-    # Rows carrying a digest render one bullet each, with no fixed-width code
-    # table; the detail rows have none and keep the fenced table.
+def test_slack_shows_the_week_of_both_tables_as_fenced_tables() -> None:
+    # Slack shows the seven-day window only, and the detail table, which
+    # declares no Slack columns, keeps its fenced table at full width.
     blocks = slack.render_org_blocks(_org(), top_n=10, pages_url=None, windows=_week)
     repo_text = _block_text(blocks, "Workflow Failures (7 days)")
     assert repo_text is not None
-    assert "• a: 7-day digest" in repo_text
-    assert "```" not in repo_text
+    assert "```" in repo_text
     detail_text = _block_text(blocks, "Workflow Failures: Detail (7 days)")
     assert detail_text is not None
     assert "```" in detail_text
+    assert "Worst workflow" in detail_text
     assert _block_text(blocks, "Workflow Failures (30 days)") is None
 
 
@@ -208,7 +205,7 @@ def _ranking(repo: Repo, cells: tuple[str, ...]) -> TableSection:
         pass_count=2,
         notes=("12 runs across 3 repositories in 7 days",),
         window_days=7,
-        slack_columns=(0, 1, 2, 3),  # type: ignore[call-arg]
+        slack_columns=(0, 1, 2, 3),
     )
 
 
@@ -222,7 +219,6 @@ def _slack_ranking_text(table: TableSection) -> str:
     return text
 
 
-@pytest.mark.xfail(strict=True, reason="Slack still draws digest bullets")
 def test_slack_draws_the_ranking_as_a_narrow_fenced_table() -> None:
     # The ranking is a fixed-width table like every other, narrowed to its
     # headline columns, with a totals row and the standard footer after it.
@@ -240,7 +236,6 @@ def test_slack_draws_the_ranking_as_a_narrow_fenced_table() -> None:
     assert "12 runs across 3 repositories in 7 days" in text[fence_end:]
 
 
-@pytest.mark.xfail(strict=True, reason="Slack still draws digest bullets")
 def test_slack_ranking_escapes_mrkdwn_control_syntax() -> None:
     # A repository name or cell shaped like a Slack mention, link or fence
     # must not page a channel, become a link or close the code fence.
@@ -258,7 +253,6 @@ def test_slack_ranking_escapes_mrkdwn_control_syntax() -> None:
     assert "<https://" not in text
 
 
-@pytest.mark.xfail(strict=True, reason="Slack still draws digest bullets")
 def test_slack_ranking_sheds_rows_within_the_section_limit() -> None:
     # The fenced ranking of a large organisation sheds rows rather than
     # breaking Slack's section limit, and its hidden tally stays honest.
@@ -306,32 +300,3 @@ def test_output_windows_follow_the_default_config() -> None:
     assert outputs.windows(cfg, "cli")(FAILURES) == {7}
     assert outputs.windows(cfg, "report")(FAILURES) == {7, 30, 90}
     assert outputs.windows(cfg, "slack")(FAILURES) == {7}
-
-
-def test_slack_digest_escapes_mrkdwn_control_syntax() -> None:
-    # A workflow named like a Slack mention or link must not page a channel
-    # or become a link when its digest enters the block.
-    from github_security_report.categories import category_meta
-
-    repo = Repo("r", "o/r", "https://github.com/o/r")
-    table = TableSection(
-        category=category_meta(CategoryKey.WORKFLOW_FAILURES),
-        columns=("Repository", "Failed"),
-        rows=[
-            TableRow(
-                repo=repo,
-                cells=("1",),
-                digest="r — 1/1 failed · worst: <!channel> & <https://x|y> (1/1)",
-            )
-        ],
-        fail_count=1,
-        window_days=7,
-    )
-    org = report.build_org_report("o", [], repo_count=1, generated_at=WHEN)
-    org.workflow_failures = (table,)
-    org.section_order = layout.resolve(org)
-    blocks = slack.render_org_blocks(org, top_n=10, pages_url=None, windows=_week)
-    text = _block_text(blocks, "Workflow Failures (7 days)")
-    assert text is not None
-    assert "&lt;!channel&gt; &amp; &lt;https://x|y&gt;" in text
-    assert "<!channel>" not in text

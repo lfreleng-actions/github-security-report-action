@@ -200,7 +200,11 @@ the organisation listing already carries under `security_and_analysis`.
     signal, while the raw failure count mostly tracks how busy a repository
     is, so a busy repository failing 3% of its runs should not outrank a
     small one failing 11%. The default matches the explicit
-    `"sort": ["fail %", "failed"]` configuration row for row.
+    `"sort": ["fail %", "failed"]` configuration row for row. Slack draws
+    it as the same code-fenced table as every other category, narrowed by
+    `TableSection.slack_columns` to `Repository | Failed | Runs | Fail %`
+    so it fits a chat message; the totals are summed at full width before
+    the projection, and the other surfaces keep all eight columns.
     `workflow_failures_detail` is one row per failing workflow (`Repository |
     Workflow | File | Failing job | Failed | Runs | Fail % | Pattern |
     Triggers | Reading | Last failure`). The detail is **collected on every

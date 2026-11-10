@@ -6,8 +6,6 @@ from __future__ import annotations
 
 import datetime as dt
 
-import pytest
-
 from github_security_report import report
 from github_security_report.categories import CategoryKey, category_meta
 from github_security_report.models import (
@@ -490,7 +488,6 @@ def test_table_without_slack_columns_is_drawn_in_full() -> None:
     assert lines[-1].split() == ["Total", "17", "43"]
 
 
-@pytest.mark.xfail(strict=True, reason="slack_columns not yet supported")
 def test_slack_columns_project_rows_and_totals_onto_the_header() -> None:
     # Totals are summed over the full table, then projected with the rows,
     # so the Total cells sit under the same headers as the row cells.
@@ -505,7 +502,21 @@ def test_slack_columns_project_rows_and_totals_onto_the_header() -> None:
     assert "Oldest" not in "\n".join(lines)
 
 
-@pytest.mark.xfail(strict=True, reason="slack_columns not yet supported")
+def test_projected_footer_rows_keep_their_value_under_the_last_column() -> None:
+    # A footer row's value totals the row, so it stays under the last drawn
+    # column even when the projection drops the table's own last column.
+    table = _issues_like(slack_columns=(0, 1, 2), footer_labels=("Human",))
+    table.rows = [
+        report.TableRow(repo=row.repo, cells=row.cells, footer_values=(index + 1,))
+        for index, row in enumerate(table.rows)
+    ]
+    lines = _fenced_lines(_issues_text(table))
+    assert lines[0].split() == ["Repository", "Open", "Bug"]
+    assert lines[-1].split() == ["Human", "3"]
+    column = lines[0].index("Bug")
+    assert lines[-1][column:].strip() == "3"
+
+
 def test_reordered_slack_columns_draw_a_footer_value_once() -> None:
     # A declaration that reorders the columns and keeps the table's last one
     # must not repeat a footer value: it is drawn once, under the last column.
