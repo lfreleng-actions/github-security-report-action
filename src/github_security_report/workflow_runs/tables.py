@@ -48,6 +48,9 @@ REPO_COLUMNS = (
     "Workflows",
     "Worst workflow",
 )
+# The ranking's headline columns, which Slack draws in place of all eight:
+# Repository, Failed, Runs and Fail %.
+REPO_SLACK_COLUMNS = (0, 1, 2, 3)
 DETAIL_COLUMNS = (
     "Repository",
     "Workflow",
@@ -127,19 +130,6 @@ def _workflow_url(repo: Repo, path: str) -> str | None:
     return f"{repo.html_url}/actions/workflows/{name}"
 
 
-def _digest(repo: Repo, stats: RepoWindowStats) -> str:
-    """One line for the brevity-first surface: the headline and the worst."""
-    rate = _percent(stats.fail_rate)
-    line = f"{repo.name} — {stats.failed}/{stats.runs} failed ({rate})"
-    worst = stats.worst
-    if worst is not None:
-        line += (
-            f" · worst: {worst.workflow_name} "
-            f"({worst.failed}/{worst.runs}, {worst.pattern})"
-        )
-    return line
-
-
 def _repo_row(repo: Repo, stats: RepoWindowStats, threshold: float) -> TableRow:
     worst = stats.worst
     worst_text = (
@@ -176,7 +166,6 @@ def _repo_row(repo: Repo, stats: RepoWindowStats, threshold: float) -> TableRow:
         ),
         cell_urls=(None,) * 6
         + (_workflow_url(repo, worst.workflow_path) if worst else None,),
-        digest=_digest(repo, stats),
     )
 
 
@@ -324,6 +313,7 @@ def build_workflow_failure_tables(
                 unknown_count=unknown_count,
                 notes=notes,
                 window_days=days,
+                slack_columns=REPO_SLACK_COLUMNS,
             )
         )
         detail_tables.append(

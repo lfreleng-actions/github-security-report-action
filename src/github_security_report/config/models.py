@@ -127,7 +127,8 @@ _TERMINAL_ONLY = OutputToggles(cli=True, slack=False, markdown=False, html=False
 # Surfaces for a table too wide and too long for a chat digest: the per-workflow
 # detail of the Workflow Failures category runs to several rows per repository
 # and a dozen columns, so it stays off Slack even once enabled, while the
-# per-repository ranking carries the headline there.
+# per-repository ranking carries the headline there, narrowed to its four
+# headline columns (see ``TableSection.slack_columns``).
 _NO_SLACK = OutputToggles(cli=True, slack=False, markdown=True, html=True)
 
 # Categories whose default visibility is narrower than "every surface". Merged

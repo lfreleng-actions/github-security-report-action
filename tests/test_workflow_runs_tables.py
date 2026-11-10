@@ -391,20 +391,13 @@ def test_excluded_workflow_leaves_both_tables() -> None:
     assert repo_table.notes[0].startswith("8 runs")
 
 
-def test_repo_row_carries_a_digest_for_slack() -> None:
-    # The one-line rendering Slack prefers to an eight-column table: the
-    # headline figures and the worst workflow with its pattern.
-    (repo_table, _), _ = _build()
-    digest = repo_table.rows[0].digest
-    assert digest.startswith("a — 4/7 failed (67%)")
-    assert "worst: Testing (3/6, persistent)" in digest
-
-
-def test_repo_rows_all_carry_digests_end_to_end() -> None:
-    # The builder-to-Slack path: every row carries a digest, which is the
-    # condition the Slack renderer tests before choosing bullets.
-    (repo_table, _), _ = _build()
-    assert repo_table.rows and all(row.digest for row in repo_table.rows)
+def test_repo_table_declares_its_slack_columns() -> None:
+    # Slack draws the ranking narrowed to its headline columns, the width of
+    # the Scorecard table; the detail table declares none and stays whole.
+    (repo_table, _), (detail, _) = _build()
+    shown = [REPO_COLUMNS[i] for i in repo_table.slack_columns]
+    assert shown == ["Repository", "Failed", "Runs", "Fail %"]
+    assert detail.slack_columns == ()
 
 
 def test_workflow_url_encodes_the_file_name() -> None:

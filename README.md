@@ -175,6 +175,9 @@ tables (org mode):
   ones), **Retried** (runs that passed on a later attempt, a direct sign of
   flakiness), **Workflows** (how many distinct workflows failed) and **Worst
   workflow** (the one with the most failures, linked to its run history).
+  Slack draws the same fixed-width table narrowed to **Repository**,
+  **Failed**, **Runs** and **Fail %**, with its totals row and footer; the
+  other columns stay on the terminal, GitHub Pages and `report.json`.
   GitHub-managed workflows with no file in the repository to fix (Dependabot
   updates, default-setup CodeQL, Copilot review) are left out unless
   `workflow_runs.include_dynamic` is set. There is one table per time

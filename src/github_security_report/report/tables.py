@@ -62,11 +62,6 @@ class TableRow:
     # surfaces; the terminal and Slack show the text alone. Empty means no
     # cell links anywhere. Column 0, the repository, links via ``repo``.
     cell_urls: tuple[str | None, ...] = ()
-    # A one-line rendering of the row for the brevity-first surface (Slack),
-    # where a table of this row's width would not fit a digest. Empty means
-    # the row has none and Slack draws the table. Only the Workflow Failures
-    # tables set it today.
-    digest: str = ""
     # This row's contribution to each of its table's ``footer_labels``, in the
     # same order. Summed over the *displayed* rows at render time, exactly like
     # the column totals, so a truncated table's footer describes what is on
@@ -152,6 +147,11 @@ class TableSection:
     # table. Sibling windows of one category render beneath the first as
     # children, and each surface shows the windows it is configured for.
     window_days: int | None = None
+    # The column indices (into ``columns``) the brevity-first surface (Slack)
+    # draws, in order, starting with 0, the repository. Empty means every
+    # column. A table too wide for a chat message names its headline columns
+    # here; the other surfaces and ``report.json`` always carry all of them.
+    slack_columns: tuple[int, ...] = ()
 
     @property
     def title(self) -> str:

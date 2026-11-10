@@ -16,7 +16,7 @@ limit is breached, so every block built here is sized by
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 from github_security_report import layout
 from github_security_report.categories import CategoryKey
@@ -33,7 +33,6 @@ from github_security_report.render.slack_limits import (
 from github_security_report.render.slack_text import (
     _fixed_table,
     _fixed_table_generic,
-    _mrkdwn,
     _name_breaks,
     _name_cap,
     _summary_text,
@@ -75,37 +74,42 @@ def _table_block(
     (genuinely no data) is skipped, keeping the brevity-first digest tight. The
     explanatory description is omitted: Slack is a brevity-first surface. A
     boolean feature table draws no fixed-width table: its repositories are
-    named in the footer, as on every other surface. A table whose rows carry
-    a ``digest`` line is drawn as a bullet per row instead of a fixed-width
-    table: it is too wide for a digest, and the line says what matters.
+    named in the footer, as on every other surface. A table declaring
+    ``slack_columns`` is drawn narrowed to them: the totals and footer rows are
+    computed at full width first and then projected with the header and rows.
     """
     lines = build_summary(section.summary_counts(exclusions, repo_list=repo_list))
     row_cap = 0 if section.lists_repos else len(truncate(section.rows, top_n)[0])
     name_cap = _name_cap(lines, top_n)
     if not row_cap and not _summary_text(lines, names=name_cap):
         return None
-    digest = bool(section.rows) and all(row.digest for row in section.rows)
+    keep = section.slack_columns or tuple(range(len(section.columns)))
+
+    def project(cells: Sequence[str]) -> list[str]:
+        return [cells[i] for i in keep]
 
     def build(rows: int, names: int) -> str:
         text = f"*{section.title}*"
-        if rows and digest:
+        if rows:
             shown = section.rows[:rows]
-            text += "".join(f"\n• {_mrkdwn(row.digest)}" for row in shown)
-            hidden = len(section.rows) - len(shown)
-            if hidden:
-                text += f"\n… and {hidden} more"
-        elif rows:
-            shown = section.rows[:rows]
-            cells = [[row.repo.name, *row.cells] for row in shown]
+            cells = [project([row.repo.name, *row.cells]) for row in shown]
             totals = table_column_totals(section, shown)
             if totals is not None:
-                cells.append(list(totals))
+                cells.append(project(totals))
             # Aggregate rows beneath the totals, already full width so the
-            # fixed-width column alignment holds. Not a personal surface: a
-            # channel digest is read by the whole team, not by the token owner.
+            # fixed-width column alignment holds. Their value belongs under the
+            # last column, so they are rebuilt at the projected width rather
+            # than projected: the value must land once, under the last drawn
+            # column, whichever columns the declaration keeps or reorders.
+            # Not a personal surface: a channel digest is read by the whole
+            # team, not by the token owner.
             for footer_row in table_footer_rows(section, shown):
-                cells.append(list(footer_row))
-            table = _fixed_table_generic(section.columns, cells)
+                if len(keep) > 1:
+                    gap = [""] * (len(keep) - 2)
+                    cells.append([footer_row[0], *gap, footer_row[-1]])
+                else:
+                    cells.append([footer_row[0]])
+            table = _fixed_table_generic(tuple(project(section.columns)), cells)
             hidden = len(section.rows) - len(shown)
             if hidden:
                 table += f"\n… and {hidden} more"
