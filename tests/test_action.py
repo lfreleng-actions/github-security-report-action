@@ -11,7 +11,9 @@ trusted interpreter by absolute path and every Python start runs isolated.
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +58,23 @@ def test_setup_uv_step_takes_the_guarded_form() -> None:
         "UV_PYTHON_ARCH": "",
         "UV_PYTHON_INSTALL_DIR": "${{ runner.temp }}/github-security-report/python",
     }
+
+
+def test_inherited_uv_no_modify_path_is_refused_before_setup_uv() -> None:
+    ids = [s.get("id") for s in _steps()]
+    assert ids.index("refuse-no-modify-path") < ids.index("setup-uv")
+    script = _step("refuse-no-modify-path")["run"]
+    env = {k: v for k, v in os.environ.items() if k != "UV_NO_MODIFY_PATH"}
+    clean = subprocess.run(["bash", "-c", script], env=env, check=False)
+    assert clean.returncode == 0
+    for value in ("1", ""):
+        refused = subprocess.run(
+            ["bash", "-c", script],
+            env={**env, "UV_NO_MODIFY_PATH": value},
+            capture_output=True,
+            check=False,
+        )
+        assert refused.returncode == 1
 
 
 def test_python_is_installed_with_an_empty_environment() -> None:
