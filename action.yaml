@@ -160,6 +160,20 @@ runs:
     # executes. An invalid preference makes uv refuse its arguments before
     # any lookup; setup-uv then reports the Python version as "unknown",
     # which nothing reads.
+    #
+    # UV_NO_MODIFY_PATH makes setup-uv leave its own uv off PATH, so a
+    # uv the caller put on PATH would answer instead. A step cannot
+    # unset a variable the caller's job sets, so refuse it outright.
+    - name: "Refuse an inherited UV_NO_MODIFY_PATH"
+      id: refuse-no-modify-path
+      shell: bash
+      run: |
+        # Refuse an inherited UV_NO_MODIFY_PATH
+        if [ -n "${UV_NO_MODIFY_PATH+set}" ]; then
+          echo "Error: UV_NO_MODIFY_PATH is set; unset it for this action ❌" >&2
+          exit 1
+        fi
+
     - name: "Set up uv"
       id: setup-uv
       # yamllint disable-line rule:line-length
