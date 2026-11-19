@@ -25,6 +25,7 @@ class CategoryKey(str, Enum):
     SCORECARD = "scorecard"
     ZIZMOR = "zizmor"
     AISLOP = "aislop"
+    FUZZ = "fuzz"
     DEPENDABOT_ALERTS = "dependabot_alerts"
     SECRET_SCANNING = "secret_scanning"
     DEPENDABOT_ALERTS_ENABLED = "dependabot_alerts_enabled"

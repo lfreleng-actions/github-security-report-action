@@ -17,6 +17,7 @@ from types import MappingProxyType
 from github_security_report.categories import CategoryKey
 from github_security_report.config.order import OrderConfig
 from github_security_report.config.workflow_runs import WorkflowRunsConfig
+from github_security_report.fuzz import DEFAULT_FUZZ_LANGUAGES
 from github_security_report.matching import Pattern
 from github_security_report.severity import Severity
 from github_security_report.summary import ExcludedDisplay, RepoList
@@ -212,12 +213,16 @@ class ReportConfig:
     issue_age_warn_days: int = 30
     issue_age_error_days: int = 60
     # Organisation feature gating for the workflow-driven signals (Scorecard,
-    # zizmor, aislop): when true, each is collected only after a cheap check
+    # zizmor, aislop, fuzz): when true, each is collected only after a cheap check
     # finds organisation support (an org ruleset requiring the workflow,
     # existing code-scanning alerts, or analyses on a sample of repositories);
     # otherwise the signal's section reports a single "Skipping feature" line.
     # False disables the check and always probes every signal.
     gating: bool = True
+    # The Linguist languages that make a repository applicable to fuzzing: one
+    # holding none of them is counted as Not applicable rather than listed as
+    # not enabled (ADR-0009). Compared case-insensitively.
+    fuzz_languages: tuple[str, ...] = DEFAULT_FUZZ_LANGUAGES
     # Repositories per batched GraphQL prefetch query (the releases/tags,
     # Dependabot-enablement, open-issues and pull-request data). GitHub caps
     # the work one GraphQL query may do at roughly ten seconds of execution

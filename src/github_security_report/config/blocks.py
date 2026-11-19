@@ -168,6 +168,8 @@ def _report_from(
         legacy = data.pop("release_min_age_days")
         data.setdefault("repo_min_age_days", legacy)
     result = replace(base, **{k: v for k, v in data.items() if k in _REPORT_SCALARS})
+    if "fuzz_languages" in data:
+        result = replace(result, fuzz_languages=tuple(data["fuzz_languages"]))
     if "ruleset_workflows" in data:
         # Merge so the built-in defaults (e.g. zizmor) survive unless overridden.
         merged = {**base.ruleset_workflows, **data["ruleset_workflows"]}

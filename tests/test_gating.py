@@ -70,12 +70,12 @@ async def _gate(
 
 async def test_alert_evidence_supports_without_probing() -> None:
     client = GateClient()
-    results = await _gate(
-        client, [_repo("a")], alerts=[_cs_alert("aislop"), _cs_alert("zizmor")]
-    )
+    alerts = [_cs_alert("aislop"), _cs_alert("zizmor"), _cs_alert("fuzz")]
+    results = await _gate(client, [_repo("a")], alerts=alerts)
     assert results[SignalType.AISLOP].supported
     assert results[SignalType.ZIZMOR].supported
-    # zizmor/aislop were decided for free; only Scorecard needed a probe.
+    assert results[SignalType.FUZZ].supported
+    # zizmor/aislop/fuzz were decided for free; only Scorecard needed a probe.
     assert all(tool == "Scorecard" for _, tool in client.tool_probes)
 
 

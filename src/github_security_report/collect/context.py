@@ -20,6 +20,7 @@ from typing import Any, Protocol, TypeVar
 
 from github_security_report.client import GraphBatchError
 from github_security_report.collect.protocols import ClientProtocol
+from github_security_report.fuzz import DEFAULT_FUZZ_LANGUAGES
 from github_security_report.models import Repo, RepoGraphData
 from github_security_report.workflow_runs import RunStore
 
@@ -144,6 +145,8 @@ class OrgCollectContext:
     # the external Scorecard read is worth making at all.
     probe_tools: tuple[str, ...]
     probe_scorecard: bool
+    # The Linguist languages that make a repository applicable to fuzzing.
+    fuzz_languages: tuple[str, ...] = DEFAULT_FUZZ_LANGUAGES
 
     def graph_for(self, name: str) -> RepoGraphData:
         """Prefetched GraphQL data for a repository, or unreadable defaults.

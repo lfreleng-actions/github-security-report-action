@@ -165,7 +165,7 @@ def report(
     no_gating: bool = typer.Option(
         False,
         "--no-gating",
-        help="Always probe the workflow-driven signals (Scorecard, zizmor, aislop) instead of skipping those the organisation appears not to support.",
+        help="Always probe the workflow-driven signals (Scorecard, zizmor, aislop, fuzz) instead of skipping those the organisation appears not to support.",
     ),
     include_archived: bool = typer.Option(
         False,

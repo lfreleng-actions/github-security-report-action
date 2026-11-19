@@ -22,7 +22,7 @@ render surface: unlike a row limit, which legitimately differs between the
 terminal and a Slack digest, a table's ordering is a property of the table and
 must read the same everywhere -- including in ``report.json``.
 
-The severity signal tables (CodeQL, Scorecard, zizmor, aislop, Dependabot
+The severity signal tables (CodeQL, Scorecard, zizmor, aislop, fuzz, Dependabot
 alerts, secret scanning) honour the same configuration key, but resolve their
 terms against a **fixed domain vocabulary** rather than a column list -- see
 :func:`signal_sort_columns`. Their rows are :class:`models.RepoSignal` objects

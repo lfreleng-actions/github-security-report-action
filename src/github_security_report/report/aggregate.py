@@ -39,6 +39,7 @@ SIGNAL_ORDER: tuple[SignalType, ...] = (
     SignalType.AISLOP,
     SignalType.DEPENDABOT,
     SignalType.CODEQL,
+    SignalType.FUZZ,
     SignalType.ZIZMOR,
     SignalType.SECRET_SCANNING,
 )
@@ -264,6 +265,9 @@ def build_org_report(
                 clean_count=sum(1 for s in results if s.state is RepoState.CLEAN),
                 nag_repos=sorted(nag, key=lambda r: r.name),
                 unknown_count=sum(1 for s in results if s.state is RepoState.UNKNOWN),
+                not_applicable_count=sum(
+                    1 for s in results if s.state is RepoState.NOT_APPLICABLE
+                ),
                 skipped=signal in skipped_signals,
             )
         )

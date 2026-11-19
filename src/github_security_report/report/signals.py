@@ -35,6 +35,10 @@ class SignalSection:
     clean_count: int = 0
     nag_repos: list[Repo] = field(default_factory=list)
     unknown_count: int = 0
+    # Repositories the signal cannot examine (fuzzing, for one holding no
+    # fuzzable language), counted on a footer line of their own. Zero for
+    # every signal that applies to all repositories.
+    not_applicable_count: int = 0
     # True when organisation feature gating found no support for this signal's
     # tooling (no ruleset, alerts or analyses), so no telemetry was gathered.
     # A skipped section renders as a single "Skipping feature" line with a
@@ -61,8 +65,8 @@ class SignalSection:
 
         Severity signals enumerate their failures as table rows, so there is no
         single failure count here -- the footer carries the not-enabled (nag)
-        count, the unknown count, the clean (pass) count, and the excluded
-        repositories passed in by the caller.
+        count, the unknown count, the clean (pass) count, the not-applicable
+        count, and the excluded repositories passed in by the caller.
         """
         meta = self.signal.meta
         return [
@@ -88,5 +92,6 @@ class SignalSection:
                 meta.pass_label,
                 all_label=meta.pass_all_label,
             ),
+            SummaryCount("na", self.not_applicable_count, "Not applicable"),
             *exclusions.counts(),
         ]

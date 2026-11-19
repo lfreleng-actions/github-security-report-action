@@ -338,7 +338,7 @@ async def test_code_scanning_tools_probes_tools_a_full_page_omits(
         for c in route.calls
         if "tool_name" in c.request.url.params
     )
-    assert probed == ["Scorecard", "aislop", "zizmor"]
+    assert probed == ["Scorecard", "aislop", "fuzz", "zizmor"]
 
 
 @respx.mock
@@ -4392,6 +4392,57 @@ async def test_http_502_probe_after_full_page_keeps_the_page_status(
         side_effect=_side
     )
     assert await client.code_scanning_tools("o", "r") == (200, {"CodeQL"})
+
+
+@respx.mock
+async def test_failed_probe_names_its_tool_unread(
+    client: GitHubClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A probe that fails leaves its tool out of the result, as before, and
+    # says so, so a caller can tell an unread tool from an absent one. A
+    # probe answering 200 settles its tool whether or not it was found.
+    monkeypatch.setattr(
+        "github_security_report.client.transport.asyncio.sleep", _no_sleep
+    )
+
+    def _side(request: httpx.Request) -> httpx.Response:
+        tool = request.url.params.get("tool_name")
+        if tool is None:
+            return httpx.Response(200, json=[_tool_analysis("CodeQL")] * 100)
+        if tool == "fuzz":
+            return httpx.Response(503)
+        if tool == "zizmor":
+            return httpx.Response(403)
+        return httpx.Response(200, json=[])
+
+    respx.get(url__startswith=f"{API}/repos/o/r/code-scanning/analyses").mock(
+        side_effect=_side
+    )
+    reads = await client.code_scanning_tool_reads("o", "r")
+    assert (reads.status, reads.found) == (200, {"CodeQL"})
+    assert reads.unread == {"fuzz", "zizmor"}
+
+
+@respx.mock
+async def test_malformed_probe_keeps_the_tools_the_page_settled(
+    client: GitHubClient,
+) -> None:
+    # A full page shows CodeQL and the fuzz probe answers with a malformed
+    # body: fuzz alone is unread, and the page's 200 still stands for CodeQL.
+    def _side(request: httpx.Request) -> httpx.Response:
+        tool = request.url.params.get("tool_name")
+        if tool is None:
+            return httpx.Response(200, json=[_tool_analysis("CodeQL")] * 100)
+        if tool == "fuzz":
+            return _html()
+        return httpx.Response(200, json=[])
+
+    respx.get(url__startswith=f"{API}/repos/o/r/code-scanning/analyses").mock(
+        side_effect=_side
+    )
+    reads = await client.code_scanning_tool_reads("o", "r")
+    assert (reads.status, reads.found) == (200, {"CodeQL"})
+    assert reads.unread == reads.malformed == {"fuzz"}
 
 
 @respx.mock

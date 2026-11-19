@@ -15,6 +15,7 @@ from github_security_report import collect, layout, pulls, scope
 from github_security_report.authors import MembershipGap, OrgMembership
 from github_security_report.categories import CategoryKey
 from github_security_report.client import GraphBatchError
+from github_security_report.client.analyses import ToolReads
 from github_security_report.client.workflow_runs import RunDrillDown, RunListing
 from github_security_report.code_quality import CodeQualitySetup
 from github_security_report.codeql import CodeQLConfiguration, DefaultSetup
@@ -69,6 +70,8 @@ class FakeClient:
             "dependamerge": {"CodeQL", "Scorecard"},
             "git-configure-action": {"CodeQL"},
         }
+        # Tools whose filtered analyses probe failed, per repository.
+        self.unread_tools: dict[str, frozenset[str]] = {}
         self.scores = {"dependamerge": 8.2}
         self.members: set[str] = {"insider"}
         # Why membership is unreadable; None reads ``members`` in full.
@@ -136,13 +139,15 @@ class FakeClient:
             }
         ]
 
-    async def code_scanning_tools(
+    async def code_scanning_tool_reads(
         self, org: str, repo: str, tools: tuple[str, ...] | None = None
-    ) -> tuple[int, set[str]]:
+    ) -> ToolReads:
         found = self.tools.get(repo, set())
+        unread = self.unread_tools.get(repo, frozenset())
         if tools is not None:
             found = found & set(tools)
-        return 200, found
+            unread = unread & frozenset(tools)
+        return ToolReads(200, found, unread)
 
     async def code_scanning_tool_present(self, org: str, repo: str, tool: str) -> bool:
         return tool in self.tools.get(repo, set())
@@ -613,10 +618,10 @@ class FakeRepoClient:
             return None
         return _repo(repo)
 
-    async def code_scanning_tools(
+    async def code_scanning_tool_reads(
         self, org: str, repo: str, tools: tuple[str, ...] | None = None
-    ) -> tuple[int, set[str]]:
-        return 200, {"CodeQL", "Scorecard"}
+    ) -> ToolReads:
+        return ToolReads(200, {"CodeQL", "Scorecard"})
 
     async def repo_code_scanning_alerts(
         self, org: str, repo: str
@@ -664,6 +669,25 @@ async def test_collect_repo_mixed_state() -> None:
     # zizmor is enforced via the branch ruleset, so it is clean (enabled, no
     # zizmor findings) rather than nagged.
     assert by_signal[SignalType.ZIZMOR].state is RepoState.CLEAN
+
+
+async def test_collect_repo_malformed_fuzz_probe_keeps_codeql() -> None:
+    # The fuzz probe answered with a malformed body: fuzz is unknown, and
+    # the CodeQL alerts are still read, so the CI gate still sees them.
+    class MalformedFuzzClient(FakeRepoClient):
+        async def code_scanning_tool_reads(
+            self, org: str, repo: str, tools: tuple[str, ...] | None = None
+        ) -> ToolReads:
+            fuzz = frozenset({"fuzz"})
+            return ToolReads(200, {"CodeQL"}, unread=fuzz, malformed=fuzz)
+
+    repo, signals = await collect.collect_repo(
+        MalformedFuzzClient(), "o", "dependamerge"
+    )
+    assert repo is not None
+    by_signal = {s.signal: s for s in signals}
+    assert by_signal[SignalType.CODEQL].state is RepoState.OFFENDER
+    assert by_signal[SignalType.FUZZ].state is RepoState.UNKNOWN
 
 
 async def test_collect_repo_unreadable_returns_none() -> None:

@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 """Organisation feature gating for the workflow-driven signals.
 
-The Scorecard, zizmor and aislop signals only produce data when an
+The Scorecard, zizmor, aislop and fuzz signals only produce data when an
 organisation has deployed supporting workflows (a daily org-wide scan that
 uploads SARIF to code scanning, a PR ruleset requiring the scan workflow, or --
 for Scorecard -- a per-repository reusable workflow; see
@@ -56,6 +56,7 @@ GATED_SIGNALS: tuple[SignalType, ...] = (
     SignalType.SCORECARD,
     SignalType.ZIZMOR,
     SignalType.AISLOP,
+    SignalType.FUZZ,
 )
 
 # Repositories sampled for the analyses-presence probe when the free evidence

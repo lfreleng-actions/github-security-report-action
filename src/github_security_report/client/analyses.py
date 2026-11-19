@@ -78,6 +78,25 @@ class AnalysesPage:
         )
 
 
+@dataclass(frozen=True)
+class ToolReads:
+    """Which code-scanning tools a repository's analyses show.
+
+    ``status`` is the cached page's, authoritative for the endpoint, and
+    ``found`` the tools detected. ``unread`` names the tools the page left
+    open whose filtered probe failed, so their absence from ``found`` is not
+    evidence that they never ran. ``malformed`` is the subset whose probe
+    answered 200 with a body that could not be read. Neither touches
+    ``status``: one tool's failed probe must not turn the tools the page did
+    settle into unknowns.
+    """
+
+    status: int
+    found: set[str]
+    unread: frozenset[str] = frozenset()
+    malformed: frozenset[str] = frozenset()
+
+
 def _compact(raw: object) -> Mapping[str, object] | None:
     """One analysis reduced to the fields kept, or ``None`` for a non-object."""
     if not isinstance(raw, dict):
@@ -194,18 +213,32 @@ class AnalysesReads(OrgReadClient):
         ``MALFORMED_STATUS``, so no omitted tool is reported as not enabled.
         An HTTP 502 from a probe is an ordinary failure, not a malformed body.
         Callers pass a subset when organisation gating has already ruled
-        some tools out.
+        some tools out. :meth:`code_scanning_tool_reads` reports the same
+        reads per tool, keeping the page's status.
+        """
+        reads = await self.code_scanning_tool_reads(org, repo, tools)
+        if reads.malformed:
+            return MALFORMED_STATUS, reads.found
+        return reads.status, reads.found
+
+    async def code_scanning_tool_reads(
+        self, org: str, repo: str, tools: tuple[str, ...] | None = None
+    ) -> ToolReads:
+        """:meth:`code_scanning_tools`, naming the tools whose probe failed.
+
+        A malformed probe lands in ``unread`` and ``malformed`` for its own
+        tool and leaves ``status`` at the page's 200.
         """
         probe_tools = tools if tools is not None else _CODE_SCANNING_SIGNAL_TOOLS
         if not probe_tools:
-            return 200, set()
+            return ToolReads(200, set())
         page = await self.analyses_page(org, repo)
         if page.status != 200:
-            return page.status, set()
+            return ToolReads(page.status, set())
         found = {tool for tool in probe_tools if tool in page.tools}
         missing = [tool for tool in probe_tools if tool not in found]
         if page.complete or not missing:
-            return 200, found
+            return ToolReads(200, found)
         results = await asyncio.gather(
             *(self._read_analyses_tool_probe(org, repo, tool) for tool in missing)
         )
@@ -214,9 +247,15 @@ class AnalysesReads(OrgReadClient):
             for tool, (status, hit, _) in zip(missing, results, strict=True)
             if status == 200 and hit
         )
-        if any(malformed for _, _, malformed in results):
-            return MALFORMED_STATUS, found
-        return 200, found
+        unread = frozenset(
+            tool
+            for tool, (status, _, _) in zip(missing, results, strict=True)
+            if status != 200
+        )
+        malformed = frozenset(
+            tool for tool, (_, _, bad) in zip(missing, results, strict=True) if bad
+        )
+        return ToolReads(200, found, unread, malformed)
 
     async def codeql_configurations(
         self, org: str, repo: str, branch: str

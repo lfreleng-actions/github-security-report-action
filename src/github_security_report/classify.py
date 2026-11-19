@@ -6,14 +6,16 @@ Pure, transport-free logic encoding every Phase 0 finding
 (``docs/phase0-findings.md``):
 
 - the single code-scanning feed is partitioned by ``tool.name`` into CodeQL,
-  Scorecard, zizmor and aislop -- counts are filtered per tool;
-- CodeQL/Scorecard/zizmor/aislop enablement is the presence of that tool in
+  Scorecard, zizmor, aislop and fuzz -- counts are filtered per tool;
+- CodeQL/Scorecard/zizmor/aislop/fuzz enablement is the presence of that tool in
   ``code-scanning/analyses`` (not ``default-setup``); a 404 on code scanning
   means it is disabled entirely;
 - secret scanning 404 = disabled, 200 [] = enabled-clean;
 - Dependabot ``hasVulnerabilityAlertsEnabled == false`` = disabled;
 - Scorecard prefers the external aggregate score, else code-scanning findings;
 - 403 / indeterminate -> the unknown bucket, never clean or nag;
+- a repository holding no fuzzable language is not applicable to fuzzing,
+  never nagged (ADR-0009);
 - an alert read that failed (even part-way, keeping the alerts it had
   collected) is unknown unless an alert in hand already fails the cutoff:
   the pages never read could hold the failing alerts.
@@ -75,9 +77,13 @@ class RepoFacts:
     """Raw per-repository facts gathered by the client, pre-classification."""
 
     repo: Repo
-    # Code scanning (covers CodeQL, Scorecard, zizmor, aislop).
+    # Code scanning (covers CodeQL, Scorecard, zizmor, aislop, fuzz).
     code_scanning_status: int = 200  # 200 ok, 404 disabled, 403 forbidden
     code_scanning_tools: set[str] = field(default_factory=set)  # analyses tool names
+    # Tools whose presence the analyses read could not settle (a failed probe).
+    code_scanning_unread: frozenset[str] = frozenset()
+    # The subset whose probe answered 200 with an unreadable body.
+    code_scanning_malformed: frozenset[str] = frozenset()
     code_scanning_alerts: list[dict] = field(default_factory=list)  # all tools
     code_scanning_alerts_status: int = 200  # status of the alert read (200 ok)
     # Secret scanning.
@@ -94,6 +100,11 @@ class RepoFacts:
     # Signals (by value) enforced for this repo via an org/branch ruleset
     # (e.g. zizmor required by a central workflow), even with no per-repo file.
     ruleset_signals: set[str] = field(default_factory=set)
+    # Whether the repository holds a fuzzable language (see :mod:`fuzz`); None
+    # when its languages could not be read. Org mode sets it from the GraphQL
+    # prefetch. Repo mode reads no languages and leaves it True, so there the
+    # signal is classified exactly as aislop is.
+    fuzz_applicable: bool | None = True
 
 
 # --------------------------------------------------------------------------- #
@@ -151,6 +162,10 @@ def _code_scanning_tool_signal(
             else "indeterminate"
         )
         return RepoSignal(repo, signal, RepoState.UNKNOWN, detail=detail)
+    # A probe answered with a malformed body settles nothing about its tool,
+    # and only its tool: the others keep the page's result.
+    if not covered and tool_name in facts.code_scanning_malformed:
+        return RepoSignal(repo, signal, RepoState.UNKNOWN, detail="indeterminate")
     enabled = covered or (
         facts.code_scanning_status == 200 and tool_name in facts.code_scanning_tools
     )
@@ -207,6 +222,58 @@ def classify_aislop(
     )
 
 
+def classify_fuzz(
+    facts: RepoFacts, fail_severities: FailSeverities | None = None
+) -> RepoSignal:
+    """Fuzzing: aislop's four states, plus Not applicable (ADR-0009).
+
+    A ``fuzz`` alert in hand is proof the job covers the repository, so it is
+    classified from its alerts whatever the analyses read or the languages
+    say: an offender at or above the cutoff, otherwise clean after a complete
+    alert read and unknown after an incomplete one. So is a repository with a
+    ``fuzz`` analysis or ruleset. One the fuzz job has not covered is unknown
+    when its ``fuzz`` probe failed, and otherwise not applicable when it holds
+    no fuzzable language and the analyses read was definitive (200 or 404);
+    after an indeterminate read it is unknown. It is unknown rather than
+    nagged when its languages could not be read.
+    """
+    repo = facts.repo
+    tool = CODE_SCANNING_TOOLS[SignalType.FUZZ]
+    counts = count_code_scanning(facts.code_scanning_alerts, tool)
+    if counts.total:
+        return _alert_signal(
+            repo,
+            SignalType.FUZZ,
+            counts,
+            facts.code_scanning_alerts_status,
+            _cutoff(SignalType.FUZZ, fail_severities),
+        )
+    covered = SignalType.FUZZ.value in facts.ruleset_signals or (
+        facts.code_scanning_status == 200 and tool in facts.code_scanning_tools
+    )
+    if not covered and tool in facts.code_scanning_unread:
+        return RepoSignal(
+            repo, SignalType.FUZZ, RepoState.UNKNOWN, detail="indeterminate"
+        )
+    if (
+        not covered
+        and facts.fuzz_applicable is False
+        and facts.code_scanning_status in (200, 404)
+    ):
+        return RepoSignal(
+            repo,
+            SignalType.FUZZ,
+            RepoState.NOT_APPLICABLE,
+            detail="no fuzzable language",
+        )
+    result = _code_scanning_tool_signal(facts, SignalType.FUZZ, tool, fail_severities)
+    if result.state is RepoState.NAG and facts.fuzz_applicable is None:
+        return RepoSignal(
+            repo, SignalType.FUZZ, RepoState.UNKNOWN, detail="languages unreadable"
+        )
+    return result
+
+
 def classify_scorecard(
     facts: RepoFacts, fail_severities: FailSeverities | None = None
 ) -> RepoSignal:
@@ -247,8 +314,13 @@ def classify_scorecard(
     # An indeterminate external request (a 403 forbidden/blocked, a 5xx
     # including the synthetic 503 a transport failure produces, or a forbidden
     # code-scanning probe) is unknown, not a definitive nag. Only a clean 404
-    # with no code-scanning Scorecard data means "no results".
-    if facts.code_scanning_status == 403 or facts.scorecard_status not in (200, 404):
+    # with no code-scanning Scorecard data means "no results". A malformed
+    # Scorecard probe settles nothing either, as for the other tools.
+    if (
+        facts.code_scanning_status == 403
+        or facts.scorecard_status not in (200, 404)
+        or CODE_SCANNING_TOOLS[SignalType.SCORECARD] in facts.code_scanning_malformed
+    ):
         return RepoSignal(
             repo, SignalType.SCORECARD, RepoState.UNKNOWN, detail="indeterminate"
         )
@@ -337,6 +409,7 @@ _CLASSIFIERS: dict[SignalType, _Classifier] = {
     SignalType.SCORECARD: classify_scorecard,
     SignalType.ZIZMOR: classify_zizmor,
     SignalType.AISLOP: classify_aislop,
+    SignalType.FUZZ: classify_fuzz,
     SignalType.DEPENDABOT: classify_dependabot,
     SignalType.SECRET_SCANNING: classify_secret_scanning,
 }
