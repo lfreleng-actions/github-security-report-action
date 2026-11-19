@@ -605,7 +605,7 @@ and the run lists it with GitHub's status code.
 ```yaml
 - name: "Security report"
   id: report
-  uses: lfreleng-actions/github-security-report-action@v0.1.0
+  uses: lfreleng-actions/github-security-report-action@a5ad54423029f7b4923e50625c85a7dace1fd0b4  # v0.25.0
   with:
     scope: "org"
     config: "${{ secrets.GSR_CONFIG || vars.GSR_CONFIG }}"
@@ -626,7 +626,7 @@ digest only on the configured `report_day` (default Tuesday).
 
 ```yaml
 - name: "Security report"
-  uses: lfreleng-actions/github-security-report-action@v0.1.0
+  uses: lfreleng-actions/github-security-report-action@a5ad54423029f7b4923e50625c85a7dace1fd0b4  # v0.25.0
   with:
     scope: "repo"
     repo: "${{ github.repository }}"  # lets the job run without a checkout
@@ -1634,7 +1634,7 @@ github-security-report report --hide pull_requests_assigned
 The Action exposes the same control through a `hide` input:
 
 ```yaml
-- uses: lfreleng-actions/github-security-report-action@v1
+- uses: lfreleng-actions/github-security-report-action@a5ad54423029f7b4923e50625c85a7dace1fd0b4  # v0.25.0
   with:
     hide: "pull_requests_assigned"   # space- or comma-separated
 ```
