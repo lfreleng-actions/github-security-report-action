@@ -16,6 +16,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from github_security_report.client.bodies import MALFORMED_STATUS, _read_body
 from github_security_report.client.parsers import _next_page_url
 from github_security_report.client.transport import Transport
 
@@ -75,8 +76,9 @@ class Paging(Transport):
         Parses the response into a :class:`GraphQLResult` and closes it, so
         callers neither leak a pooled connection nor repeat the
         request/close/parse dance. A non-200 answer carries no ``data``; a
-        200 whose body is not a JSON object reads as no ``data`` and no
-        ``errors``, which a load-bearing caller treats as a failed query.
+        200 whose body is not valid JSON, or not a JSON object, reads as no
+        ``data`` and no ``errors``, which a load-bearing caller treats as a
+        failed query.
         """
         payload: dict[str, object] = {"query": query}
         if variables is not None:
@@ -86,9 +88,8 @@ class Paging(Transport):
         if status != 200:
             await resp.aclose()  # unread body would leak a pooled connection
             return GraphQLResult(status)
-        body = resp.json()
-        await resp.aclose()  # release the connection once the body is read
-        if not isinstance(body, dict):
+        body = await _read_body(resp, dict, quiet=quiet)
+        if body is None:
             return GraphQLResult(status)
         data = body.get("data")
         errors = body.get("errors")
@@ -135,8 +136,11 @@ class Paging(Transport):
         If a *later* page fails, the items gathered so far are returned under
         that failing status (not 200): the data is incomplete, so callers must
         be able to degrade to unknown rather than treat an undercount as
-        authoritative. Every response is closed once read, or unread on a
-        failure, so no pooled connection leaks.
+        authoritative. A 200 page whose body is not valid JSON, or not the
+        array or envelope object expected, fails the same way under
+        ``MALFORMED_STATUS`` (502); on the first page nothing was read, so no
+        ``etag`` is returned either. Every response is closed once read, or
+        unread on a failure, so no pooled connection leaks.
         """
         headers = {"If-None-Match": etag} if etag else None
         resp = await self._request(
@@ -152,10 +156,21 @@ class Paging(Transport):
             return PageResult(status)
         first_etag = resp.headers.get("etag")
         items: list[dict] = []
+        first_page = True
         while True:
-            page = _page_items(resp.json(), items_key)
             next_url = _next_page_url(resp)
-            await resp.aclose()  # release the connection once body/links are read
+            # Each read closes the response whatever the body held.
+            body: object = (
+                await _read_body(resp, list, quiet=quiet)
+                if items_key is None
+                else await _read_body(resp, dict, quiet=quiet)
+            )
+            page = _page_items(body, items_key)
+            if page is None:
+                return PageResult(
+                    MALFORMED_STATUS, items, None if first_page else first_etag
+                )
+            first_page = False
             if stop is not None:
                 for index, item in enumerate(page):
                     if stop(item):
@@ -186,15 +201,19 @@ class Paging(Transport):
         return result.status, result.items
 
 
-def _page_items(body: object, items_key: str | None) -> list[dict]:
+def _page_items(body: object, items_key: str | None) -> list[dict] | None:
     """The items on one page: the bare array, or the list under ``items_key``.
 
-    An envelope without the key, or a body of the wrong shape, reads as an
-    empty page rather than raising: the page's status was 200, so the walk
-    goes on to the next link and the caller sees what the remaining pages hold.
+    ``None`` when the body is malformed: not a JSON array for a bare-array
+    list, or not a JSON object for an enveloped one. That is an unreadable
+    page, never an empty one, since an empty alert list reads as "no alerts".
+    An envelope object without the key, or holding something other than a
+    list under it, reads as an empty page: the object is the shape GitHub
+    sends, so the walk goes on to the next link.
     """
-    if items_key is not None:
-        page = body.get(items_key) if isinstance(body, dict) else None
-    else:
-        page = body
+    if items_key is None:
+        return list(body) if isinstance(body, list) else None
+    if not isinstance(body, dict):
+        return None
+    page = body.get(items_key)
     return list(page) if isinstance(page, list) else []

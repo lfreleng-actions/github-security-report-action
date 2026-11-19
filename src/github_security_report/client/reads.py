@@ -17,11 +17,12 @@ import logging
 from urllib.parse import quote
 
 from github_security_report.client.analyses import AnalysesReads
+from github_security_report.client.bodies import MALFORMED_STATUS, _read_body
 from github_security_report.client.codeql_parsers import _parse_default_setup
 from github_security_report.client.queries import (
     _DEPENDABOT_ENABLED_QUERY,
 )
-from github_security_report.client.repo_parser import _parse_repo
+from github_security_report.client.repo_parser import _parse_repo_or_none
 from github_security_report.code_quality import CodeQualitySetup
 from github_security_report.codeql.facts import (
     WORKFLOW_MISSING,
@@ -64,7 +65,8 @@ class ReadClient(AnalysesReads):
 
         Transport failures to this third-party API are handled centrally by
         ``_request`` (which returns an indeterminate 503), so a network blip
-        degrades the Scorecard signal rather than aborting the run.
+        degrades the Scorecard signal rather than aborting the run. A 200
+        whose body is not a JSON object is ``(MALFORMED_STATUS, None)``.
         """
         url = f"{self._scorecard_url}/projects/github.com/{org}/{repo}"
         resp = await self._request("GET", url, client=self._ext_client)
@@ -72,14 +74,19 @@ class ReadClient(AnalysesReads):
             status = resp.status_code
             await resp.aclose()  # unread body would leak a pooled connection
             return status, None
-        score = resp.json().get("score")
-        await resp.aclose()  # release the connection once the body is read
-        return 200, score
+        body = await _read_body(resp, dict)
+        if body is None:
+            return MALFORMED_STATUS, None
+        return 200, body.get("score")
 
     async def repo_branch_rules(
         self, org: str, repo: str, branch: str
     ) -> tuple[int, list[dict]]:
-        """Effective branch rules for a repo (includes inherited org rulesets)."""
+        """Effective branch rules for a repo (includes inherited org rulesets).
+
+        A 200 whose body is not a JSON array is ``(MALFORMED_STATUS, [])``,
+        never an empty rule set.
+        """
         resp = await self._request(
             "GET", f"{self._api_url}/repos/{org}/{repo}/rules/branches/{branch}"
         )
@@ -87,22 +94,22 @@ class ReadClient(AnalysesReads):
             status = resp.status_code
             await resp.aclose()  # unread body would leak a pooled connection
             return status, []
-        rules = list(resp.json())
-        await resp.aclose()  # release the connection once the body is read
+        rules = await _read_body(resp, list)
+        if rules is None:
+            return MALFORMED_STATUS, []
         return 200, rules
 
     # ------------------------------------------------------------------ #
     # Per-repo data (repo mode)
     # ------------------------------------------------------------------ #
     async def get_repo(self, org: str, repo: str) -> Repo | None:
-        """Fetch a single repository's identity."""
+        """Fetch a single repository's identity (None when unreadable)."""
         resp = await self._request("GET", f"{self._api_url}/repos/{org}/{repo}")
         if resp.status_code != 200:
             await resp.aclose()  # unread body would leak a pooled connection
             return None
-        raw = resp.json()
-        await resp.aclose()  # release the connection once the body is read
-        return _parse_repo(raw)
+        raw = await _read_body(resp, dict)
+        return None if raw is None else _parse_repo_or_none(raw)
 
     async def repo_code_scanning_alerts(
         self, org: str, repo: str
@@ -158,9 +165,8 @@ class ReadClient(AnalysesReads):
         if status != 200:
             await resp.aclose()  # unread body would leak a pooled connection
             return None
-        data = resp.json()
-        await resp.aclose()  # release the connection once the body is read
-        return bool(data.get("enabled"))
+        data = await _read_body(resp, dict)
+        return None if data is None else bool(data.get("enabled"))
 
     async def private_vulnerability_reporting(self, org: str, repo: str) -> bool | None:
         """Whether private vulnerability reporting is enabled (None = unknown).
@@ -182,9 +188,8 @@ class ReadClient(AnalysesReads):
         if status != 200:
             await resp.aclose()  # unread body would leak a pooled connection
             return None
-        data = resp.json()
-        await resp.aclose()  # release the connection once the body is read
-        return bool(data.get("enabled"))
+        data = await _read_body(resp, dict)
+        return None if data is None else bool(data.get("enabled"))
 
     async def code_quality_setup(self, org: str, repo: str) -> CodeQualitySetup | None:
         """The repository's GitHub Code Quality setup (None = unreadable).
@@ -201,9 +206,8 @@ class ReadClient(AnalysesReads):
         if resp.status_code != 200:
             await resp.aclose()  # unread body would leak a pooled connection
             return None
-        body = resp.json()
-        await resp.aclose()  # release the connection once the body is read
-        return CodeQualitySetup.from_api(body)
+        body = await _read_body(resp, dict)
+        return None if body is None else CodeQualitySetup.from_api(body)
 
     # ------------------------------------------------------------------ #
     # CodeQL scan health (stale configurations, language coverage)
@@ -216,9 +220,8 @@ class ReadClient(AnalysesReads):
         if resp.status_code != 200:
             await resp.aclose()  # unread body would leak a pooled connection
             return None
-        body = resp.json()
-        await resp.aclose()  # release the connection once the body is read
-        return _parse_default_setup(body) if isinstance(body, dict) else None
+        body = await _read_body(resp, dict)
+        return None if body is None else _parse_default_setup(body)
 
     async def workflow_state(self, org: str, repo: str, path: str) -> str | None:
         """The Actions state of the workflow at ``path`` (None when unreadable).
@@ -244,8 +247,8 @@ class ReadClient(AnalysesReads):
             if status == 404 and await self._workflow_file_absent(org, repo, path):
                 return WORKFLOW_MISSING
             return None
-        state = resp.json().get("state")
-        await resp.aclose()  # release the connection once the body is read
+        body = await _read_body(resp, dict)
+        state = None if body is None else body.get("state")
         return state if isinstance(state, str) else None
 
     async def _workflow_file_absent(self, org: str, repo: str, path: str) -> bool:

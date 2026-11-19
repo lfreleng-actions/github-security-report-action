@@ -24,6 +24,7 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from github_security_report.client.bodies import MALFORMED_STATUS, _read_body
 from github_security_report.client.codeql_parsers import (
     latest_codeql_configurations,
 )
@@ -107,14 +108,12 @@ class AnalysesReads(OrgReadClient):
         if status != 200:
             await resp.aclose()  # unread body would leak a pooled connection
             return AnalysesPage(status)
-        body = resp.json()
         more = _next_page_url(resp) is not None
-        await resp.aclose()  # release the connection once body/links are read
-        entries = tuple(
-            kept
-            for raw in (body if isinstance(body, list) else [])
-            if (kept := _compact(raw)) is not None
-        )
+        body = await _read_body(resp, list)
+        if body is None:
+            # Not "no tool has ever run": the page could not be read at all.
+            return AnalysesPage(MALFORMED_STATUS)
+        entries = tuple(kept for raw in body if (kept := _compact(raw)) is not None)
         return AnalysesPage(
             200, entries, complete=not more and len(entries) < _ANALYSES_PAGE
         )
@@ -137,6 +136,18 @@ class AnalysesReads(OrgReadClient):
 
         A ``per_page=1`` + ``tool_name`` filtered read, the definitive
         presence test for a tool the cached page could not rule in or out.
+        A 200 whose body is not a JSON array is ``(MALFORMED_STATUS, False)``.
+        """
+        status, present, _ = await self._read_analyses_tool_probe(org, repo, tool)
+        return status, present
+
+    async def _read_analyses_tool_probe(
+        self, org: str, repo: str, tool: str
+    ) -> tuple[int, bool, bool]:
+        """The tool probe as ``(status, present, malformed)``.
+
+        ``malformed`` is true only for a 200 whose body could not be read,
+        which ``MALFORMED_STATUS`` alone cannot tell from an HTTP 502.
         """
         resp = await self._request(
             "GET",
@@ -146,10 +157,11 @@ class AnalysesReads(OrgReadClient):
         status = resp.status_code
         if status != 200:
             await resp.aclose()  # unread body would leak a pooled connection
-            return status, False
-        has_analyses = bool(resp.json())
-        await resp.aclose()  # release the connection once the body is read
-        return 200, has_analyses
+            return status, False, False
+        body = await _read_body(resp, list)
+        if body is None:
+            return MALFORMED_STATUS, False, True
+        return 200, bool(body), False
 
     async def code_scanning_tool_present(self, org: str, repo: str, tool: str) -> bool:
         """Whether ``tool`` has uploaded code-scanning analyses to this repo.
@@ -177,8 +189,12 @@ class AnalysesReads(OrgReadClient):
         page is the whole history, and otherwise probed with the ``tool_name``
         filter, which does not depend on how many analyses a busy repository
         has accumulated. A probe that fails leaves its tool undetected for
-        this run rather than discarding the whole result. Callers pass a
-        subset when organisation gating has already ruled some tools out.
+        this run rather than discarding the whole result, except a 200 probe
+        answered with a malformed body: the result then carries
+        ``MALFORMED_STATUS``, so no omitted tool is reported as not enabled.
+        An HTTP 502 from a probe is an ordinary failure, not a malformed body.
+        Callers pass a subset when organisation gating has already ruled
+        some tools out.
         """
         probe_tools = tools if tools is not None else _CODE_SCANNING_SIGNAL_TOOLS
         if not probe_tools:
@@ -191,13 +207,15 @@ class AnalysesReads(OrgReadClient):
         if page.complete or not missing:
             return 200, found
         results = await asyncio.gather(
-            *(self._analyses_tool_probe(org, repo, tool) for tool in missing)
+            *(self._read_analyses_tool_probe(org, repo, tool) for tool in missing)
         )
         found.update(
             tool
-            for tool, (status, hit) in zip(missing, results, strict=True)
+            for tool, (status, hit, _) in zip(missing, results, strict=True)
             if status == 200 and hit
         )
+        if any(malformed for _, _, malformed in results):
+            return MALFORMED_STATUS, found
         return 200, found
 
     async def codeql_configurations(
