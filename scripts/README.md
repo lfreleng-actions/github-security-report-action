@@ -33,8 +33,10 @@ resolves its inline dependencies (`httpx`, `rich`) on the fly.
 ### Run
 
 ```bash
-# An org-admin token is required (e.g. a classic PAT with repo admin /
-# admin:org). The god token export publishes it as $GITHUB_TOKEN:
+# The token needs the classic `repo` scope from an account with admin access
+# to each repository, plus `read:org` to enumerate them. See "Token
+# permissions" in the top-level README. The god token export publishes it as
+# $GITHUB_TOKEN:
 source ~/.secrets.github.classic.god
 
 # Dry run (default): previews exactly what would change, touches nothing.

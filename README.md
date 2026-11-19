@@ -211,7 +211,7 @@ known list is shorter — see
 
 | Mode | Token | Scope | Output |
 | ---- | ----- | ----- | ------ |
-| `org` | fine-grained PAT (single org) or classic PAT (multiple orgs) | one or more organisations | GitHub Pages + Slack + terminal |
+| `org` | fine-grained PAT per org, or one classic PAT for several | one or more organisations | GitHub Pages + Slack + terminal |
 | `repo` | `GITHUB_TOKEN` | the current repository only | job summary + outputs + optional PR gate |
 
 `scope: auto` resolves to org mode when configuration is supplied, otherwise
@@ -221,9 +221,13 @@ org-wide security data, so org mode requires a PAT — see
 
 ## Token permissions
 
-Repo mode needs nothing beyond the workflow's ephemeral `GITHUB_TOKEN`. Org mode
-needs a Personal Access Token; choose **one** of the two options below depending
-on how many organisations the report covers.
+Repo mode runs on the workflow's ephemeral `GITHUB_TOKEN`, with the job
+permissions in [Repo mode: the job token](#repo-mode-the-job-token). Org mode
+needs a Personal Access Token: a fine-grained PAT per organisation, or one
+classic PAT for every organisation the report covers (see the two options
+below). The `remediate` subcommand needs write access on top of most of the
+report's reads, and one token for its whole run; see
+[The `remediate` subcommand](#the-remediate-subcommand).
 
 Almost all required access is **read-only**. The tool degrades any read it is
 not permitted to make to an "unknown" status rather than reporting a repository
@@ -259,6 +263,152 @@ repository is covered *solely* by a required-workflow ruleset whose workflow has
 never run. A genuinely unexpected failure to read the rulesets (for example a
 `5xx`) is still logged as a warning.
 
+Org mode also depends on the account behind the token. It reads each
+organisation's code-scanning, Dependabot and secret-scanning alerts through
+GitHub's organisation-wide alert endpoints, which GitHub serves only to an
+organisation owner or security manager (for secret scanning, an owner,
+administrator or security manager), whatever scopes or permissions the token
+carries. This holds for both PAT types, and is separate from the optional
+`admin:org` scope. A token from any other account has those reads refused.
+Most affected signals then read as unknown, but not all: a repository with
+an external Scorecard score is classified from that score alone, so a perfect
+score reads clean even though no code-scanning alert was read. Check the
+account's role rather than relying on unknown counts to expose it.
+
+### Repo mode: the job token
+
+Repo mode reads one repository. Its only organisation-level request is the
+best-effort check of the secret-scanning pattern names against GitHub's
+inventory (see
+[Secret scanning covers three pattern categories](#secret-scanning-covers-three-pattern-categories)),
+made before the secret-scanning reads. The job token cannot make it, nor can a
+token without the organisation access that section names, or any token when
+the repository belongs to a user account. The check is then skipped without
+comment and the generic pattern names are used unverified, so a pattern GitHub
+renames would go unnoticed. The job's `GITHUB_TOKEN` covers the other reads
+once the job grants the map below, with two exceptions described after it: it
+cannot read secret-scanning alerts, and whether it can make the Dependabot
+enablement read is untested:
+
+```yaml
+permissions:
+  actions: read               # workflow run history (Workflow Failures tables)
+  security-events: read       # code-scanning analyses and alerts
+  vulnerability-alerts: read  # Dependabot alerts
+```
+
+A `permissions` map sets every permission it leaves out to `none`. The action
+itself needs no more than the map above: the repository and its effective
+branch rules need only the metadata access every job token carries. A job that
+also runs `actions/checkout` with this token on a private repository must add
+`contents: read`.
+
+Repo mode finds its repository from the action's `repo` input or, when that is
+empty, from the `upstream` then `origin` git remote of the job's workspace; it
+does not read `GITHUB_REPOSITORY`. A job without a checkout has no remote, so
+it stops before reading anything unless it sets
+`repo: "${{ github.repository }}"`. With `repo` set, the job needs no checkout
+and no `contents` permission.
+
+`vulnerability-alerts: read` is the permission GitHub requires before the job
+token can read Dependabot alerts. It does not by itself make the Dependabot
+signal readable: repo mode reads the alerts only after a GraphQL read
+(`hasVulnerabilityAlertsEnabled`) reports Dependabot alerts on, and whether
+the job token can make that read has not been tested. Where it cannot, the
+Dependabot signal reads as unknown when the response carries no repository,
+but as **disabled** when it carries the repository without that field's value
+(see the Dependabot bullet below); neither fails the gate.
+
+No job permission covers secret-scanning alerts: GitHub serves them only to a
+GitHub App or a personal access token, and `security-events` covers code
+scanning. With the job token, secret scanning therefore never gates a pull
+request; it reads as unknown or disabled. To gate on leaked secrets, pass a
+token that can read them through the action's `token` input, and grant it
+the repository permissions for every signal repo mode reads (see the
+[fine-grained table](#single-organisation--fine-grained-pat)). GitHub also
+requires the account behind a personal access token to be an administrator
+of the repository or of its organisation; otherwise the read is refused
+whatever the token's permissions.
+
+Leaked secrets count as **high** findings, so they fail the gate at
+`fail_threshold` `any`, `low`, `medium` or `high`, but not at `critical` or
+the default `none`.
+
+On a `pull_request` run from a fork, GitHub withholds repository secrets by
+default, so a token passed from `secrets` is empty and the action falls back
+to the job token: secret scanning then does not gate that run, and the job
+can pass. A workflow that must not pass without the token should fail in an
+earlier step when the secret is empty. Do not switch to `pull_request_target`
+to obtain the secret: a job that then checks out the pull request's code
+exposes the token to it. For the same reason, do not enable a private or
+internal repository's **Send secrets to workflows from pull requests**
+setting where untrusted contributors can open fork pull requests: with it on,
+the token is passed to workflow code the fork controls instead of falling
+back to the job token.
+
+Repo mode reads the repository's code-scanning, secret-scanning and Dependabot
+alerts. A read the token cannot make does not always surface as unknown. A
+`200` whose body is not valid JSON, or whose top-level JSON type is not the
+one the read expects (an array or an object), counts as a failed read. The
+client checks no deeper: a well-formed body with missing fields is read as
+it stands, so an analyses page of `[{}]` names no tool, and the tools then
+read as not enabled rather than unknown.
+
+- CodeQL, zizmor and aislop: when the analyses read fails with anything but
+  `404`, or the filtered probe for a tool missing from the newest 100
+  analyses answers with invalid JSON or a non-array body, each is unknown,
+  except one a ruleset enforces, whose alert read is then skipped so that it
+  reads as clean. A `404` reads as code scanning **disabled**, and a tool missing from
+  the analyses reads **not enabled**, as it does when its filtered probe fails
+  with an HTTP error.
+  Neither applies to a tool a ruleset enforces: it counts as enabled, and
+  after a `404` its alert read is skipped, so it reads as clean rather than
+  disabled. For a tool detected in the analyses or enforced by a ruleset,
+  an alert at or above the category's cutoff makes the repository an
+  offender even when the alert read did not finish; otherwise an unfinished
+  alert read is **unknown**, never clean. A tool left undetected, such as by
+  a failed probe, reads **not enabled** whatever alerts were collected, so
+  its alerts do not fail the gate.
+- Scorecard prefers its external score from scorecard.dev, read without the
+  token, so it can be classified, clean included, while the analyses are
+  unreadable. Without that score it falls back to its code-scanning alerts
+  only when Scorecard is detected in the analyses, under the same rule for an
+  unfinished alert read; a ruleset does not stand in for detection here, and
+  an undetected Scorecard's alerts do not fail the gate.
+- Secret scanning makes two reads (see
+  [Secret scanning covers three pattern categories](#secret-scanning-covers-three-pattern-categories)).
+  An alert from either makes the repository an offender. Otherwise it reads
+  as **disabled** only when neither read succeeded and the unfiltered one
+  returned `404`, the answer GitHub gives when secret scanning is off. It is
+  unknown when neither succeeded for another reason, a `403` included, and
+  when one read succeeded but the other failed.
+- Dependabot alerts are unknown when the enablement read returns no
+  repository: a failed request, a malformed body, or an error on the
+  repository itself. A response that returns the repository with
+  `hasVulnerabilityAlertsEnabled` null or missing, as a partial response with
+  an error on that field can, reads as Dependabot alerts **disabled**: the
+  alerts are not read, so the signal adds no unknown count and cannot fail the
+  gate. An alert at or above the category's cutoff (`medium` by default)
+  makes the repository an offender even when the alert read did not finish;
+  otherwise an unfinished alert read is **unknown**, never clean.
+
+Repo mode classifies every category against its default cutoff (see
+[Pass/fail severity cutoff](#passfail-severity-cutoff)) and ignores
+`report.categories.<key>.fail_severity`. CodeQL, Scorecard findings and
+Dependabot use `medium`, aislop `low` and zizmor `informational`, so a
+repository whose only CodeQL alerts are `low` reads clean and passes even at
+`fail_threshold` `any` or `low`.
+
+Classification and the gate are separate, and the gate acts only on offenders.
+`fail_threshold: any` fails the job on every offender, a sub-10 Scorecard
+score with no findings included. A severity threshold fails it only on an
+offender with a finding at or above that severity. An unknown or disabled
+signal never fails the gate, so a token missing a permission can pass it:
+check each category's footer for its `❓` unknown count.
+
+Repo mode reads no issues, pull requests or organisation membership, so it
+needs no permission for them.
+
 ### Single organisation — fine-grained PAT
 
 A fine-grained PAT is bound to one resource owner, so it works for a report
@@ -275,6 +425,7 @@ organisation and **Repository access** set to *All repositories*, then grant:
 | Code scanning alerts | CodeQL / Scorecard / zizmor / aislop findings |
 | Secret scanning alerts | Open secret-scanning alerts, across every GitHub pattern category |
 | Issues | Open issues and their labels (GitHub Issues table) |
+| Pull requests | Open pull requests, their reviews and review requests (Pull Requests tables) |
 | Administration | Dependabot enablement + security-updates status, and effective branch rules. *Optional* **write** reads the Code Quality setup, which GitHub gates behind write |
 | Actions | Workflow state behind a stale CodeQL configuration, and the workflow run history behind the Workflow Failures tables (the run listing, single-run re-reads, and the GraphQL read of a failed run's check suite) |
 
@@ -282,11 +433,23 @@ organisation and **Repository access** set to *All repositories*, then grant:
 
 | Permission | Access | Used for |
 | ---------- | ------ | -------- |
-| Administration | Read (write for rulesets) | *Optional*, and the only permission here with a write variant. **Read** keeps the token read-only and unlocks GitHub's secret-scanning pattern inventory (see below). **Write** additionally unlocks organisation rulesets (detecting tools enforced through an org ruleset), which GitHub gates behind Administration write. Omit the permission entirely to skip both; everything else is unaffected. |
+| Members | Read | Organisation membership behind the `Ext` columns of the GitHub Issues and Pull Requests tables. Without it `Ext` is a lower bound and the terminal report prints a warning (see [Inside or outside the organisation](#inside-or-outside-the-organisation)) |
+| Administration | Read (write for rulesets) | *Optional*. **Read** keeps the token read-only and unlocks GitHub's secret-scanning pattern inventory (see below). **Write** additionally unlocks organisation rulesets (detecting tools enforced through an org ruleset), which GitHub gates behind Administration write. Omit the permission entirely to skip both; everything else is unaffected. |
 
-> Read-only is enough for everything except the optional ruleset coverage
-> and the Code Quality setup read above. A fine-grained token cannot span organisations. For a report covering
-> more than one org, use a classic PAT (below).
+> Every permission in both tables is read-only, except the two optional
+> Administration **write** grants: organisation rulesets and the Code Quality
+> setup read. A fine-grained token cannot span organisations, but a report
+> resolves each organisation's own `token_env`, so a multi-organisation report
+> can give each organisation its own fine-grained PAT. Set each organisation's
+> `token_env` to a distinct custom variable, not `GITHUB_TOKEN`, and export
+> each PAT under it (in the action, through the step's `env`). Leave the
+> `token_env` input and `--token-env` unset, since either overrides every
+> organisation's. Org mode in the action still requires a non-empty `token`
+> input, so pass one of those PATs there too. With the `token_env` input unset,
+> the action exports `token` as `GITHUB_TOKEN`, replacing any `GITHUB_TOKEN`
+> the step sets; an organisation without its own `token_env` reads that one.
+> Otherwise use one classic PAT (below). `remediate` runs on a single token
+> (see [The `remediate` subcommand](#the-remediate-subcommand)).
 
 ### Multiple organisations — classic PAT
 
@@ -296,9 +459,9 @@ organisations. Grant these scopes:
 
 | Scope | Used for |
 | ----- | -------- |
-| `repo` | Repository data, including private repositories, and the workflow run history behind the Workflow Failures tables |
+| `repo` | Repository data, including private repositories; open issues and pull requests (GitHub Issues and Pull Requests tables); and the workflow run history behind the Workflow Failures tables |
 | `security_events` | Code scanning, secret scanning, and Dependabot alerts (org-bulk and per-repo) |
-| `read:org` | Listing organisation repositories, and GitHub's secret-scanning pattern inventory (see below) |
+| `read:org` | Listing organisation repositories, organisation membership behind the `Ext` columns, and GitHub's secret-scanning pattern inventory (see below) |
 | `admin:org` | *Optional* — reading organisation rulesets for ruleset-based tool coverage. GitHub gates `GET /orgs/{org}/rulesets` behind the full `admin:org` scope; `read:org` and `write:org` return 404. Omit it to skip that one signal; everything else is unaffected. |
 
 > For organisations that enforce SSO, the PAT must be **SSO-authorised** for
@@ -333,6 +496,108 @@ cannot read it, the check is skipped without comment and the sweep proceeds
 unchanged. The AI-detected patterns are absent from that inventory and so go
 unverified.
 
+### The `remediate` subcommand
+
+[`remediate`](#remediation) runs the report's own collection before it writes,
+so its token needs the report's reads, plus write access. It skips building
+the GitHub Issues, Pull Requests and Assigned to Me tables and the Workflow
+Failures tables, because no remediation acts on them, and with them the
+membership and workflow-run reads behind them. The shared per-repository read
+still asks for open issues and pull requests. Unlike the report, which reads
+each organisation's own `token_env`, `remediate` drives the run across every
+configured organisation with the one token in `--token-env` (default
+`GITHUB_TOKEN`), so a run covering more than one organisation needs a classic
+PAT. Admin access to each repository it changes is sufficient for every
+category, though not always required: GitHub's reference for updating a
+repository also lets an organisation owner or security manager change
+`security_and_analysis`, the `secret_scanning` write. The organisation owner
+or security manager role (see [Token permissions](#token-permissions)) is
+needed only for the organisation-wide alert reads, which feed the report's
+alert counts. No category chooses its targets from them: each reads the
+repository's own code-scanning analyses, secret scanning state, shared
+GraphQL read or settings. Without the role those alert reads are refused and
+their counts read as unknown, but each category still finds its targets among
+the repositories the run lists.
+
+That listing holds only the repositories both the account and the token can
+see. GitHub leaves a private repository either one cannot access out of a
+successful listing, with no error, so an unrestricted run can finish cleanly
+having missed it. When you know which repositories a run should change, name
+them with `--repos owner/name`: a name that matches no listed repository
+stops the run (see [Remediation](#remediation)).
+
+**Classic PAT:** `repo`, `security_events` and `read:org`. `repo` also covers
+every write, provided the token's account holds the access described above.
+`admin:org` stays optional, exactly as for the report, except as
+the `codeql` caveat below describes.
+
+**Fine-grained PAT, reads:** the repository permissions Metadata, Contents,
+Dependabot alerts, Code scanning alerts, Secret scanning alerts, Issues,
+Administration and Actions from the report's table. Keep Issues: a failed issue
+read fails the repository's whole shared GraphQL read, which also carries
+Dependabot alerts enablement, the auto-merge setting, the languages Code
+Quality depends on, and the branch head the stale-CodeQL check measures
+against. Those categories then read as unknown for that repository and get no
+write, while CodeQL, secret scanning, security updates and private
+vulnerability reporting, read separately, can still be written. Actions read covers the workflow state behind a stale
+CodeQL configuration. Pull requests and the organisation Members permission
+may be left out: a failed pull-request read affects only the pull-request data,
+which `remediate` does not use, and it makes no membership read. The
+organisation Administration permission stays optional, as for the report,
+except as the `codeql` caveat below describes.
+
+**Caveat for `codeql`:** a repository reads as CodeQL enabled only when it
+has a CodeQL analysis, or when a required workflow that `ruleset_workflows`
+maps to `codeql` covers it. The analysis check reads analyses on every branch,
+not only the default branch, so a repository whose only CodeQL analysis came
+from a feature branch reads as enabled and is not a target, though its default
+branch has none. The check reads the newest 100 analyses, and when CodeQL is
+not among them, a probe filtered to CodeQL; if that probe fails with an HTTP
+error, CodeQL goes undetected for the run, so a repository whose CodeQL
+analyses are all older becomes a target. Any other CodeQL pipeline that has
+not yet uploaded an analysis leaves the repository a `codeql` target: a
+repository-local workflow, a required workflow the mapping does not name, one
+whose ruleset the token cannot read, or an external pipeline that uploads with
+the CodeQL CLI or the REST API. Enabling default setup there makes GitHub
+reject the CodeQL uploads that pipeline later makes. Ruleset-read access
+(classic `admin:org`, or fine-grained organisation Administration write)
+closes only the unreadable-ruleset case, and only in part: ruleset coverage
+is recognised for a ruleset that targets repositories by name, not for one
+that targets them by repository ID or custom property. So whatever the token,
+check every `codeql` target in the dry run against the repository's existing
+CodeQL workflows and any external CodeQL pipeline before passing `--apply`.
+The dry run names at most `report.top_n_cli` targets per category (default:
+`report.top_n`, else 10) and counts the rest, and `remediate` has no flag to
+change it. Each organisation takes the value from
+its own `report` block, which inherits the global one, so to list every target
+set `top_n_cli` to `0` in the global `report` block and remove or zero any
+organisation's own `top_n_cli`; `--apply` acts on the targets the preview
+counts but does not name. `--apply` does not replay the preview either: it
+collects again and acts on the targets it finds then, so a repository created,
+or newly reading as a `codeql` target, after the preview is changed without
+having been checked. Apply `codeql` only to the repositories you checked, with
+`--category codeql --repos owner/name,...`, and preview again first if their
+state may have changed.
+
+**Fine-grained PAT, writes:** each category writes through the endpoints below,
+so a run limited with `--category` needs only the access those take:
+
+| `--category` | Write | Fine-grained permission |
+| ------------ | ----- | ----------------------- |
+| `codeql` | `PATCH /repos/{owner}/{repo}/code-scanning/default-setup` | Not yet confirmed |
+| `secret_scanning` | `PATCH /repos/{owner}/{repo}` (`security_and_analysis`) | Not yet confirmed |
+| `dependabot_alerts_enabled` | `PUT /repos/{owner}/{repo}/vulnerability-alerts` | Not yet confirmed |
+| `dependabot_updates_enabled` | `PUT .../vulnerability-alerts`, then `PUT .../automated-security-fixes` | Not yet confirmed |
+| `private_vulnerability_reporting` | `PUT /repos/{owner}/{repo}/private-vulnerability-reporting` | Not yet confirmed |
+| `auto_merge` | `PATCH /repos/{owner}/{repo}` (`allow_auto_merge`) | Not yet confirmed |
+| `code_quality` | `PATCH /repos/{owner}/{repo}/code-quality/setup` | Administration: write |
+| `codeql_stale_configurations` | `DELETE /repos/{owner}/{repo}/code-scanning/analyses/{id}`, and `PUT /repos/{owner}/{repo}/actions/workflows/{file}/enable` | Not yet confirmed |
+
+Where the table says *Not yet confirmed*, this README does not yet name the
+fine-grained permission GitHub requires; use a classic PAT for that category.
+A write the token may not make fails for that repository and category only,
+and the run lists it with GitHub's status code.
+
 ## Usage
 
 ### Org mode (scheduled report)
@@ -364,9 +629,12 @@ digest only on the configured `report_day` (default Tuesday).
   uses: lfreleng-actions/github-security-report-action@v0.1.0
   with:
     scope: "repo"
+    repo: "${{ github.repository }}"  # lets the job run without a checkout
     token: "${{ github.token }}"
     fail_threshold: "high"  # fail the job on any open high/critical finding
-  # requires: permissions: { security-events: read }
+  # requires: permissions:
+  #   { actions: read, security-events: read, vulnerability-alerts: read }
+  # (see "Repo mode: the job token" under Token permissions)
 ```
 
 Repo mode renders one repository to the terminal and the job summary. It
@@ -997,7 +1265,8 @@ requests are **not** counted: the GraphQL `issues` connection excludes them.
 classic PAT's `repo` scope already covers it. Without it GitHub serves the query
 with HTTP 200 and this one field null, so affected repositories are reported as
 `❓ Unknown` rather than counted as having no open issues — an unreadable backlog
-is never presented as a clean one.
+is never presented as a clean one. [Token permissions](#token-permissions) lists
+every permission the report needs.
 
 #### Issue colours and age thresholds
 
@@ -1441,7 +1710,8 @@ stuck one first.
 **Permissions.** A fine-grained PAT needs **Pull requests: read**; a classic
 PAT's `repo` scope already covers it. Without it the connection comes back null
 and affected repositories are reported as `❓ Unknown` rather than as having no
-open pull requests.
+open pull requests. [Token permissions](#token-permissions) lists every
+permission the report needs.
 
 ### Inside or outside the organisation
 
@@ -1492,7 +1762,8 @@ The column understates rather than inventing an outsider.
 **Members: read** (fine-grained). Without it the terminal report prints
 `⚠️ Token lacks read/organisation permission; results incomplete for <org>`
 and reports externally-raised counts as a lower bound rather than guessing from
-`authorAssociation` alone.
+`authorAssociation` alone. [Token permissions](#token-permissions) lists every
+permission the report needs.
 
 ### Organisation feature gating
 
@@ -2053,14 +2324,17 @@ surfaces are acted on — repositories whose state could not be read are counted
 as *unknown* and are never written to, so remediation never blind-writes.
 
 It is **dry run by default** (these are privileged writes); pass `--apply` to
-make changes. A single **write-capable** org-admin token (from `--token-env`,
-default `GITHUB_TOKEN`) drives both the read and the writes across every
-configured organisation, so it bypasses the per-org read-only `token_env` in the
-config.
+make changes. Each run collects afresh, so `--apply` acts on what it finds
+then, not on the plan an earlier dry run printed. A single **write-capable**
+token (from `--token-env`, default `GITHUB_TOKEN`) drives both the read and the
+writes across every configured organisation, so it bypasses the per-org
+read-only `token_env` in the config.
+[The `remediate` subcommand](#the-remediate-subcommand) under Token permissions
+lists the scopes and permissions it needs, by category.
 
 ```bash
-# An org-admin token is required: a classic PAT with the `repo` scope
-# (administers repository security settings) plus `read:org` to enumerate repos.
+# Token scopes and permissions: see "The remediate subcommand" under
+# Token permissions.
 source ~/.secrets.github.classic.god   # exports $GITHUB_TOKEN
 
 # Dry run (default): preview every change, touch nothing.
@@ -2150,7 +2424,8 @@ repositories are never written. GitHub provisions the first analysis
 asynchronously. A `409` (an update already in progress), a `403` (an archived
 repository, or Code Quality not allowed for it) or a `422` fails that
 repository only and names the cause. The token needs the classic `repo`
-scope, or a fine-grained token's Administration: write. See
+scope, or a fine-grained token's Administration: write (see
+[The `remediate` subcommand](#the-remediate-subcommand)). See
 [ADR-0006](docs/adr/0006-github-code-quality.md) for the reasoning.
 
 ### Cleaning up stale CodeQL configurations
@@ -2212,7 +2487,8 @@ an interrupted run's next pass picks up the remaining analyses. GitHub answers
 requests it will not authorise with `404`, so a deletion's `404` counts as
 already done only once the analysis also reads back as gone; a token that may
 not delete fails instead of reporting a cleanup that never happened. The token
-needs the classic `repo` scope. See
+needs the classic `repo` scope (see
+[The `remediate` subcommand](#the-remediate-subcommand)). See
 [ADR-0005](docs/adr/0005-codeql-configuration-cleanup.md) for the reasoning.
 
 ## Bulk Remediation Scripts
@@ -2241,8 +2517,9 @@ the current state of each repository, enables the feature where it is off, and
 verifies the result.
 
 ```bash
-# An org-admin token is required: a classic PAT with the `repo` scope
-# (administers repository security settings) plus `read:org` to enumerate repos.
+# The token needs the classic `repo` scope from an account with admin access
+# to each repository, plus `read:org` to enumerate them. See "Token
+# permissions".
 source ~/.secrets.github.classic.god   # exports $GITHUB_TOKEN
 
 # Dry run (default): preview every change, touch nothing.

@@ -356,17 +356,20 @@ Sketch:
 
 - **Org-wide security data requires a PAT.** The ephemeral `GITHUB_TOKEN` is
   **repo-scoped** and is 403/404'd on org-level security endpoints. A
-  **fine-grained** PAT (read-only: metadata, contents, dependabot/code/secret
-  scanning alerts, repo + org administration) covers a **single** organisation;
-  a **classic** PAT (`security_events`, `repo`, `read:org`) is needed to span
-  **multiple** orgs (fine-grained tokens are bound to one owner). See the README
-  "Token permissions" section. The token is **always a PAT secret** referenced
-  by `token_env` for org mode.
+  **fine-grained** PAT covers a **single** organisation (fine-grained tokens
+  are bound to one owner), so a multi-org report either gives each
+  organisation its own fine-grained PAT through its `token_env`, or uses one
+  **classic** PAT for them all. `remediate` runs on a single token, so
+  spanning orgs needs a classic PAT. The README "Token permissions" section
+  is the single list of the permissions and scopes each needs, and of those
+  `remediate` needs. The token is **always a PAT secret** referenced by
+  `token_env` for org mode.
 - **`scope` input: `auto | org | repo`.**
   - **Org mode** — PAT + config; org-bulk endpoints; multi-org; Pages + Slack.
   - **Repo mode** — degraded, self-contained: uses the ephemeral
-    `GITHUB_TOKEN` for the **current repo's own** data only (`security-events:
-    read`). A drop-in others add to a single repo. **No HTML/Pages, no Slack.**
+    `GITHUB_TOKEN` for the **current repo's own** data only (job permissions
+    in the README "Token permissions" section). A drop-in others add to a
+    single repo. **No HTML/Pages, no Slack.**
     Output = tidy `$GITHUB_STEP_SUMMARY` + action **outputs** (per-signal
     counts) + a configurable **fail-threshold** input (e.g. fail on any open
     critical) so it works as a **PR gate**.
