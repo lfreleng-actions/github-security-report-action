@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from github_security_report import classify
 from github_security_report.classify import RepoFacts
 from github_security_report.models import Repo, RepoSignal, RepoState, SignalType
@@ -27,6 +29,46 @@ def _cs_alert(
 
 def _by_signal(facts: RepoFacts) -> dict[SignalType, RepoSignal]:
     return {s.signal: s for s in classify.classify_repo(facts)}
+
+
+def _alert_read_facts(
+    signal: SignalType, severity: str | None, status: int
+) -> RepoFacts:
+    """An enabled ``signal`` whose alert read holds one ``severity`` alert.
+
+    ``status`` is the status of the alert read; a non-200 value models a
+    paginated read that failed after collecting this alert. Scorecard has no
+    external score here, so it takes the code-scanning fallback.
+    """
+    if signal is SignalType.DEPENDABOT:
+        return RepoFacts(
+            repo=_repo(),
+            dependabot_enabled=True,
+            dependabot_alerts=[{"security_advisory": {"severity": severity}}],
+            dependabot_alerts_status=status,
+        )
+    tool = {
+        SignalType.CODEQL: "CodeQL",
+        SignalType.AISLOP: "aislop",
+        SignalType.SCORECARD: "Scorecard",
+    }[signal]
+    return RepoFacts(
+        repo=_repo(),
+        code_scanning_status=200,
+        code_scanning_tools={tool},
+        code_scanning_alerts=[_cs_alert(tool, severity)],
+        code_scanning_alerts_status=status,
+    )
+
+
+# Per signal, an alert severity below its default fail-severity cutoff
+# (aislop's cutoff is LOW, so an unclassified alert, informational, is below).
+_SUB_CUTOFF = {
+    SignalType.DEPENDABOT: "low",
+    SignalType.CODEQL: "low",
+    SignalType.AISLOP: None,
+    SignalType.SCORECARD: "low",
+}
 
 
 class TestCodeScanningPartition:
@@ -397,6 +439,48 @@ class TestUnreadableAlertSweep:
         assert signals[SignalType.CODEQL].state is RepoState.CLEAN
         assert signals[SignalType.DEPENDABOT].state is RepoState.CLEAN
         assert signals[SignalType.SECRET_SCANNING].state is RepoState.CLEAN
+
+    @pytest.mark.parametrize("signal", list(_SUB_CUTOFF))
+    def test_incomplete_sub_cutoff_read_is_unknown(self, signal: SignalType) -> None:
+        # The pages never read could hold failing alerts, so a partial read
+        # holding only sub-cutoff alerts cannot be reported as clean. The
+        # collected counts are kept as a lower bound.
+        facts = _alert_read_facts(signal, _SUB_CUTOFF[signal], 502)
+        sig = _by_signal(facts)[signal]
+        assert sig.state is RepoState.UNKNOWN
+        assert sig.detail == "alert data incomplete"
+        assert sig.counts.total == 1
+
+    @pytest.mark.parametrize("signal", list(_SUB_CUTOFF))
+    def test_incomplete_read_with_failing_alert_is_offender(
+        self, signal: SignalType
+    ) -> None:
+        facts = _alert_read_facts(signal, "high", 502)
+        sig = _by_signal(facts)[signal]
+        assert sig.state is RepoState.OFFENDER
+        assert sig.counts.high == 1
+
+    @pytest.mark.parametrize("signal", list(_SUB_CUTOFF))
+    def test_complete_sub_cutoff_read_is_clean(self, signal: SignalType) -> None:
+        facts = _alert_read_facts(signal, _SUB_CUTOFF[signal], 200)
+        sig = _by_signal(facts)[signal]
+        assert sig.state is RepoState.CLEAN
+        assert sig.counts.total == 1
+
+    def test_incomplete_zizmor_read_under_override_is_unknown(self) -> None:
+        # zizmor's default cutoff fails every finding, so only an override
+        # leaves room for a sub-cutoff alert.
+        facts = RepoFacts(
+            repo=_repo(),
+            code_scanning_status=200,
+            code_scanning_tools={"zizmor"},
+            code_scanning_alerts=[_cs_alert("zizmor", None, "note")],
+            code_scanning_alerts_status=502,
+        )
+        sig = classify.classify_zizmor(facts, {SignalType.ZIZMOR: Severity.MEDIUM})
+        assert sig.state is RepoState.UNKNOWN
+        assert sig.detail == "alert data incomplete"
+        assert sig.counts.low == 1
 
 
 class TestIndeterminateProbeStatus:
