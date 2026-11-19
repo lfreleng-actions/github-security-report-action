@@ -1328,7 +1328,10 @@ class _Learned(logging.Handler):
 async def _collect_graph(
     client: BatchLimitedClient, *, batch_size: int
 ) -> dict[str, RepoGraphData]:
-    return await collect_graph(client, "o", client.repos, batch_size=batch_size)
+    graph: dict[str, RepoGraphData] = await collect_graph(
+        client, "o", client.repos, batch_size=batch_size
+    )
+    return graph
 
 
 async def _learning(
