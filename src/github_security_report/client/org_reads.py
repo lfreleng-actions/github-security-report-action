@@ -23,13 +23,14 @@ from github_security_report.authors import (
 )
 from github_security_report.client.alerts import AlertReads
 from github_security_report.client.batch_errors import _alias_errors, _batch_response
+from github_security_report.client.bodies import MALFORMED_STATUS, _read_body
 from github_security_report.client.parsers import _parse_repo_node
 from github_security_report.client.queries import (
     _ORG_MEMBERS_QUERY,
     _REPO_GRAPH_FRAGMENT,
     _VIEWER_QUERY,
 )
-from github_security_report.client.repo_parser import _parse_repo
+from github_security_report.client.repo_parser import _parse_repo_or_none
 from github_security_report.models import Repo, RepoGraphData
 
 log = logging.getLogger(__name__)
@@ -77,17 +78,32 @@ class OrgReadClient(AlertReads):
         Returns the listing status alongside the repos: a non-200 (a failed or
         mid-pagination-truncated listing) means the set is incomplete, so the
         caller can flag a partial report rather than silently omitting repos
-        (and their offenders).
+        (and their offenders). An entry that is not a repository object, or
+        lacks its identity, is skipped and logged, and the status becomes
+        ``MALFORMED_STATUS`` if it was 200: a dropped repository is an
+        omitted finding, so the listing is incomplete.
         """
         status, raws = await self._get_list(
             f"{self._api_url}/orgs/{org}/repos", type="all"
         )
         repos: list[Repo] = []
         for raw in raws:
+            # Identity first: an entry without one would otherwise pass for an
+            # empty repository (no ``size``) and drop out unreported.
+            repo = _parse_repo_or_none(raw)
+            if repo is None:
+                log.warning(
+                    "the repository listing for %s held an entry that is not a "
+                    "readable repository; the listing is reported as incomplete",
+                    org,
+                )
+                if status == 200:
+                    status = MALFORMED_STATUS
+                continue
             if raw.get("disabled") or raw.get("size", 0) == 0:
                 log.info("skipping %s: disabled or empty", raw.get("full_name"))
                 continue
-            repos.append(_parse_repo(raw))
+            repos.append(repo)
         return status, repos
 
     # ------------------------------------------------------------------ #
@@ -99,13 +115,17 @@ class OrgReadClient(AlertReads):
         Returns ``(status, details)``; status is the org-rulesets list status
         (e.g. 403 when the token lacks org access) so coverage can degrade
         gracefully. The list endpoint returns summaries, so each active branch
-        ruleset is fetched in detail to expose its rules and conditions.
+        ruleset is fetched in detail to expose its rules and conditions. A
+        summary without an ``id`` cannot be fetched and is skipped, as is a
+        detail that is not a 200 carrying a JSON object.
         """
         status, summaries = await self._get_list(f"{self._api_url}/orgs/{org}/rulesets")
         if status != 200:
             return status, []
         details: list[dict] = []
         for summary in summaries:
+            if not isinstance(summary, dict) or summary.get("id") is None:
+                continue
             if summary.get("enforcement") != "active":
                 continue
             if summary.get("target") not in (None, "branch"):
@@ -113,9 +133,12 @@ class OrgReadClient(AlertReads):
             resp = await self._request(
                 "GET", f"{self._api_url}/orgs/{org}/rulesets/{summary['id']}"
             )
-            if resp.status_code == 200:
-                details.append(resp.json())
-            await resp.aclose()  # release the connection once the body is read
+            if resp.status_code != 200:
+                await resp.aclose()  # unread body would leak a pooled connection
+                continue
+            detail = await _read_body(resp, dict)
+            if detail is not None:
+                details.append(detail)
         return 200, details
 
     # ------------------------------------------------------------------ #

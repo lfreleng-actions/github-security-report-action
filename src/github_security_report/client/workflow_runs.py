@@ -22,6 +22,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from github_security_report.client.batch_errors import _batch_response
+from github_security_report.client.bodies import _read_body
 from github_security_report.client.paging import PageResult
 from github_security_report.client.parsers import _parse_iso
 from github_security_report.client.queries import _WORKFLOW_RUN_JOBS_QUERY
@@ -200,9 +201,8 @@ class WorkflowRunReads(ReadClient):
         if resp.status_code != 200:
             await resp.aclose()  # unread body would leak a pooled connection
             return None
-        raw = resp.json()
-        await resp.aclose()  # release the connection once the body is read
-        if not isinstance(raw, dict):
+        raw = await _read_body(resp, dict, quiet=True)
+        if raw is None:
             return None
         return _parse_run(raw, repo=repo, default_branch=default_branch)
 

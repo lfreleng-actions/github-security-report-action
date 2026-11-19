@@ -29,6 +29,20 @@ def _feature_status(raw: dict, feature: str) -> bool | None:
     return bool(status == "enabled")
 
 
+def _parse_repo_or_none(raw: object) -> Repo | None:
+    """A :class:`Repo` from ``raw``, or ``None`` when it is not a repository.
+
+    A repository object without its identity (``name``, ``full_name`` and
+    ``html_url``, each a string) cannot be reported, so it is unreadable
+    rather than a reason to abort the run.
+    """
+    if not isinstance(raw, dict) or not all(
+        isinstance(raw.get(key), str) for key in ("name", "full_name", "html_url")
+    ):
+        return None
+    return _parse_repo(raw)
+
+
 def _parse_repo(raw: dict) -> Repo:
     """A :class:`Repo` from a repository object of the REST API.
 

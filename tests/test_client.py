@@ -4242,14 +4242,12 @@ async def test_issue_window_requests_assignees(client: GitHubClient) -> None:
 _HTML = b"<html>502 Bad Gateway</html>"
 # The status a read reports for a malformed 200: "invalid response".
 _MALFORMED = 502
-_UNFIXED = pytest.mark.xfail(strict=True, reason="malformed bodies raise (#299)")
 
 
 def _html() -> httpx.Response:
     return httpx.Response(200, content=_HTML, headers={"content-type": "text/html"})
 
 
-@_UNFIXED
 @respx.mock
 async def test_malformed_body_is_logged_without_the_body(
     client: GitHubClient, caplog: pytest.LogCaptureFixture
@@ -4266,7 +4264,7 @@ async def test_malformed_body_is_logged_without_the_body(
 
 @pytest.mark.parametrize(
     "body",
-    [pytest.param(_HTML, marks=_UNFIXED), json.dumps(["a", "list"]).encode()],
+    [_HTML, json.dumps(["a", "list"]).encode()],
 )
 @respx.mock
 async def test_malformed_graphql_body_reads_as_no_data(
@@ -4277,7 +4275,6 @@ async def test_malformed_graphql_body_reads_as_no_data(
     assert (result.status, result.data, result.errors) == (200, None, [])
 
 
-@_UNFIXED
 @respx.mock
 async def test_malformed_first_page_is_not_a_read(client: GitHubClient) -> None:
     respx.get(url__startswith=f"{API}/orgs/o/repos").mock(return_value=_html())
@@ -4285,7 +4282,6 @@ async def test_malformed_first_page_is_not_a_read(client: GitHubClient) -> None:
     assert (status, repos) == (_MALFORMED, [])
 
 
-@_UNFIXED
 @respx.mock
 async def test_malformed_later_page_keeps_items_under_502(
     client: GitHubClient,
@@ -4303,7 +4299,6 @@ async def test_malformed_later_page_keeps_items_under_502(
     assert [a["number"] for a in alerts] == [1]
 
 
-@_UNFIXED
 @respx.mock
 async def test_bare_array_alert_list_answered_with_object_is_not_empty(
     client: GitHubClient,
@@ -4326,7 +4321,6 @@ async def test_envelope_without_its_key_is_still_an_empty_page(
     assert (listing.status, listing.records) == (200, ())
 
 
-@_UNFIXED
 @pytest.mark.parametrize("body", [_HTML, json.dumps({"not": "a list"}).encode()])
 @respx.mock
 async def test_malformed_analyses_page_is_not_tools_absent(
@@ -4340,7 +4334,6 @@ async def test_malformed_analyses_page_is_not_tools_absent(
     assert await client.code_scanning_tools("o", "r") == (_MALFORMED, set())
 
 
-@_UNFIXED
 @pytest.mark.parametrize("body", [_HTML, json.dumps({"not": "a list"}).encode()])
 @respx.mock
 async def test_malformed_analyses_tool_probe(client: GitHubClient, body: bytes) -> None:
@@ -4353,7 +4346,6 @@ async def test_malformed_analyses_tool_probe(client: GitHubClient, body: bytes) 
     )
 
 
-@_UNFIXED
 @pytest.mark.parametrize("body", [_HTML, json.dumps({"not": "a list"}).encode()])
 @respx.mock
 async def test_malformed_probe_after_full_page_is_not_tool_absent(
@@ -4402,7 +4394,6 @@ async def test_http_502_probe_after_full_page_keeps_the_page_status(
     assert await client.code_scanning_tools("o", "r") == (200, {"CodeQL"})
 
 
-@_UNFIXED
 @respx.mock
 async def test_malformed_ruleset_detail_is_skipped(client: GitHubClient) -> None:
     respx.get(url__regex=r"orgs/o/rulesets($|\?)").mock(
@@ -4424,7 +4415,6 @@ async def test_malformed_ruleset_detail_is_skipped(client: GitHubClient) -> None
     assert [d["id"] for d in details] == [2]
 
 
-@_UNFIXED
 @pytest.mark.parametrize("body", [_HTML, json.dumps([1, 2]).encode()])
 @respx.mock
 async def test_malformed_scorecard(client: GitHubClient, body: bytes) -> None:
@@ -4434,7 +4424,6 @@ async def test_malformed_scorecard(client: GitHubClient, body: bytes) -> None:
     assert await client.scorecard_score("o", "r") == (_MALFORMED, None)
 
 
-@_UNFIXED
 @pytest.mark.parametrize("body", [_HTML, json.dumps({"type": "x"}).encode()])
 @respx.mock
 async def test_malformed_branch_rules(client: GitHubClient, body: bytes) -> None:
@@ -4444,7 +4433,6 @@ async def test_malformed_branch_rules(client: GitHubClient, body: bytes) -> None
     assert await client.repo_branch_rules("o", "r", "main") == (_MALFORMED, [])
 
 
-@_UNFIXED
 @pytest.mark.parametrize(
     "body",
     [_HTML, json.dumps([]).encode(), json.dumps({"name": "r"}).encode()],
@@ -4455,7 +4443,6 @@ async def test_malformed_get_repo(client: GitHubClient, body: bytes) -> None:
     assert await client.get_repo("o", "r") is None
 
 
-@_UNFIXED
 @respx.mock
 async def test_listing_entry_without_identity_marks_listing_incomplete(
     client: GitHubClient,
@@ -4475,7 +4462,6 @@ async def test_listing_entry_without_identity_marks_listing_incomplete(
     assert [r.name for r in repos] == ["live"]
 
 
-@_UNFIXED
 @pytest.mark.parametrize("entry", [{}, {"name": "broken"}, {"disabled": True}])
 @respx.mock
 async def test_listing_entry_without_identity_or_size_marks_listing_incomplete(
@@ -4533,10 +4519,6 @@ _NONE_READS: list[
 ]
 
 
-# Reads that already turned a body of the wrong JSON type into ``None``.
-_TYPE_CHECKED = {"code_quality_setup", "codeql_default_setup", "workflow_run"}
-
-
 @pytest.mark.parametrize(
     ("url", "read", "body"),
     [
@@ -4545,7 +4527,6 @@ _TYPE_CHECKED = {"code_quality_setup", "codeql_default_setup", "workflow_run"}
             read,
             body,
             id=f"{name}-{kind}",
-            marks=() if kind == "list" and name in _TYPE_CHECKED else _UNFIXED,
         )
         for name, url, read in _NONE_READS
         for kind, body in (("html", _HTML), ("list", json.dumps([1]).encode()))
