@@ -440,7 +440,6 @@ class TestUnreadableAlertSweep:
         assert signals[SignalType.DEPENDABOT].state is RepoState.CLEAN
         assert signals[SignalType.SECRET_SCANNING].state is RepoState.CLEAN
 
-    @pytest.mark.xfail(strict=True, reason="partial reads reported as clean")
     @pytest.mark.parametrize("signal", list(_SUB_CUTOFF))
     def test_incomplete_sub_cutoff_read_is_unknown(self, signal: SignalType) -> None:
         # The pages never read could hold failing alerts, so a partial read
@@ -468,7 +467,6 @@ class TestUnreadableAlertSweep:
         assert sig.state is RepoState.CLEAN
         assert sig.counts.total == 1
 
-    @pytest.mark.xfail(strict=True, reason="partial reads reported as clean")
     def test_incomplete_zizmor_read_under_override_is_unknown(self) -> None:
         # zizmor's default cutoff fails every finding, so only an override
         # leaves room for a sub-cutoff alert.
