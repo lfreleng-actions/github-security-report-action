@@ -488,6 +488,9 @@ version the action installs at runtime):
 - weekly interval, **7-day cooldown**, **15** open-PR limit; `CI(actions)`
   commit prefix for the `github-actions` ecosystem and `CI(deps)` for the
   `uv` and `pip` ecosystems.
+- the `github-actions` entry exempts `lfreleng-actions/*` from the cooldown:
+  this organisation reviews its own actions and reusable workflows before
+  tagging them, so their fixes reach callers without the week's delay.
 
 ## 16. Testing strategy
 
