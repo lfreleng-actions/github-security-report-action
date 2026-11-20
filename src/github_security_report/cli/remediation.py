@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import os
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from rich.console import Console
 from github_security_report import collect, scope
 from github_security_report import remediate as remediate_mod
 from github_security_report.categories import CategoryKey
+from github_security_report.cli import preflight
 from github_security_report.cli.progress import make_tracker
 from github_security_report.client import GitHubClient
 from github_security_report.collect.context import CollectExtras
@@ -52,8 +54,11 @@ async def _run_remediate(
     category to those repositories; the selection is checked against every
     org before anything is read or written, and a name that matches nothing,
     or only an excluded repository, stops the run. ``config_path`` is the
-    auto-discovered config file, printed under each org's divider. Returns 2
-    for a bad selection, 1 when any write failed, else 0.
+    auto-discovered config file, printed under each org's divider. The token
+    and every org's listing pass the pre-flight (see
+    :mod:`~github_security_report.cli.preflight`) first. Returns 2 for a bad
+    selection, the pre-flight's code when it fails, 1 when any write failed,
+    else 0.
     """
     now = dt.datetime.now(dt.UTC)
     failures = 0
@@ -61,6 +66,14 @@ async def _run_remediate(
     # paced CodeQL cleanup is otherwise a silent second per deletion.
     tracker = make_tracker(console, no_progress=no_progress)
     async with GitHubClient(token, progress=tracker) as client:
+        code = await preflight.check_remediate_run(
+            client,
+            (org_cfg.name for org_cfg in cfg.organizations),
+            console,
+            token_envs=_token_envs(cfg, token),
+        )
+        if code:
+            return code
         selected = await _check_selection(client, cfg, repos, console=console)
         if selected is None:
             return 2
@@ -102,6 +115,19 @@ async def _run_remediate(
             )
             failures += sum(result.failures for result in results)
     return 1 if failures else 0
+
+
+def _token_envs(cfg: Config, token: str) -> list[str]:
+    """The variables that hold ``token``: ``--token-env``, else ``GITHUB_TOKEN``.
+
+    The CLI read the token from ``--token-env`` when given, which it also set
+    as every org's ``token_env``, and from ``GITHUB_TOKEN`` otherwise, so the
+    variable it came from is always among these candidates.
+    """
+    candidates = dict.fromkeys(
+        ["GITHUB_TOKEN", *(org_cfg.token_env for org_cfg in cfg.organizations)]
+    )
+    return [env for env in candidates if os.environ.get(env, "").strip() == token]
 
 
 async def _check_selection(

@@ -61,12 +61,12 @@ class _RetryBudget:
     def __init__(self, max_retries: int) -> None:
         self.attempt = 0
         self.waited = 0.0
-        self._max_retries = max_retries
+        self.max_retries = max_retries
 
     def exhausted(self, delay: float) -> bool:
         """Whether sleeping ``delay`` would exceed the retry or wait budget."""
         return (
-            self.attempt >= self._max_retries
+            self.attempt >= self.max_retries
             or self.waited + delay > API_MAX_TOTAL_WAIT_SECONDS
         )
 
@@ -178,6 +178,7 @@ class Transport:
         *,
         client: httpx.AsyncClient | None = None,
         quiet: bool = False,
+        max_retries: int | None = None,
         **kwargs: object,
     ) -> httpx.Response:
         """Issue a request under the shared retry/backoff policy.
@@ -190,6 +191,9 @@ class Transport:
         swallows: its retry notices drop to DEBUG, so a best-effort probe
         cannot fill a healthy run's output with warnings about a signal nothing
         depends on. Log level only; the policy and every result are unchanged.
+
+        ``max_retries`` overrides the client's retry count for this one call,
+        for a best-effort read that should give up rather than back off.
 
         Retries follow the shared retry/backoff policy: exponential backoff,
         at most ``max_retries`` retries (the constructor argument, defaulting to
@@ -213,7 +217,7 @@ class Transport:
         # Resolved once: an optional read reports its retries at DEBUG so it
         # cannot nag about a signal whose failure the caller already swallows.
         level = logging.DEBUG if quiet else logging.WARNING
-        budget = _RetryBudget(self._max_retries)
+        budget = _RetryBudget(self._max_retries if max_retries is None else max_retries)
         # What the next attempt retries, if anything. Counted when that attempt
         # is issued rather than when the backoff begins, so a request cancelled
         # during its backoff (a sibling prefetch batch aborting the run) does
@@ -237,7 +241,7 @@ class Transport:
                         attempt=budget.attempt,
                         is_external=is_external,
                     )
-                self._log_transport_retry(url, exc, delay, budget.attempt, level)
+                self._log_transport_retry(url, exc, delay, budget, level)
                 retry_of = "transport"
                 await budget.sleep(delay)
                 continue
@@ -261,7 +265,7 @@ class Transport:
                 # so the caller can degrade its signal to unknown -- or, when
                 # its data is load-bearing, abort the run.
                 return resp
-            self._log_degraded_retry(resp, url, plan, budget.attempt, level)
+            self._log_degraded_retry(resp, url, plan, budget, level)
             # The discarded response must be closed; we are retrying and will
             # not read its body, so leaving it open would leak a pool connection.
             await resp.aclose()
@@ -364,7 +368,12 @@ class Transport:
         )
 
     def _log_transport_retry(
-        self, url: str, exc: httpx.HTTPError, delay: float, attempt: int, level: int
+        self,
+        url: str,
+        exc: httpx.HTTPError,
+        delay: float,
+        budget: _RetryBudget,
+        level: int,
     ) -> None:
         """Report at ``level`` that an unreachable endpoint will be retried."""
         log.log(
@@ -373,12 +382,17 @@ class Transport:
             url,
             exc,
             delay,
-            attempt + 1,
-            self._max_retries,
+            budget.attempt + 1,
+            budget.max_retries,
         )
 
     def _log_degraded_retry(
-        self, resp: httpx.Response, url: str, plan: _RetryPlan, attempt: int, level: int
+        self,
+        resp: httpx.Response,
+        url: str,
+        plan: _RetryPlan,
+        budget: _RetryBudget,
+        level: int,
     ) -> None:
         """Report at ``level`` that a degraded response will be retried."""
         if plan.server_error:
@@ -388,8 +402,8 @@ class Transport:
                 resp.status_code,
                 url,
                 plan.delay,
-                attempt + 1,
-                self._max_retries,
+                budget.attempt + 1,
+                budget.max_retries,
             )
         else:
             log.log(level, "rate limited on %s; backing off %.0fs", url, plan.delay)
