@@ -38,11 +38,12 @@ async def collect_repo(
     if repo is None:
         log.error("cannot read %s/%s (check token and permissions)", owner, repo_name)
         return None, []
-    cs_status, cs_tools = await client.code_scanning_tools(owner, repo_name)
-    # Skip the alerts call when code scanning is disabled/indeterminate.
+    cs_reads = await client.code_scanning_tool_reads(owner, repo_name)
+    # Skip the alerts call when code scanning is disabled/indeterminate. One
+    # tool's failed probe leaves the page's 200, so the alerts are still read.
     cs_alerts: list[dict] = []
     cs_alerts_status = 200
-    if cs_status == 200:
+    if cs_reads.status == 200:
         cs_alerts_status, cs_alerts = await client.repo_code_scanning_alerts(
             owner, repo_name
         )
@@ -77,8 +78,10 @@ async def collect_repo(
     )
     facts = RepoFacts(
         repo=repo,
-        code_scanning_status=cs_status,
-        code_scanning_tools=cs_tools,
+        code_scanning_status=cs_reads.status,
+        code_scanning_tools=cs_reads.found,
+        code_scanning_unread=cs_reads.unread,
+        code_scanning_malformed=cs_reads.malformed,
         code_scanning_alerts=cs_alerts,
         code_scanning_alerts_status=cs_alerts_status,
         secret_scanning_status=secret_status,

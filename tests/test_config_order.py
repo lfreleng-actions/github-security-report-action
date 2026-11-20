@@ -220,6 +220,7 @@ class TestPriorityDefaults:
             CategoryKey.MALWARE_FINDINGS,
             CategoryKey.DEPENDABOT_ALERTS,
             CategoryKey.CODEQL,
+            CategoryKey.FUZZ,
             CategoryKey.MUTABLE_RELEASES,
         )
 

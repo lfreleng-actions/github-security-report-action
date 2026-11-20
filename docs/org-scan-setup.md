@@ -7,13 +7,14 @@
 
 How to prepare a GitHub organisation so every workflow-driven signal in the
 security report produces data. The report aggregates **existing** telemetry;
-it never scans code itself. Three of its signals therefore depend on
+it never scans code itself. Four of its signals therefore depend on
 workflows your organisation must deploy first:
 
 | Signal | Tool | Deployment model |
 | ------ | ---- | ---------------- |
 | Zizmor Static Analysis | [zizmor](https://github.com/zizmorcore/zizmor) | Central: daily org-wide scan + PR ruleset |
 | AI Slop Analysis | [aislop](https://github.com/scanaislop/aislop) | Central: daily org-wide scan + PR ruleset |
+| Fuzzing | `fuzz` (each repository's own harnesses) | Central: daily org-wide fuzz run; harnesses per repository |
 | OpenSSF Scorecard | [scorecard](https://github.com/ossf/scorecard) | **Per-repository** reusable workflow |
 
 The remaining signals (CodeQL, Dependabot, secret scanning) are GitHub-native
@@ -57,7 +58,7 @@ Notes and caveats:
 
 - To hide a signal you never intend to deploy, disable its category instead:
   `report.categories.<key>.enabled: false` (keys: `zizmor`, `aislop`,
-  `scorecard`).
+  `fuzz`, `scorecard`).
 
 ## Zizmor and aislop: central org-wide scanning
 
@@ -147,6 +148,30 @@ If your workflow paths use different names, map them in the configuration:
 }
 ```
 
+## Fuzzing: central fuzz run, per-repository harnesses
+
+Fuzzing splits the work: each repository carries its own harness files,
+while one scheduled job runs them all centrally. The reference workflow is
+[`fuzz-sarif-publish.yaml`](https://github.com/lfreleng-actions/.github/blob/main/.github/workflows/fuzz-sarif-publish.yaml)
+in `lfreleng-actions/.github`. Every day it runs the harnesses of each
+in-scope repository and uploads the failures to that repository's code
+scanning as SARIF under the tool name `fuzz`, on the default branch:
+
+- one alert per distinct failure, at SARIF level `error`, with rule IDs
+  `fuzz/uncaught-exception`, `fuzz/timeout`, `fuzz/out-of-memory` and
+  `fuzz/harness-error`;
+- an analysis with no results for a repository fuzzed and found clean;
+- nothing at all for a repository with no harness.
+
+The report lists a repository that holds a fuzzable language but has no
+`fuzz` analysis as not enabled: the repositories still to cover. One holding
+none of the languages in `report.fuzz_languages` (default `["Python", "Go"]`,
+matched against GitHub Linguist names) counts as not applicable instead.
+Drop a repository that is not worth a harness with
+`report.categories.fuzz.exclude`. No ruleset requires a fuzz workflow, so
+gating finds fuzz support from its alerts and sampled analyses only. See
+[ADR-0009](adr/0009-fuzzing.md).
+
 ## OpenSSF Scorecard: per-repository reusable workflow
 
 Scorecard **cannot** be deployed via a central org-wide scan or a ruleset.
@@ -196,7 +221,8 @@ scorecard.dev API (preferred) or from code-scanning findings.
 After the first daily scans complete:
 
 1. Check a scanned repository's **Security → Code scanning** tab for
-   analyses from the expected tools (`zizmor`, `aislop`, `Scorecard`).
+   analyses from the expected tools (`zizmor`, `aislop`, `fuzz`,
+   `Scorecard`).
 2. Run the report; previously skipped sections should now render tables (or
    an `All Clean` footer). Run with `--verbose` to see the per-signal gate
    decisions and the evidence that satisfied them.

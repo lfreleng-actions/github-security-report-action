@@ -43,6 +43,7 @@ from github_security_report.collect.graph import collect_graph
 from github_security_report.collect.protocols import ClientProtocol
 from github_security_report.collect.scoping import resolve_scope, selected_scope
 from github_security_report.config import OrgConfig, ReportConfig
+from github_security_report.fuzz import fuzz_applicable
 from github_security_report.models import (
     CODE_SCANNING_TOOLS,
     Repo,
@@ -225,6 +226,7 @@ def _build_context(
             if signal not in skipped
         ),
         probe_scorecard=SignalType.SCORECARD not in skipped,
+        fuzz_languages=report_cfg.fuzz_languages,
     )
 
 
@@ -270,11 +272,11 @@ async def _facts_for_repo(repo: Repo, ctx: OrgCollectContext) -> RepoFacts:
         return await ctx.client.secret_scanning_status(ctx.org, repo.name)
 
     (
-        (cs_status, cs_tools),
+        cs_reads,
         secret_status,
         (scorecard_status, score),
     ) = await asyncio.gather(
-        ctx.client.code_scanning_tools(ctx.org, repo.name, ctx.probe_tools),
+        ctx.client.code_scanning_tool_reads(ctx.org, repo.name, ctx.probe_tools),
         secret_scanning_status(),
         ctx.client.scorecard_score(ctx.org, repo.name)
         if ctx.probe_scorecard
@@ -282,8 +284,10 @@ async def _facts_for_repo(repo: Repo, ctx: OrgCollectContext) -> RepoFacts:
     )
     return RepoFacts(
         repo=repo,
-        code_scanning_status=cs_status,
-        code_scanning_tools=cs_tools,
+        code_scanning_status=cs_reads.status,
+        code_scanning_tools=cs_reads.found,
+        code_scanning_unread=cs_reads.unread,
+        code_scanning_malformed=cs_reads.malformed,
         code_scanning_alerts=ctx.code_scanning.get(repo.name, []),
         code_scanning_alerts_status=ctx.sweep_status["code-scanning"],
         secret_scanning_status=secret_status,
@@ -295,6 +299,9 @@ async def _facts_for_repo(repo: Repo, ctx: OrgCollectContext) -> RepoFacts:
         scorecard_status=scorecard_status,
         scorecard_score=score,
         ruleset_signals=ctx.ruleset_signals(repo.name),
+        fuzz_applicable=fuzz_applicable(
+            ctx.graph_for(repo.name).languages, ctx.fuzz_languages
+        ),
     )
 
 

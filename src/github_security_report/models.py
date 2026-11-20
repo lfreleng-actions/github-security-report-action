@@ -20,12 +20,13 @@ from github_security_report.severity import RUNGS_WORST_FIRST, Severity
 
 
 class SignalType(str, Enum):
-    """The six ranked signals."""
+    """The seven ranked signals."""
 
     CODEQL = "codeql"
     SCORECARD = "scorecard"
     ZIZMOR = "zizmor"
     AISLOP = "aislop"
+    FUZZ = "fuzz"
     DEPENDABOT = "dependabot"
     SECRET_SCANNING = "secret_scanning"
 
@@ -37,6 +38,7 @@ class SignalType(str, Enum):
             SignalType.SCORECARD: CategoryKey.SCORECARD,
             SignalType.ZIZMOR: CategoryKey.ZIZMOR,
             SignalType.AISLOP: CategoryKey.AISLOP,
+            SignalType.FUZZ: CategoryKey.FUZZ,
             SignalType.DEPENDABOT: CategoryKey.DEPENDABOT_ALERTS,
             SignalType.SECRET_SCANNING: CategoryKey.SECRET_SCANNING,
         }[self]
@@ -87,16 +89,23 @@ CODE_SCANNING_TOOLS: dict[SignalType, str] = {
     SignalType.SCORECARD: "Scorecard",
     SignalType.ZIZMOR: "zizmor",
     SignalType.AISLOP: "aislop",
+    SignalType.FUZZ: "fuzz",
 }
 
 
 class RepoState(str, Enum):
-    """The four-state per-report classification (BRIEF section 6)."""
+    """The per-report classification (BRIEF section 6).
+
+    Four states for every signal, plus ``NOT_APPLICABLE`` for a signal that
+    applies only to some repositories (fuzzing, which needs a fuzzable
+    language): counted on a footer line of its own, never nagged.
+    """
 
     OFFENDER = "offender"  # enabled + has open findings -> table row
     CLEAN = "clean"  # enabled + zero findings -> counted beneath table
     NAG = "nag"  # supported but not enabled -> bulleted nag list
     UNKNOWN = "unknown"  # indeterminate (403 / insufficient permission)
+    NOT_APPLICABLE = "not_applicable"  # nothing the signal could examine
 
 
 @dataclass(frozen=True)

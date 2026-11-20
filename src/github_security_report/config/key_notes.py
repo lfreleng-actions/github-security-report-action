@@ -72,6 +72,9 @@ _NOTES: dict[str, KeyNote] = {
     "report.gating": KeyNote(
         "Probe workflow-driven signals only where the organisation supports them."
     ),
+    "report.fuzz_languages": KeyNote(
+        "Linguist languages that make a repository applicable to fuzzing."
+    ),
     "report.graph_batch": KeyNote("Repositories per batched GraphQL query."),
     "report.concurrency": KeyNote("Concurrent GitHub API requests per organisation."),
     "report.repo_list": KeyNote(

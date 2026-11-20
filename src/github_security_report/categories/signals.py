@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
-"""Metadata for the six ranked signal categories, in render order."""
+"""Metadata for the seven ranked signal categories, in render order."""
 
 from __future__ import annotations
 
@@ -75,6 +75,25 @@ SIGNAL_CATEGORIES: dict[CategoryKey, CategoryMeta] = {
         # (error/warning/note); "note" normalises to LOW (see severity.py), so
         # any aislop finding fails -- matching the ruleset-enforced PR gate.
         fail_severity=Severity.LOW,
+    ),
+    CategoryKey.FUZZ: CategoryMeta(
+        key=CategoryKey.FUZZ,
+        title="Fuzzing",
+        pass_label="Clean",
+        fail_label=None,
+        url=(
+            "https://github.com/lfreleng-actions/.github/blob/main/"
+            ".github/workflows/fuzz-sarif-publish.yaml"
+        ),
+        description=(
+            "Open failures from the organisation's daily fuzz job, ranked "
+            "worst-first by severity. Each row is a repository whose fuzz "
+            "harnesses found an uncaught exception, a timeout, an "
+            "out-of-memory or a harness error. A repository holding none of "
+            "the fuzzable languages is counted as Not applicable."
+        ),
+        # Every fuzz failure arrives at SARIF level "error" (HIGH), so the
+        # default MEDIUM cutoff already counts them all.
     ),
     CategoryKey.DEPENDABOT_ALERTS: CategoryMeta(
         key=CategoryKey.DEPENDABOT_ALERTS,

@@ -15,6 +15,7 @@ import datetime as dt
 from typing import Protocol
 
 from github_security_report.authors import OrgMembership
+from github_security_report.client.analyses import ToolReads
 from github_security_report.client.workflow_runs import RunDrillDown, RunListing
 from github_security_report.code_quality import CodeQualitySetup
 from github_security_report.codeql.facts import CodeQLConfiguration, DefaultSetup
@@ -55,9 +56,9 @@ class ClientProtocol(Protocol):
         """
         raise NotImplementedError
 
-    async def code_scanning_tools(
+    async def code_scanning_tool_reads(
         self, org: str, repo: str, tools: tuple[str, ...] | None = None
-    ) -> tuple[int, set[str]]:
+    ) -> ToolReads:
         """Return the code-scanning tools enabled on a repository."""
         raise NotImplementedError
 
@@ -138,9 +139,9 @@ class RepoClientProtocol(Protocol):
         """Fetch a single repository, or None when it is absent."""
         raise NotImplementedError
 
-    async def code_scanning_tools(
+    async def code_scanning_tool_reads(
         self, org: str, repo: str, tools: tuple[str, ...] | None = None
-    ) -> tuple[int, set[str]]:
+    ) -> ToolReads:
         """Return the code-scanning tools enabled on a repository."""
         raise NotImplementedError
 

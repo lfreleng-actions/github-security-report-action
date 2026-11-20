@@ -212,12 +212,19 @@ CONFIG_SCHEMA: dict = {
                 "issue_age_warn_days": {"type": "integer", "minimum": 0},
                 "issue_age_error_days": {"type": "integer", "minimum": 0},
                 # Organisation feature gating: when true (the default) the
-                # workflow-driven signals (Scorecard, zizmor, aislop) are
+                # workflow-driven signals (Scorecard, zizmor, aislop, fuzz) are
                 # probed only after a cheap support check (org ruleset,
                 # existing alerts, or sampled analyses); an unsupported signal
                 # is reported as skipped with a setup-guide pointer instead of
                 # nagging every repository. Set false to always probe.
                 "gating": {"type": "boolean"},
+                # Linguist language names that make a repository applicable
+                # to fuzzing; one holding none of them is Not applicable.
+                "fuzz_languages": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                    "uniqueItems": True,
+                },
                 # Repositories per batched GraphQL prefetch query. GitHub's
                 # per-query execution budget (~10 s; a breach arrives as a
                 # 502/504 gateway timeout, a 200 with no data, or a 200 whose

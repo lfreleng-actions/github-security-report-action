@@ -12,8 +12,8 @@
 
 > Security and quality **reporting** (not scanning) across GitHub
 > organisations. Aggregates existing signals — CodeQL, OpenSSF Scorecard,
-> zizmor, aislop (AI slop), Dependabot, and secret scanning — and ranks the
-> worst offenders so remediation effort goes where it is needed.
+> zizmor, aislop (AI slop), fuzzing, Dependabot, and secret scanning — and
+> ranks the worst offenders so remediation effort goes where it is needed.
 
 ## 🗒️ Published reports
 
@@ -41,14 +41,18 @@ stay brevity-first; the explanatory per-category description and documentation
 link are shown only on the richer Markdown and HTML (GitHub Pages) outputs.
 
 The single GitHub code-scanning feed is partitioned by `tool.name` into CodeQL,
-Scorecard, zizmor, and aislop; Scorecard prefers the external aggregate score
-and falls back to code-scanning findings. See [`docs/BRIEF.md`](docs/BRIEF.md)
+Scorecard, zizmor, aislop, and fuzz; Scorecard prefers the external aggregate
+score and falls back to code-scanning findings. **Fuzzing** reports the
+failures the organisation's daily fuzz job uploads, and counts a repository
+holding none of the `report.fuzz_languages` Linguist languages (default
+`["Python", "Go"]`) as **Not applicable** rather than not enabled; see
+[ADR-0009](docs/adr/0009-fuzzing.md). See [`docs/BRIEF.md`](docs/BRIEF.md)
 and [`docs/phase0-findings.md`](docs/phase0-findings.md) for the full design and
 the API research it is built on.
 
-The workflow-driven signals (OpenSSF Scorecard, zizmor, aislop) only produce
-data when an organisation has deployed supporting workflows. The tool checks
-for that support cheaply before collecting (**feature gating**): an
+The workflow-driven signals (OpenSSF Scorecard, zizmor, aislop, fuzz) only
+produce data when an organisation has deployed supporting workflows. The tool
+checks for that support cheaply before collecting (**feature gating**): an
 organisation with no evidence of a tool — no ruleset requiring its workflow,
 no alerts, no analyses on a sample of repositories — gets a single
 `⏩ Skipping feature: organisation support missing` line for that section
@@ -422,7 +426,7 @@ organisation and **Repository access** set to *All repositories*, then grant:
 | Metadata | Mandatory baseline; listing organisation repositories |
 | Contents | `.github/dependabot.yml`, latest release, and tag dates |
 | Dependabot alerts | Open Dependabot vulnerability alerts |
-| Code scanning alerts | CodeQL / Scorecard / zizmor / aislop findings |
+| Code scanning alerts | CodeQL / Scorecard / zizmor / aislop / fuzz findings |
 | Secret scanning alerts | Open secret-scanning alerts, across every GitHub pattern category |
 | Issues | Open issues and their labels (GitHub Issues table) |
 | Pull requests | Open pull requests, their reviews and review requests (Pull Requests tables) |
@@ -684,6 +688,7 @@ lists every key with its type, default and description, and
     "issue_age_warn_days": 30,
     "issue_age_error_days": 60,
     "graph_batch": 10,
+    "fuzz_languages": ["Python", "Go"],
     "concurrency": 9,
     "workflow_runs": {
       "windows": { "cli": [7], "report": [7, 30, 90], "slack": [7] }
@@ -811,7 +816,7 @@ The example above hides Zizmor on every surface, and keeps Releases / Tagging
 out of the terminal and Slack while still publishing it to the Markdown and HTML
 Pages output. The valid category keys are: `codeql`,
 `codeql_stale_configurations`, `codeql_language_coverage`, `scorecard`,
-`zizmor`, `aislop`, `dependabot_alerts`, `secret_scanning`,
+`zizmor`, `aislop`, `fuzz`, `dependabot_alerts`, `secret_scanning`,
 `dependabot_alerts_enabled`, `dependabot_updates_enabled`,
 `dependabot_cooldown`, `releases`, `mutable_releases`,
 `private_vulnerability_reporting`, `auto_merge`, `malware_findings`,
@@ -1041,8 +1046,8 @@ total open issues, then on the oldest issue.
 Ordering is resolved once, when the report is built, so every surface and
 `report.json` agree. It applies to the generic tables (GitHub Issues, Releases /
 Tagging, Mutable Releases, the Dependabot posture tables) **and** to the severity
-signal tables (CodeQL, OpenSSF Scorecard, zizmor, AI Slop, Dependabot alerts,
-secret scanning).
+signal tables (CodeQL, OpenSSF Scorecard, zizmor, AI Slop, Fuzzing, Dependabot
+alerts, secret scanning).
 
 The signal tables resolve their terms against a fixed vocabulary rather than a
 rendered column list, because their columns vary by surface and by data (Slack
@@ -1052,7 +1057,7 @@ repository carries note-level findings):
 | Signal | Accepted sort names |
 | ------ | ------------------- |
 | OpenSSF Scorecard | `repository`, `score`, `critical`, `high`, `medium`, `low`, `info`, `total` |
-| CodeQL, zizmor, AI Slop, Dependabot alerts | `repository`, `critical`, `high`, `medium`, `low`, `info`, `total` |
+| CodeQL, zizmor, AI Slop, Fuzzing, Dependabot alerts | `repository`, `critical`, `high`, `medium`, `low`, `info`, `total` |
 | Secret Scanning | `repository`, `open` |
 
 `informational` is accepted for `info`, and `total` for secret scanning's `open`.
@@ -1091,7 +1096,7 @@ By default the report sorts its sections into three bands:
 
 | Band | Contains | Why |
 | ---- | -------- | --- |
-| **Priority** | Secret Scanning, Dependabot: Malware Findings, Dependabot: Security Alerts, CodeQL, Mutable Releases | Findings worth acting on today |
+| **Priority** | Secret Scanning, Dependabot: Malware Findings, Dependabot: Security Alerts, CodeQL, Fuzzing, Mutable Releases | Findings worth acting on today |
 | **Middle** | Everything else | Neither urgent nor constant |
 | **BAU** | OpenSSF Scorecard, GitHub Issues, GitHub Issues: Assigned to Me, Pull Requests, Pull Requests: Assigned to Me | Carry data every run, so none of it is news |
 
@@ -1767,7 +1772,7 @@ permission the report needs.
 
 ### Organisation feature gating
 
-The workflow-driven signals (OpenSSF Scorecard, zizmor, aislop) need
+The workflow-driven signals (OpenSSF Scorecard, zizmor, aislop, fuzz) need
 organisation-deployed workflows before they produce any data (see the
 [organisation scan setup guide](docs/org-scan-setup.md)). By default the tool
 runs a cheap support check per organisation before collecting each of them:
@@ -2073,10 +2078,11 @@ is about 25 MB for a 140-repository organisation.
 
 ### Pass/fail severity cutoff
 
-The severity-ranked signals (CodeQL, Scorecard, Zizmor, aislop, Dependabot
-alerts) use a `fail_severity` cutoff to decide when a repository counts as a
-failure. A repository is flagged as an offender only when it carries a finding
-**at or above** the cutoff; findings below it fold into the clean count.
+The severity-ranked signals (CodeQL, Scorecard, Zizmor, aislop, fuzz,
+Dependabot alerts) use a `fail_severity` cutoff to decide when a repository
+counts as a failure. A repository is flagged as an offender only when it
+carries a finding **at or above** the cutoff; findings below it fold into the
+clean count.
 Severities run (lowest to highest) `informational`, `low`, `medium`, `high`,
 `critical` — `informational` being the sub-low rung for SARIF `none` findings
 and unclassifiable alerts. Zizmor's SARIF `note` findings normalise to `low`
@@ -2086,8 +2092,9 @@ SARIF), matching the ruleset-enforced PR gate that blocks on note-and-above.
 aislop populates the same SARIF level axis and normalises identically.
 
 The global default cutoff is `medium`, so `low` and `informational` findings
-pass. Zizmor and aislop default to `low` (only `informational` passes).
-Override the cutoff per category under
+pass. Zizmor and aislop default to `low` (only `informational` passes). Fuzz
+keeps `medium`: every fuzz failure arrives at SARIF `error`, which normalises
+to `high`, so each one already fails. Override the cutoff per category under
 `report.categories.<key>.fail_severity`:
 
 ```json
