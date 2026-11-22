@@ -9,6 +9,7 @@ import logging
 import re
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import ClassVar
 
@@ -92,6 +93,29 @@ def _org_graphql_side(request: httpx.Request) -> httpx.Response:
             "releases": {"nodes": []},
         }
     return httpx.Response(200, json={"data": data})
+
+
+@pytest.fixture(autouse=True)
+def _healthy_rate_limit() -> Iterator[None]:
+    """Answer the pre-flight token probe as GitHub answers a healthy token.
+
+    Registered on respx's global router, so every ``@respx.mock`` test here
+    sees it; a test registering the same URL replaces it. No
+    ``X-OAuth-Scopes`` header, so the probe has no scope warning to print.
+    """
+    respx.get(f"{API}/rate_limit", name="rate_limit").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "resources": {
+                    "core": {"limit": 5000, "used": 0, "remaining": 5000},
+                    "graphql": {"limit": 5000, "used": 0, "remaining": 5000},
+                }
+            },
+        )
+    )
+    yield
+    respx.mock.routes.pop("rate_limit", None)
 
 
 @pytest.fixture(autouse=True)
@@ -1799,16 +1823,23 @@ class _RecordingClient:
 
 @pytest.fixture
 def recording_client(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
-    """Run org mode against :class:`_RecordingClient` and an empty collection."""
+    """Run org mode against :class:`_RecordingClient` and an empty collection.
+
+    The pre-flight is passed over too: its requests are not the collection's.
+    """
     from github_security_report import collect
-    from github_security_report.cli import modes
+    from github_security_report.cli import modes, preflight
 
     async def fake_collect(
         _client: object, org_cfg: OrgConfig, *_args: object, **_kwargs: object
     ) -> OrgReport:
         return build_org_report(org_cfg.name, [], repo_count=0)
 
+    async def passed(*_args: object, **_kwargs: object) -> int:
+        return 0
+
     built: list[dict[str, object]] = []
+    monkeypatch.setattr(preflight, "check_org_run", passed)
     monkeypatch.setattr(_RecordingClient, "built", built)
     monkeypatch.setattr(modes, "GitHubClient", _RecordingClient)
     monkeypatch.setattr(collect, "collect_org", fake_collect)

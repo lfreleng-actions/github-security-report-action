@@ -22,7 +22,7 @@ from rich.console import Console
 
 from github_security_report import collect, config, layout, runner
 from github_security_report.categories import CategoryKey
-from github_security_report.cli import publish
+from github_security_report.cli import preflight, publish
 from github_security_report.cli.config_source import (
     ConfigLoadError,
     abort_config,
@@ -224,13 +224,23 @@ async def _collect_reports(
 
 
 async def _run_org(cfg: Config, options: OrgRunOptions, *, console: Console) -> int:
-    """Collect every configured org, then render, publish and notify.
+    """Check every org's token and listing, collect, then render and publish.
+
+    The pre-flight (see :mod:`~github_security_report.cli.preflight`) covers
+    every organisation before the first is collected; a failure returns its
+    exit code with nothing rendered or written.
 
     Each organisation's run summary prints immediately above its own report:
     the collection of every organisation is over by now, so printing the
     summaries as the collections ended would have stacked them all above the
     first report.
     """
+    tokens = preflight.resolve_tokens(cfg, console)
+    if tokens is None:
+        return 2
+    code = await preflight.check_org_run(cfg, tokens, console)
+    if code:
+        return code
     now = dt.datetime.now(dt.UTC)
     collected = await _collect_reports(cfg, console=console, now=now, options=options)
     if collected is None:

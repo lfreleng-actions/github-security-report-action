@@ -238,6 +238,20 @@ not permitted to make to an "unknown" status rather than reporting a repository
 as clean, so an under-scoped token surfaces as unknowns in the report instead of
 silently wrong results — start minimal and widen if you see unknowns.
 
+Before collecting anything, org-mode `report` checks every organisation's own
+`token_env` token: each must be set, each distinct token's rate limit must not
+be spent, and each organisation's repository listing must be readable, or the
+run stops with the codes in [Exit codes](#exit-codes). `remediate` ignores the
+per-organisation `token_env` values and checks only its one `--token-env`
+token (default `GITHUB_TOKEN`): its rate limit, and its read of every
+organisation's listing. For a classic PAT the same check warns about a missing
+scope from the table below and about a token that expires within seven days.
+The rate-limit, scope and expiry checks are best effort: when `GET /rate_limit`
+times out, fails to connect, answers anything but `200` or `401`, or sends a
+body the tool cannot read, they are skipped for that token (logged at DEBUG)
+and the run goes on to the listing checks. A passing pre-flight therefore does
+not prove that every token's budget was checked.
+
 The **one** exception is organisation-ruleset coverage. GitHub gates the
 org-rulesets endpoint behind an org-admin permission (classic `admin:org` scope,
 or fine-grained Administration **write**), even though the tool only reads it.
@@ -469,8 +483,9 @@ organisations. Grant these scopes:
 | `admin:org` | *Optional* — reading organisation rulesets for ruleset-based tool coverage. GitHub gates `GET /orgs/{org}/rulesets` behind the full `admin:org` scope; `read:org` and `write:org` return 404. Omit it to skip that one signal; everything else is unaffected. |
 
 > For organisations that enforce SSO, the PAT must be **SSO-authorised** for
-> each target organisation, or the org-level endpoints return `403` (reported as
-> unknown). Store the token as a secret (e.g. `LFRELENG_ACTIONS_REPORT_PAT`) and
+> each target organisation, or the org-level endpoints return `403`: the
+> repository listing then stops the run with exit code `5`, rather than being
+> reported as unknown. Store the token as a secret (e.g. `LFRELENG_ACTIONS_REPORT_PAT`) and
 > reference it by env-var name via `token_env`; never embed it in the config.
 
 ### Secret scanning covers three pattern categories
@@ -2296,17 +2311,59 @@ API in the same way.
 | ---- | ------- |
 | `0` | The report ran. |
 | `1` | Repo mode only: findings met or exceeded `--fail-threshold`. |
-| `2` | Usage or configuration error (bad flag, unreadable config). |
+| `2` | Usage or configuration error (bad flag, bad config, unset token). |
 | `3` | The GitHub API was unusable after the retry budget (see below). |
 | `4` | GitHub rejected the credentials (HTTP 401). |
+| `5` | A repository listing answered `403` or `404`, with no rate limit. |
+| `6` | A token's rate limit stopped the pre-flight (causes below). |
 
-Codes `3` and `4` are **aborts, not reports**: nothing is written and no Pages
+Code `6` has three causes, and a rate-limited `403` is one of them, not `5`:
+
+- a core or GraphQL budget already spent when the run started;
+- a rate-limited listing, including a `403` whose message names a secondary
+  rate limit;
+- a listing page that spent the last request.
+
+Codes `3` to `6` are **aborts, not reports**: nothing is written and no Pages
 artifact is produced. That is deliberate. A token that has expired, been revoked
 or been rotated makes every read fail, and a run that degraded instead would
 render a complete, confidently clean report — `0 repositories analysed`, every
 section `No data` or `All Clean` — and a scheduled job would then publish it
 over the last good one. Reporting false data is worse than reporting none, so
-the run stops at the first rejected request.
+the run stops at the first rejected request. A repository listing the token
+cannot read, or a rate limit with nothing left, would produce the same report,
+so they stop the run too.
+
+For `remediate`, "nothing is written" holds only when the pre-flight stops the
+run (any `5` or `6`, and a `3` or `4` raised before collection starts). After
+the pre-flight passes, `remediate` collects and writes one organisation at a
+time, so a `3` or `4` from a later organisation comes after the earlier ones'
+writes have been applied. Check what the run printed before re-running; a
+re-run enables only what it finds still off.
+
+Org-mode `report` and `remediate` check for these before they collect
+anything, for every configured organisation before the first. `report` reads
+each organisation's own `token_env`; `remediate` reads only its one
+`--token-env` token, never the per-organisation ones. Every token is set (all
+missing ones are named together, exit `2`); one `GET /rate_limit` per
+distinct token, which costs no rate limit, finds a spent core or GraphQL
+budget (exit `6`, naming the resource and when it resets); and one
+single-repository page of each organisation's listing finds a `403` or `404`
+(exit `5`). The `/rate_limit` probe is best effort: it is made once with a
+short timeout, and when it times out, cannot connect, answers anything but
+`200` or `401`, or sends an unreadable body, its budget, scope and expiry
+checks are skipped for that token (logged at DEBUG) and the run carries on.
+The code `5` message names the organisation and what to check:
+its name, a classic PAT's SSO authorisation for it, or a fine-grained PAT's
+resource owner and repository access. A listing that is rate limited
+(including a `403` whose message names a secondary rate limit), or whose page
+spends the last request, exits `6`. The message gives the later of the
+`Retry-After` wait and, when the budget is spent, its reset; with neither, it
+advises waiting at least a minute. One that still fails after the retry
+budget, or whose page holds an entry that is not a repository, exits `3`. A
+token GitHub rejects exits `4`, and the message says which token. A run that
+passes prints nothing new. A listing whose *later* page fails mid-run still
+produces a report marked incomplete.
 
 Code `3` covers a GitHub API that could not be reached at all, and a GraphQL
 prefetch that failed as a whole: either a size-shaped failure (`502`/`504`

@@ -50,7 +50,9 @@ def _parse_retry_after(value: str | None) -> float | None:
     HTTP-date. GitHub normally sends delta-seconds, but a proxy or future change
     may send a date, so both forms are parsed: a bare ``float(value)`` would
     raise ``ValueError`` on a date and crash rate-limit handling. A past or
-    unparsable date clamps to ``0.0`` / returns ``None`` rather than raising.
+    unparsable date clamps to ``0.0`` / returns ``None`` rather than raising,
+    as does a zone offset too large for a ``timedelta`` (``OverflowError``
+    before Python 3.13).
     """
     if not value:
         return None
@@ -60,7 +62,7 @@ def _parse_retry_after(value: str | None) -> float | None:
         return max(0.0, float(value))
     try:
         when = parsedate_to_datetime(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     if when is None:
         return None
