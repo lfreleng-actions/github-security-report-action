@@ -12,7 +12,7 @@ that issues the query stays about issuing it.
 
 from __future__ import annotations
 
-from github_security_report.client.errors import GraphBatchError
+from github_security_report.client.errors import GRAPH_RATE_LIMITED, GraphBatchError
 from github_security_report.client.paging import GraphQLResult
 
 # Fields whose failure can be isolated to the data they feed instead of failing
@@ -131,7 +131,7 @@ def _batch_response(
             "Retry once the budget resets.",
             status=status,
             splittable=False,
-            reason="rate limited",
+            reason=GRAPH_RATE_LIMITED,
         )
     if _exceeded_resource_limits(errors):
         raise GraphBatchError(

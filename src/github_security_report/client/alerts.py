@@ -27,7 +27,11 @@ import logging
 from typing import NamedTuple
 
 from github_security_report.client.endpoints import BULK_KINDS
-from github_security_report.client.errors import AuthError, NetworkError
+from github_security_report.client.errors import (
+    AuthError,
+    NetworkError,
+    RateLimitError,
+)
 from github_security_report.client.paging import Paging
 from github_security_report.secret_patterns import (
     GENERIC_SECRET_TYPES,
@@ -173,14 +177,17 @@ class AlertReads(Paging):
         swallowed and the list used unverified. The read is issued ``quiet``
         for the same reason -- its retry notices drop to DEBUG, so a probe
         nothing depends on cannot fill a healthy run's output with warnings.
-        Rejected credentials still abort, because every subsequent read would
-        fail the same way and the report would render as "all clean".
+        Rejected credentials and a spent rate limit still abort, because every
+        subsequent read would fail the same way and the report would render as
+        "all clean".
         """
         url = f"{self._api_url}/orgs/{owner}/{PATTERN_CONFIG_PATH}"
         try:
             resp = await self._request("GET", url, quiet=True)
-        except AuthError:
-            raise  # a bad credential condemns the whole run, not just this read
+        except (AuthError, RateLimitError):
+            # A bad credential or a spent rate limit condemns the whole run,
+            # not just this read.
+            raise
         except NetworkError as exc:
             log.debug(
                 "secret-scanning pattern inventory for %s unreachable (%s); "

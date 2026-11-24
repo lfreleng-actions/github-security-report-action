@@ -37,8 +37,14 @@ from github_security_report.cli.preflight_messages import (
     network_message,
     rate_limit_message,
     reset_text,
+    spent_budget_headers,
 )
-from github_security_report.client import AuthError, GitHubClient, NetworkError
+from github_security_report.client import (
+    AuthError,
+    GitHubClient,
+    NetworkError,
+    RateLimitError,
+)
 from github_security_report.client.bodies import _read_body
 from github_security_report.client.repo_parser import _parse_repo_or_none
 from github_security_report.client.transport import Transport
@@ -205,7 +211,8 @@ async def probe_token(
 ) -> None:
     """Read what ``GET /rate_limit`` says about a token, warning or aborting.
 
-    A ``401`` raises :class:`AuthError` from the transport, as for any read.
+    A ``401`` raises :class:`AuthError` from the transport, as for any read,
+    and a spent budget :class:`RateLimitError` (exit ``6``).
     Anything else the probe cannot use skips its checks, logged at DEBUG: the
     probe's own failure never stops a run. GitHub Enterprise Server answers
     ``404`` here when rate limiting is off. It is made once, never retried, and
@@ -217,7 +224,7 @@ async def probe_token(
             resp = await client._request(
                 "GET", url, quiet=True, max_retries=0, timeout=PROBE_TIMEOUT_SECONDS
             )
-    except AuthError:
+    except (AuthError, RateLimitError):
         raise
     except (NetworkError, TimeoutError) as exc:
         log.debug("token probe skipped: %s", str(exc) or "no answer in time")
@@ -337,7 +344,18 @@ async def check_listing(client: Transport, org: str) -> None:
     request of the rate limit leaves the collection nothing to read with.
     """
     url = f"{client._api_url}/orgs/{org}/repos"
-    resp = await client._request("GET", url, params={"type": "all", "per_page": 1})
+    try:
+        resp = await client._request("GET", url, params={"type": "all", "per_page": 1})
+    except RateLimitError as exc:
+        raise PreflightAbort(
+            rate_limit_message(
+                org,
+                f"answered HTTP {exc.status} after the retry budget",
+                url,
+                spent_budget_headers(exc),
+            ),
+            EXIT_RATE_LIMITED,
+        ) from exc
     status = resp.status_code
     headers = resp.headers
     if status == 200:

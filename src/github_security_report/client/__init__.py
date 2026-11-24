@@ -43,6 +43,7 @@ from github_security_report.client.errors import (
     AuthError,
     GraphBatchError,
     NetworkError,
+    RateLimitError,
 )
 from github_security_report.client.failures import _endpoint_diagnostics
 from github_security_report.client.org_reads import OrgReadClient
@@ -85,6 +86,7 @@ __all__ = [
     "OrgReadClient",
     "PageResult",
     "Paging",
+    "RateLimitError",
     "ReadClient",
     "RequestStats",
     "Transport",

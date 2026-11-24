@@ -41,9 +41,16 @@ from github_security_report.cli.outputs import (
     show,
     windows,
 )
+from github_security_report.cli.preflight_messages import spent_budget_message
 from github_security_report.cli.progress import make_tracker
 from github_security_report.cli.summary import RunSummary, print_run_summary
-from github_security_report.client import AuthError, GitHubClient, NetworkError
+from github_security_report.client import (
+    AuthError,
+    GitHubClient,
+    GraphBatchError,
+    NetworkError,
+    RateLimitError,
+)
 from github_security_report.collect.context import CollectExtras
 from github_security_report.collect.workflow_runs import (
     attach_workflow_failures,
@@ -143,6 +150,29 @@ def _abort_auth(console: Console, exc: AuthError) -> NoReturn:
     """
     console.print(str(exc), style="red", markup=False)
     raise typer.Exit(4)
+
+
+def _abort_rate_limit(console: Console, exc: RateLimitError) -> NoReturn:
+    """Abort the run on a read refused because a rate limit is spent.
+
+    Exits with the pre-flight's rate-limit code (6), mid-run as before it:
+    every later read would be refused the same way, and a report made of
+    unknowns would be published over the last good one.
+    """
+    message = spent_budget_message(exc, dt.datetime.now(dt.UTC))
+    console.print(message, style="red", markup=False)
+    raise typer.Exit(preflight.EXIT_RATE_LIMITED)
+
+
+def _abort_graph_rate_limit(console: Console, exc: GraphBatchError) -> NoReturn:
+    """Abort on a GraphQL prefetch refused for a spent GraphQL rate limit.
+
+    The message is the batch error's own; only the exit code (6) differs from
+    any other failed prefetch (3), so a rate limit reads the same whichever
+    API reported it.
+    """
+    console.print(str(exc), style="red", markup=False)
+    raise typer.Exit(preflight.EXIT_RATE_LIMITED)
 
 
 async def _collect_reports(
@@ -392,7 +422,9 @@ from github_security_report.cli.remediation import (  # noqa: E402
 
 __all__ = [
     "_abort_auth",
+    "_abort_graph_rate_limit",
     "_abort_network",
+    "_abort_rate_limit",
     "_check_selection",
     "_collect_reports",
     "_load_config",

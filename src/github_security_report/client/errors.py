@@ -11,6 +11,10 @@ definition of "stop".
 
 from __future__ import annotations
 
+# The ``reason`` a :class:`GraphBatchError` carries when a GraphQL rate limit
+# refused the query, which the CLI exits on as it does a spent REST budget.
+GRAPH_RATE_LIMITED = "rate limited"
+
 
 class NetworkError(RuntimeError):
     """The GitHub API was unusable after exhausting the retry budget.
@@ -42,6 +46,44 @@ class AuthError(NetworkError):
     unusable API keeps doing so; the CLI catches it first to report the cause
     and exit with its own status.
     """
+
+
+class RateLimitError(NetworkError):
+    """A read found GitHub's primary rate limit spent (403/429, remaining 0).
+
+    GitHub's guidance is not to retry until ``x-ratelimit-reset``, and every
+    later read would be refused the same way, so a run that carried on would
+    publish a report made of unknowns. The transport waits out a reset that
+    falls within the retry budget; otherwise it raises this at once.
+
+    Subclasses :class:`NetworkError`, as :class:`AuthError` does, so a caller
+    already aborting on an unusable API keeps doing so; the CLI catches it
+    first to word the message and exit with its own status. ``reset`` is the
+    reset time in UTC epoch seconds and ``retry_after`` the ``Retry-After``
+    wait in seconds, each ``None`` where GitHub gave none; ``resource`` is
+    the ``x-ratelimit-resource`` the request counted against.
+    """
+
+    def __init__(
+        self,
+        *,
+        method: str,
+        url: str,
+        status: int,
+        resource: str | None,
+        reset: int | None,
+        retry_after: float | None,
+    ) -> None:
+        super().__init__(
+            f"Rate limit exhausted: {method} {url} answered HTTP {status} with "
+            "no requests remaining"
+        )
+        self.method = method
+        self.url = url
+        self.status = status
+        self.resource = resource
+        self.reset = reset
+        self.retry_after = retry_after
 
 
 class GraphBatchError(NetworkError):
@@ -77,3 +119,8 @@ class GraphBatchError(NetworkError):
         self.status = status
         self.splittable = splittable
         self.reason = reason if reason is not None else f"HTTP {status}"
+
+    @property
+    def rate_limited(self) -> bool:
+        """Whether a spent GraphQL rate limit refused the query."""
+        return self.reason == GRAPH_RATE_LIMITED

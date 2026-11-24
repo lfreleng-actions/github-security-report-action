@@ -4,13 +4,15 @@
 
 Split from :mod:`~github_security_report.client.transport` so the retry loop
 there reads as policy, while the wording and diagnostics of each terminal
-failure (a rejected credential, an unreachable endpoint) live together here.
+failure (a rejected credential, an unreachable endpoint, a spent rate limit)
+live together here.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import socket
 
 import httpx
@@ -19,7 +21,12 @@ from github_security_report.client.endpoints import (
     API_DIAGNOSTIC_DNS_TIMEOUT_SECONDS,
     API_MAX_TOTAL_WAIT_SECONDS,
 )
-from github_security_report.client.errors import AuthError, NetworkError
+from github_security_report.client.errors import (
+    AuthError,
+    NetworkError,
+    RateLimitError,
+)
+from github_security_report.client.parsers import _parse_retry_after
 
 log = logging.getLogger(__name__)
 
@@ -75,6 +82,75 @@ def _auth_error(method: str, url: str) -> AuthError:
         f"endpoint={method} {url}\n  "
         "Check that the token is set, has not expired, and has not "
         "been revoked or rotated."
+    )
+
+
+def _budget_spent(resp: httpx.Response) -> bool:
+    """Whether a 403/429 says the primary rate limit has nothing left."""
+    return (
+        resp.status_code in (403, 429)
+        and resp.headers.get("x-ratelimit-remaining") == "0"
+    )
+
+
+def _reset_epoch(resp: httpx.Response) -> int | None:
+    """The ``x-ratelimit-reset`` time in epoch seconds, or ``None`` if unusable."""
+    try:
+        return int(resp.headers.get("x-ratelimit-reset", ""))
+    except ValueError:
+        return None
+
+
+def _unusable_delta_seconds(raw: str | None) -> bool:
+    """Whether ``raw`` is a number no retry can wait for: negative or not finite.
+
+    A value that is not a number (absent, or an HTTP-date) is left to the parser.
+    """
+    try:
+        value = float(raw or "")
+    except ValueError:
+        return False
+    return not 0 <= value < math.inf
+
+
+def _finite_retry_after(resp: httpx.Response) -> float | None:
+    """The ``Retry-After`` wait in seconds, or ``None`` when absent or unusable.
+
+    A negative or non-finite number (``-5``, ``nan``, ``inf``) is unusable:
+    the raw value is checked first because the shared parser clamps such
+    numbers to zero, which would read as "wait 0 seconds".
+    """
+    raw = resp.headers.get("retry-after")
+    if _unusable_delta_seconds(raw):
+        return None
+    seconds = _parse_retry_after(raw)
+    return seconds if seconds is not None and math.isfinite(seconds) else None
+
+
+def _reset_wait(resp: httpx.Response, now: float) -> float | None:
+    """Seconds until a spent budget may be retried, or ``None`` with no reset.
+
+    The later of ``x-ratelimit-reset`` and any ``Retry-After`` wait, plus one
+    second: the reset is whole seconds, and a retry issued on the boundary
+    could be refused again. ``None`` when GitHub gave no usable reset, which
+    leaves the transport on its ordinary backoff schedule.
+    """
+    reset = _reset_epoch(resp)
+    if reset is None:
+        return None
+    retry_after = _finite_retry_after(resp) or 0.0
+    return max(reset - now, retry_after, 0.0) + 1.0
+
+
+def _rate_limit_error(method: str, url: str, resp: httpx.Response) -> RateLimitError:
+    """The :class:`RateLimitError` for a read refused by a spent budget."""
+    return RateLimitError(
+        method=method,
+        url=url,
+        status=resp.status_code,
+        resource=resp.headers.get("x-ratelimit-resource"),
+        reset=_reset_epoch(resp),
+        retry_after=_finite_retry_after(resp),
     )
 
 

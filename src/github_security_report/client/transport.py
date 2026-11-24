@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import replace
 from typing import TypeVar
 
 import httpx
@@ -41,54 +41,17 @@ from github_security_report.client.events import (
 )
 from github_security_report.client.failures import (
     _auth_error,
+    _budget_spent,
+    _rate_limit_error,
+    _reset_wait,
     _transport_failure_result,
 )
 from github_security_report.client.parsers import _parse_retry_after
+from github_security_report.client.retry import _is_read, _RetryBudget, _RetryPlan
 
 log = logging.getLogger(__name__)
 
 _TransportT = TypeVar("_TransportT", bound="Transport")
-
-
-class _RetryBudget:
-    """Attempts spent and seconds slept so far within one ``_request`` call.
-
-    Holds the state the retry loop carries across iterations, so deciding that
-    the budget has run out and spending it (sleep, then count the attempt) stay
-    together instead of being open-coded at every backoff site.
-    """
-
-    def __init__(self, max_retries: int) -> None:
-        self.attempt = 0
-        self.waited = 0.0
-        self.max_retries = max_retries
-
-    def exhausted(self, delay: float) -> bool:
-        """Whether sleeping ``delay`` would exceed the retry or wait budget."""
-        return (
-            self.attempt >= self.max_retries
-            or self.waited + delay > API_MAX_TOTAL_WAIT_SECONDS
-        )
-
-    async def sleep(self, delay: float) -> None:
-        """Back off for ``delay`` seconds and charge them to the budget."""
-        await asyncio.sleep(delay)
-        self.waited += delay
-        self.attempt += 1
-
-
-@dataclass(frozen=True)
-class _RetryPlan:
-    """How a reachable-but-degraded (403/429/5xx) response should be treated.
-
-    ``retriable`` is false for a genuine permission error, which is handed
-    straight back to the caller; ``server_error`` only selects the wording of
-    the retry warning.
-    """
-
-    retriable: bool
-    server_error: bool
-    delay: float
 
 
 class Transport:
@@ -207,6 +170,15 @@ class Transport:
         unknown, while callers whose data is load-bearing (the GraphQL
         prefetch) abort the run instead of fabricating results. A 401 from the
         GitHub API is never degraded or retried; see :func:`_auth_error`.
+
+        A read the GitHub API refuses because the primary budget is spent (a
+        403/429 with ``x-ratelimit-remaining: 0``) is the exception to handing
+        the response back. When the reset (or a later ``Retry-After``), plus a
+        second, fits in what is left of the budget, the transport waits for it
+        and retries; otherwise it raises :class:`~.errors.RateLimitError` at
+        once, since the ordinary schedule cannot outlast the reset. With no usable
+        ``x-ratelimit-reset`` it follows the ordinary schedule and raises once
+        that is spent. Writes keep handing the response back.
         """
         http = client or self._client
         is_external = http is self._ext_client
@@ -260,7 +232,23 @@ class Transport:
             # limiting from a genuine 403, then back off on the shared
             # schedule (honouring Retry-After) within the wait budget.
             plan = self._plan_degraded_retry(resp, budget.attempt)
+            # A read refused by a spent primary budget: every later read would
+            # be refused too, so it ends the run rather than one signal. A
+            # write hands its response back, so remediation reports each
+            # target's outcome; a third-party 429 is not GitHub's budget.
+            spent = not is_external and _is_read(method, kind) and _budget_spent(resp)
+            if spent:
+                wait = _reset_wait(resp, time.time())
+                if wait is not None:
+                    if budget.exhausted(wait):
+                        # The 1 s, 2 s, 4 s schedule cannot outlast the reset.
+                        await resp.aclose()
+                        raise _rate_limit_error(method, url, resp)
+                    plan = replace(plan, delay=wait)
             if not plan.retriable or budget.exhausted(plan.delay):
+                if spent:
+                    await resp.aclose()
+                    raise _rate_limit_error(method, url, resp)
                 # Retries exhausted (or a genuine 403): hand the response back
                 # so the caller can degrade its signal to unknown -- or, when
                 # its data is load-bearing, abort the run.
