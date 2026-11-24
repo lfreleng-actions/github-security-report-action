@@ -25,8 +25,18 @@ from rich.console import Console
 
 from github_security_report import gitctx, runner
 from github_security_report.categories import CategoryKey
-from github_security_report.cli.modes import _abort_auth, _abort_network
-from github_security_report.client import AuthError, NetworkError
+from github_security_report.cli.modes import (
+    _abort_auth,
+    _abort_graph_rate_limit,
+    _abort_network,
+    _abort_rate_limit,
+)
+from github_security_report.client import (
+    AuthError,
+    GraphBatchError,
+    NetworkError,
+    RateLimitError,
+)
 from github_security_report.config import Config
 from github_security_report.matching import compile_patterns
 
@@ -224,13 +234,22 @@ def resolve_mode(
 def run_guarded(console: Console, coro: Coroutine[Any, Any, int]) -> int:
     """Run a mode coroutine, turning credential and network failures into exits.
 
-    Both run modes need the same two handlers, and both distinguish the two
-    causes by exit code so an automated caller can tell "rotate the token" from
-    "retry later" without parsing the message.
+    Every mode needs the same handlers, and they distinguish the causes by
+    exit code so an automated caller can tell "rotate the token" (4) from
+    "wait for the rate limit to reset" (6) and "retry later" (3) without
+    parsing the message. A spent rate limit exits 6 whichever API reported
+    it: a REST read refused by its budget, or a GraphQL prefetch refused by
+    a GraphQL rate limit.
     """
     try:
         return asyncio.run(coro)
     except AuthError as exc:
         _abort_auth(console, exc)
+    except RateLimitError as exc:
+        _abort_rate_limit(console, exc)
+    except GraphBatchError as exc:
+        if exc.rate_limited:
+            _abort_graph_rate_limit(console, exc)
+        _abort_network(console, exc)
     except NetworkError as exc:
         _abort_network(console, exc)

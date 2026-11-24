@@ -14,6 +14,8 @@ import math
 
 import httpx
 
+from github_security_report.client.errors import RateLimitError
+from github_security_report.client.failures import _unusable_delta_seconds
 from github_security_report.client.parsers import _parse_retry_after
 
 
@@ -66,6 +68,35 @@ def rate_limit_message(org: str, what: str, url: str, headers: httpx.Headers) ->
     lines.append(f"  {wait_text(headers, dt.datetime.now(dt.UTC))}")
     lines.append("  Wait for the rate limit to reset, or run with a different token.")
     return "\n".join(lines)
+
+
+def spent_budget_headers(exc: RateLimitError) -> httpx.Headers:
+    """The rate-limit headers a :class:`RateLimitError` was raised from.
+
+    Rebuilt from what the error carries, so :func:`wait_text` words the wait
+    as it would have from the response itself.
+    """
+    headers = httpx.Headers({"x-ratelimit-remaining": "0"})
+    if exc.reset is not None:
+        headers["x-ratelimit-reset"] = str(exc.reset)
+    if exc.retry_after is not None:
+        headers["retry-after"] = str(math.ceil(exc.retry_after))
+    return headers
+
+
+def spent_budget_message(exc: RateLimitError, now: dt.datetime) -> str:
+    """The abort for a read refused mid-run because a budget is spent."""
+    resource = f"the {exc.resource}" if exc.resource else "a primary"
+    return "\n".join(
+        [
+            f"Rate limit exhausted: GitHub refused a read because {resource} "
+            "rate limit has no requests left; the run stopped because the "
+            "remaining reads would all be reported as unknown.",
+            f"  endpoint={exc.method} {exc.url}",
+            f"  {wait_text(spent_budget_headers(exc), now)}",
+            "  Wait for the rate limit to reset, or run with a different token.",
+        ]
+    )
 
 
 def wait_text(headers: httpx.Headers, now: dt.datetime) -> str:
@@ -126,18 +157,6 @@ def _retry_after_at(
         return now + dt.timedelta(seconds=whole), whole
     except OverflowError:
         return None
-
-
-def _unusable_delta_seconds(raw: str | None) -> bool:
-    """Whether ``raw`` is a number no retry can wait for: negative or not finite.
-
-    A value that is not a number (absent, or an HTTP-date) is left to the parser.
-    """
-    try:
-        value = float(raw or "")
-    except ValueError:
-        return False
-    return not 0 <= value < math.inf
 
 
 def listing_message(org: str, status: int, url: str, sso: str | None) -> str:

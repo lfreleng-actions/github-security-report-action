@@ -255,8 +255,8 @@ token (default `GITHUB_TOKEN`): its rate limit, and its read of every
 organisation's listing. For a classic PAT the same check warns about a missing
 scope from the table below and about a token that expires within seven days.
 The rate-limit, scope and expiry checks are best effort: when `GET /rate_limit`
-times out, fails to connect, answers anything but `200` or `401`, or sends a
-body the tool cannot read, they are skipped for that token (logged at DEBUG)
+times out, fails to connect, answers anything but `200`, `401` or a refusal
+for a spent rate limit, or sends a body the tool cannot read, they are skipped for that token (logged at DEBUG)
 and the run goes on to the listing checks. A passing pre-flight therefore does
 not prove that every token's budget was checked.
 
@@ -1854,9 +1854,11 @@ flight when the first failure arrives were issued at the old size, so on a
 slow day up to four oversized batches, rather than one, may fail before the
 smaller size takes effect; that bounded cost buys the overlap. Only a
 single-repository query GitHub still cannot answer, or a failure that a
-smaller query could not fix (a `403`, an exhausted rate limit, or a
-`500`/`503` outage rather than a `502`/`504` timeout), aborts the run with
-exit code `3`, and the queries still in flight are cancelled first.
+smaller query could not fix (a `403` or a `500`/`503` outage rather than a
+`502`/`504` timeout), aborts the run with exit code `3`, and the queries
+still in flight are cancelled first. An exhausted GraphQL rate limit is not
+retried smaller either: it aborts the run with exit code `6` (see
+[Exit codes](#exit-codes)).
 
 The value can be set three ways, in this order of precedence:
 
@@ -2323,14 +2325,31 @@ API in the same way.
 | `3` | The GitHub API was unusable after the retry budget (see below). |
 | `4` | GitHub rejected the credentials (HTTP 401). |
 | `5` | A repository listing answered `403` or `404`, with no rate limit. |
-| `6` | A token's rate limit stopped the pre-flight (causes below). |
+| `6` | A rate limit with nothing left stopped the run (causes below). |
 
-Code `6` has three causes, and a rate-limited `403` is one of them, not `5`:
+Code `6` has five causes, and a rate-limited `403` is one of them, not `5`:
 
 - a core or GraphQL budget already spent when the run started;
 - a rate-limited listing, including a `403` whose message names a secondary
   rate limit;
-- a listing page that spent the last request.
+- a listing page that spent the last request;
+- a read refused mid-run because the primary budget is spent (a `403` or
+  `429` with `x-ratelimit-remaining: 0`) and the reset is further away than
+  the retry budget allows;
+- a GraphQL prefetch refused because a GraphQL rate limit is spent.
+
+A read refused mid-run waits for the reset, and retries, only when the
+later of `x-ratelimit-reset` and any `Retry-After`, plus a second, fits in
+what is left of that request's retry budget. Otherwise the run stops at
+once: retrying on the ordinary schedule cannot outlast the reset, and
+GitHub warns that continuing to send requests while rate limited may get an
+integration banned. With no `x-ratelimit-reset`, the read is retried on the
+ordinary schedule and the run stops when that is spent. The message names
+the rate-limit resource, the endpoint, and when the budget resets in UTC
+with the minutes to wait. A secondary rate limit (no
+`x-ratelimit-remaining: 0`) that outlives the retry budget still degrades
+that one read to unknown, and a `remediate` write refused for a spent budget
+still reports that target's failure rather than stopping the run.
 
 Codes `3` to `6` are **aborts, not reports**: nothing is written and no Pages
 artifact is produced. That is deliberate. A token that has expired, been revoked
@@ -2343,11 +2362,12 @@ cannot read, or a rate limit with nothing left, would produce the same report,
 so they stop the run too.
 
 For `remediate`, "nothing is written" holds only when the pre-flight stops the
-run (any `5` or `6`, and a `3` or `4` raised before collection starts). After
-the pre-flight passes, `remediate` collects and writes one organisation at a
-time, so a `3` or `4` from a later organisation comes after the earlier ones'
-writes have been applied. Check what the run printed before re-running; a
-re-run enables only what it finds still off.
+run (any `5`, a `6` from the pre-flight, and a `3` or `4` raised before
+collection starts). After the pre-flight passes, `remediate` collects and
+writes one organisation at a time, so a `3`, `4` or `6` from a later
+organisation comes after the earlier ones' writes have been applied. Check
+what the run printed before re-running; a re-run enables only what it finds
+still off.
 
 Org-mode `report` and `remediate` check for these before they collect
 anything, for every configured organisation before the first. `report` reads
@@ -2359,7 +2379,8 @@ budget (exit `6`, naming the resource and when it resets); and one
 single-repository page of each organisation's listing finds a `403` or `404`
 (exit `5`). The `/rate_limit` probe is best effort: it is made once with a
 short timeout, and when it times out, cannot connect, answers anything but
-`200` or `401`, or sends an unreadable body, its budget, scope and expiry
+`200`, `401` or a refusal for a spent rate limit (exit `6`), or sends an
+unreadable body, its budget, scope and expiry
 checks are skipped for that token (logged at DEBUG) and the run carries on.
 The code `5` message names the organisation and what to check:
 its name, a classic PAT's SSO authorisation for it, or a fine-grained PAT's
@@ -2371,16 +2392,16 @@ advises waiting at least a minute. One that still fails after the retry
 budget, or whose page holds an entry that is not a repository, exits `3`. A
 token GitHub rejects exits `4`, and the message says which token. A run that
 passes prints nothing new. A listing whose *later* page fails mid-run still
-produces a report marked incomplete.
+produces a report marked incomplete, unless a spent rate limit refused it
+(exit `6`).
 
 Code `3` covers a GitHub API that could not be reached at all, and a GraphQL
 prefetch that failed as a whole: either a size-shaped failure (`502`/`504`
 timeout, `200` with no data, resource limits exceeded) that persisted even
 after the batch had been halved down to one repository, or a failure that
-halving could not have fixed (`403`, an exhausted GraphQL rate limit, a
-`500`/`503` outage), which aborts at once. The message reports the status or
-cause and ends with the matching next step — a smaller `--graph-batch`, retry
-later, wait for the rate-limit budget to reset, or check the token's
+halving could not have fixed (`403`, a `500`/`503` outage), which aborts at
+once. The message reports the status or cause and ends with the matching
+next step — a smaller `--graph-batch`, retry later, or check the token's
 permissions — so read it rather than assuming "retry later" (see
 [GraphQL prefetch batch size](#graphql-prefetch-batch-size)).
 
