@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import datetime as dt
 
-import pytest
 from rich.console import Console
 
 from github_security_report import report
@@ -285,7 +284,6 @@ class TestUnknownReasons:
         )
         return _sections(org)[SignalType.CODEQL]
 
-    @pytest.mark.xfail(strict=True, reason="unknown reasons not yet collected")
     def test_mixed_reasons_ordered_by_count_then_reason(self) -> None:
         section = self._section(
             [
@@ -302,12 +300,10 @@ class TestUnknownReasons:
         ]
         assert sum(section.unknown_reasons.values()) == section.unknown_count
 
-    @pytest.mark.xfail(strict=True, reason="unknown reasons not yet collected")
     def test_single_reason(self) -> None:
         section = self._section(["insufficient permission"])
         assert section.unknown_reasons == {"insufficient permission": 1}
 
-    @pytest.mark.xfail(strict=True, reason="unknown reasons not yet collected")
     def test_empty_detail_counts_as_no_reason_recorded(self) -> None:
         section = self._section(["", "indeterminate", ""])
         assert list(section.unknown_reasons.items()) == [
@@ -316,19 +312,16 @@ class TestUnknownReasons:
         ]
         assert sum(section.unknown_reasons.values()) == section.unknown_count
 
-    @pytest.mark.xfail(strict=True, reason="unknown reasons not yet collected")
     def test_no_unknowns_no_reasons(self) -> None:
         section = self._section([])
         assert section.unknown_reasons == {}
 
-    @pytest.mark.xfail(strict=True, reason="unknown reasons not yet shown")
     def test_footer_names_one_reason(self) -> None:
         lines = report.build_summary(
             self._section(["insufficient permission"]).summary_counts()
         )
         assert "1 Unknown (insufficient permission)" in [line.text for line in lines]
 
-    @pytest.mark.xfail(strict=True, reason="unknown reasons not yet shown")
     def test_footer_names_several_reasons(self) -> None:
         section = self._section(
             [
@@ -370,7 +363,6 @@ class TestUnknownReasonsOnEachSurface:
     ONE = "1 Unknown (insufficient permission)"
     SEVERAL = "3 Unknown (2 insufficient permission, 1 alert data incomplete)"
 
-    @pytest.mark.xfail(strict=True, reason="unknown reasons not yet shown")
     def test_terminal(self) -> None:
         console = Console(record=True, width=200, no_color=True)
         terminal.render_org(_unknown_reason_org(), console)
@@ -378,13 +370,11 @@ class TestUnknownReasonsOnEachSurface:
         assert self.ONE in out
         assert self.SEVERAL in out
 
-    @pytest.mark.xfail(strict=True, reason="unknown reasons not yet shown")
     def test_markdown(self) -> None:
         out = markdown.render_org(_unknown_reason_org())
         assert f"❓ {self.ONE}" in out
         assert f"❓ {self.SEVERAL}" in out
 
-    @pytest.mark.xfail(strict=True, reason="unknown reasons not yet shown")
     def test_html(self) -> None:
         out = html.render_org_html(_unknown_reason_org())
         assert self.ONE in out

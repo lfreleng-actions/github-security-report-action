@@ -73,6 +73,10 @@ class SummaryCount:
     # Wording for the collapsed ``All <label>`` line, when the counted label
     # would not read grammatically after "All". Falls back to ``label``.
     all_label: str | None = None
+    # Why the counted repositories are in this bucket, as (reason, count)
+    # pairs in display order; named after the count on every surface that
+    # asks for reasons. Only a signal's unknown bucket carries any.
+    reasons: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -124,7 +128,23 @@ SUMMARY_EMOJI = {
 }
 
 
-def build_summary(counts: Sequence[SummaryCount]) -> list[SummaryLine]:
+def reasons_text(reasons: Sequence[tuple[str, int]]) -> str:
+    """The parenthesised reasons after a count, or empty when there are none.
+
+    A single reason stands alone, since the count before it already says how
+    many repositories give it: ``(insufficient permission)``. Several each
+    carry their own count: ``(2 insufficient permission, 1 indeterminate)``.
+    """
+    if not reasons:
+        return ""
+    if len(reasons) == 1:
+        return f" ({reasons[0][0]})"
+    return " (" + ", ".join(f"{n} {reason}" for reason, n in reasons) + ")"
+
+
+def build_summary(
+    counts: Sequence[SummaryCount], *, reasons: bool = True
+) -> list[SummaryLine]:
     """Turn raw count buckets into ordered, formatted summary lines.
 
     The single place every surface builds its under-table footer, so the
@@ -137,6 +157,8 @@ def build_summary(counts: Sequence[SummaryCount]) -> list[SummaryLine]:
     visible line).
     A ``note`` bucket is not a count: its ``label`` is the whole line, shown
     when ``count`` is non-zero, and it never blocks the collapse.
+    ``reasons`` false leaves each bucket's reasons off its line, for a surface
+    sized against limits that do not allow for them (the Slack digest).
     """
     present = [c for c in counts if c.count > 0]
     non_pass = sum(c.count for c in present if c.kind not in ("pass", "note"))
@@ -150,6 +172,8 @@ def build_summary(counts: Sequence[SummaryCount]) -> list[SummaryLine]:
             text = f"All {count.all_label or count.label}"
         else:
             text = f"{count.count} {count.label}"
+            if reasons:
+                text += reasons_text(count.reasons)
         lines.append(
             SummaryLine(
                 kind=count.kind,

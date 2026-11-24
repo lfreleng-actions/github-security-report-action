@@ -2170,7 +2170,6 @@ def test_hide_suppresses_assigned_issues_everywhere(tmp_path: Path) -> None:
     )
 
 
-@pytest.mark.xfail(strict=True, reason="unknown reasons not yet serialised")
 def test_org_to_dict_lists_unknown_reasons() -> None:
     from github_security_report.cli import _org_to_dict
     from github_security_report.models import RepoSignal, RepoState, SignalType

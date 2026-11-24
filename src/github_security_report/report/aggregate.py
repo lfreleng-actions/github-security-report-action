@@ -26,7 +26,7 @@ from github_security_report.models import (
     SignalType,
 )
 from github_security_report.ranking import rank_offenders
-from github_security_report.report.signals import SignalSection
+from github_security_report.report.signals import SignalSection, unknown_reasons
 from github_security_report.report.tables import TableSection
 
 if TYPE_CHECKING:
@@ -265,6 +265,7 @@ def build_org_report(
                 clean_count=sum(1 for s in results if s.state is RepoState.CLEAN),
                 nag_repos=sorted(nag, key=lambda r: r.name),
                 unknown_count=sum(1 for s in results if s.state is RepoState.UNKNOWN),
+                unknown_reasons=unknown_reasons(results),
                 not_applicable_count=sum(
                     1 for s in results if s.state is RepoState.NOT_APPLICABLE
                 ),

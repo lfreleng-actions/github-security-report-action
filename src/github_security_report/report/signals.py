@@ -9,9 +9,11 @@ in ``docs/BRIEF.md`` sections 4-6.
 
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-from github_security_report.models import Repo, RepoSignal, SignalType
+from github_security_report.models import Repo, RepoSignal, RepoState, SignalType
 from github_security_report.report.exclusions import NO_EXCLUSIONS, Exclusions
 from github_security_report.summary import SummaryCount
 
@@ -25,6 +27,23 @@ ORG_SETUP_DOC_URL = (
     "blob/main/docs/org-scan-setup.md"
 )
 
+# The reason counted for an unknown result whose classifier left no detail.
+NO_REASON = "no reason recorded"
+
+
+def unknown_reasons(results: Iterable[RepoSignal]) -> dict[str, int]:
+    """Why the unknown results are unknown: each distinct detail, counted.
+
+    Ordered by count, largest first, then by reason, so every surface lists
+    them alike. The counts sum to the number of unknown results.
+    """
+    tally = Counter(
+        result.detail or NO_REASON
+        for result in results
+        if result.state is RepoState.UNKNOWN
+    )
+    return dict(sorted(tally.items(), key=lambda item: (-item[1], item[0])))
+
 
 @dataclass
 class SignalSection:
@@ -35,6 +54,9 @@ class SignalSection:
     clean_count: int = 0
     nag_repos: list[Repo] = field(default_factory=list)
     unknown_count: int = 0
+    # Each reason recorded for the unknown repositories, with how many give it,
+    # in display order (see :func:`unknown_reasons`); empty when none.
+    unknown_reasons: dict[str, int] = field(default_factory=dict)
     # Repositories the signal cannot examine (fuzzing, for one holding no
     # fuzzable language), counted on a footer line of their own. Zero for
     # every signal that applies to all repositories.
@@ -85,7 +107,12 @@ class SignalSection:
                 "Disabled",
                 tuple(r.name for r in self.nag_repos),
             ),
-            SummaryCount("unknown", self.unknown_count, "Unknown"),
+            SummaryCount(
+                "unknown",
+                self.unknown_count,
+                "Unknown",
+                reasons=tuple(self.unknown_reasons.items()),
+            ),
             SummaryCount(
                 "pass",
                 self.clean_count,

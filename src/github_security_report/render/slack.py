@@ -137,7 +137,8 @@ def _signal_block(
     section: SignalSection, top_n: int, *, exclusions: Exclusions
 ) -> dict:
     """A Slack section block for one signal's offender table and footer."""
-    lines = build_summary(section.summary_counts(exclusions))
+    # The digest is sized against slack_limits, so it keeps the bare count.
+    lines = build_summary(section.summary_counts(exclusions), reasons=False)
 
     def build(rows: int, names: int) -> str:
         text = f"*{section.signal.heading}*"
