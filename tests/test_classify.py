@@ -382,6 +382,62 @@ class TestRulesetCoverage:
         assert _by_signal(facts)[SignalType.CODEQL].state is RepoState.NAG
 
 
+_TOOL_SIGNALS = [
+    (SignalType.CODEQL, "CodeQL"),
+    (SignalType.ZIZMOR, "zizmor"),
+    (SignalType.AISLOP, "aislop"),
+]
+
+
+class TestFailedProbe:
+    """A tool whose filtered analyses probe failed is unknown, not nagged."""
+
+    @pytest.mark.xfail(strict=True, reason="failed probe still nags")
+    @pytest.mark.parametrize(("signal", "tool"), _TOOL_SIGNALS)
+    def test_unread_tool_is_unknown(self, signal: SignalType, tool: str) -> None:
+        facts = RepoFacts(repo=_repo(), code_scanning_unread=frozenset({tool}))
+        sig = _by_signal(facts)[signal]
+        assert sig.state is RepoState.UNKNOWN
+        assert sig.detail == "indeterminate"
+
+    @pytest.mark.parametrize(("signal", "tool"), _TOOL_SIGNALS)
+    def test_ruleset_enforced_unread_tool_is_classified_from_alerts(
+        self, signal: SignalType, tool: str
+    ) -> None:
+        facts = RepoFacts(
+            repo=_repo(),
+            code_scanning_unread=frozenset({tool}),
+            code_scanning_alerts=[_cs_alert(tool, "critical")],
+            ruleset_signals={signal.value},
+        )
+        assert _by_signal(facts)[signal].state is RepoState.OFFENDER
+
+    @pytest.mark.xfail(strict=True, reason="failed probe still nags")
+    def test_unread_scorecard_without_external_score_is_unknown(self) -> None:
+        facts = RepoFacts(repo=_repo(), code_scanning_unread=frozenset({"Scorecard"}))
+        sig = _by_signal(facts)[SignalType.SCORECARD]
+        assert sig.state is RepoState.UNKNOWN
+        assert sig.detail == "indeterminate"
+
+    def test_unread_scorecard_with_external_score_is_decided_by_it(self) -> None:
+        facts = RepoFacts(
+            repo=_repo(),
+            code_scanning_unread=frozenset({"Scorecard"}),
+            scorecard_status=200,
+            scorecard_score=10.0,
+        )
+        assert _by_signal(facts)[SignalType.SCORECARD].state is RepoState.CLEAN
+
+    def test_detected_scorecard_is_classified_from_its_alerts(self) -> None:
+        facts = RepoFacts(
+            repo=_repo(),
+            code_scanning_tools={"Scorecard"},
+            code_scanning_unread=frozenset({"CodeQL"}),
+            code_scanning_alerts=[_cs_alert("Scorecard", "high")],
+        )
+        assert _by_signal(facts)[SignalType.SCORECARD].state is RepoState.OFFENDER
+
+
 class TestUnreadableAlertSweep:
     """An enabled signal with an unreadable alert read is unknown, not clean."""
 
