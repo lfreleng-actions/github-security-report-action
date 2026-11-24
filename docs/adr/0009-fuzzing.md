@@ -68,8 +68,9 @@ enabled would bury the repositories that could have a harness and do not.
    for code scanning disabled); after a forbidden or failed one the
    repository is unknown rather than Not applicable. The same holds when the
    analyses page omits `fuzz` and the filtered `fuzz` probe that should
-   settle it fails: the repository is unknown, while the other signals keep
-   treating a failed probe as their tool undetected. A probe answered with
+   settle it fails: the repository is unknown, as the other code-scanning
+   signals are after their own failed probe, save where a ruleset enforces
+   the tool or Scorecard's external score decides. A probe answered with
    a malformed body leaves only its own tool unknown, for every signal
    (Scorecard too, unless its external score decides): it no longer turns
    the shared analyses status into a failure, so the tools the page did

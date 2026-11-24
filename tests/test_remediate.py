@@ -222,7 +222,6 @@ async def test_category_selection_limits_the_work() -> None:
     assert {c[0] for c in client.calls} == {"codeql"}
 
 
-@pytest.mark.xfail(strict=True, reason="failed probe still nags")
 async def test_failed_codeql_probe_is_not_a_codeql_target() -> None:
     # A repository whose CodeQL probe failed may have older CodeQL analyses,
     # so default setup must not be switched on there.

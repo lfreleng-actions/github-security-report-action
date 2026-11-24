@@ -377,16 +377,16 @@ read as not enabled rather than unknown.
   analyses answers with invalid JSON or a non-array body, each is unknown,
   except one a ruleset enforces, whose alert read is then skipped so that it
   reads as clean. A `404` reads as code scanning **disabled**, and a tool missing from
-  the analyses reads **not enabled**, as it does when its filtered probe fails
-  with an HTTP error.
+  the analyses reads **not enabled**, unless its filtered probe fails with an
+  HTTP error, which leaves it **unknown** as well.
   Neither applies to a tool a ruleset enforces: it counts as enabled, and
   after a `404` its alert read is skipped, so it reads as clean rather than
   disabled. For a tool detected in the analyses or enforced by a ruleset,
   an alert at or above the category's cutoff makes the repository an
   offender even when the alert read did not finish; otherwise an unfinished
-  alert read is **unknown**, never clean. A tool left undetected, such as by
-  a failed probe, reads **not enabled** whatever alerts were collected, so
-  its alerts do not fail the gate.
+  alert read is **unknown**, never clean. A tool left undetected reads **not
+  enabled**, or **unknown** when its probe failed, whatever alerts were
+  collected, so its alerts do not fail the gate.
 - Scorecard prefers its external score from scorecard.dev, read without the
   token, so it can be classified, clean included, while the analyses are
   unreadable. Without that score it falls back to its code-scanning alerts
@@ -571,9 +571,9 @@ maps to `codeql` covers it. The analysis check reads analyses on every branch,
 not only the default branch, so a repository whose only CodeQL analysis came
 from a feature branch reads as enabled and is not a target, though its default
 branch has none. The check reads the newest 100 analyses, and when CodeQL is
-not among them, a probe filtered to CodeQL; if that probe fails with an HTTP
-error, CodeQL goes undetected for the run, so a repository whose CodeQL
-analyses are all older becomes a target. Any other CodeQL pipeline that has
+not among them, a probe filtered to CodeQL; if that probe fails, CodeQL reads
+as unknown for the run, so the repository is not a target whether or not it
+has older CodeQL analyses. Any other CodeQL pipeline that has
 not yet uploaded an analysis leaves the repository a `codeql` target: a
 repository-local workflow, a required workflow the mapping does not name, one
 whose ruleset the token cannot read, or an external pipeline that uploads with

@@ -13,7 +13,7 @@ Pure, transport-free logic encoding every Phase 0 finding
 - secret scanning 404 = disabled, 200 [] = enabled-clean;
 - Dependabot ``hasVulnerabilityAlertsEnabled == false`` = disabled;
 - Scorecard prefers the external aggregate score, else code-scanning findings;
-- 403 / indeterminate -> the unknown bucket, never clean or nag;
+- 403 / indeterminate, or a failed tool probe -> unknown, never clean or nag;
 - a repository holding no fuzzable language is not applicable to fuzzing,
   never nagged (ADR-0009);
 - an alert read that failed (even part-way, keeping the alerts it had
@@ -170,6 +170,8 @@ def _code_scanning_tool_signal(
         facts.code_scanning_status == 200 and tool_name in facts.code_scanning_tools
     )
     if not enabled:
+        if tool_name in facts.code_scanning_unread:  # a failed probe: no evidence
+            return RepoSignal(repo, signal, RepoState.UNKNOWN, detail="indeterminate")
         detail = (
             "code scanning disabled"
             if facts.code_scanning_status == 404
@@ -314,12 +316,12 @@ def classify_scorecard(
     # An indeterminate external request (a 403 forbidden/blocked, a 5xx
     # including the synthetic 503 a transport failure produces, or a forbidden
     # code-scanning probe) is unknown, not a definitive nag. Only a clean 404
-    # with no code-scanning Scorecard data means "no results". A malformed
+    # with no code-scanning Scorecard data means "no results". A failed
     # Scorecard probe settles nothing either, as for the other tools.
     if (
         facts.code_scanning_status == 403
         or facts.scorecard_status not in (200, 404)
-        or CODE_SCANNING_TOOLS[SignalType.SCORECARD] in facts.code_scanning_malformed
+        or CODE_SCANNING_TOOLS[SignalType.SCORECARD] in facts.code_scanning_unread
     ):
         return RepoSignal(
             repo, SignalType.SCORECARD, RepoState.UNKNOWN, detail="indeterminate"

@@ -392,7 +392,6 @@ _TOOL_SIGNALS = [
 class TestFailedProbe:
     """A tool whose filtered analyses probe failed is unknown, not nagged."""
 
-    @pytest.mark.xfail(strict=True, reason="failed probe still nags")
     @pytest.mark.parametrize(("signal", "tool"), _TOOL_SIGNALS)
     def test_unread_tool_is_unknown(self, signal: SignalType, tool: str) -> None:
         facts = RepoFacts(repo=_repo(), code_scanning_unread=frozenset({tool}))
@@ -412,7 +411,6 @@ class TestFailedProbe:
         )
         assert _by_signal(facts)[signal].state is RepoState.OFFENDER
 
-    @pytest.mark.xfail(strict=True, reason="failed probe still nags")
     def test_unread_scorecard_without_external_score_is_unknown(self) -> None:
         facts = RepoFacts(repo=_repo(), code_scanning_unread=frozenset({"Scorecard"}))
         sig = _by_signal(facts)[SignalType.SCORECARD]
