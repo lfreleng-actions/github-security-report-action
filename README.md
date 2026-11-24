@@ -28,7 +28,15 @@ states and rendered worst-first:
 - **Clean** — enabled with zero findings (a count beneath the table).
 - **Not enabled** — supported but switched off (a counted "disabled" footer
   line, with the affected repositories named).
-- **Unknown** — indeterminate (insufficient permission), counted separately.
+- **Unknown** — indeterminate, counted separately. The terminal, Markdown
+  and HTML reports name the reasons beside the count, for example
+  `3 Unknown (2 insufficient permission, 1 alert data incomplete)`:
+  - `insufficient permission` — the token cannot read the signal (`403`).
+  - `indeterminate` — a read that settles enablement failed.
+  - `alert data unavailable` — the alert read failed with nothing collected.
+  - `alert data incomplete` — the alert read failed part-way.
+  - `languages unreadable` — fuzzing could not read the languages.
+  - `no reason recorded` — the classifier gave none.
 
 Every category renders the same **standardised summary footer** beneath its
 table: remediation-first count lines (failures, disabled, unknown, then the

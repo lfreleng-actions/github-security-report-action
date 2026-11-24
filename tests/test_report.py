@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import datetime as dt
 
+from rich.console import Console
+
 from github_security_report import report
 from github_security_report.classify import RepoFacts, classify_repo
 from github_security_report.models import (
@@ -15,6 +17,7 @@ from github_security_report.models import (
     SeverityCounts,
     SignalType,
 )
+from github_security_report.render import html, markdown, slack, terminal
 
 WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.UTC)
 
@@ -261,6 +264,152 @@ class TestBuildOrgReport:
         assert sections[SignalType.SCORECARD].offenders[0].score == 8.2
         assert sections[SignalType.CODEQL].clean_count == 1
         assert sections[SignalType.SECRET_SCANNING].clean_count == 1
+
+
+class TestUnknownReasons:
+    """Each signal section records why its unknown repositories are unknown."""
+
+    @staticmethod
+    def _section(details: list[str]) -> report.SignalSection:
+        signals = [
+            RepoSignal(_repo(f"r{i}"), SignalType.CODEQL, RepoState.UNKNOWN, detail=d)
+            for i, d in enumerate(details)
+        ]
+        signals.append(RepoSignal(_repo("ok"), SignalType.CODEQL, RepoState.CLEAN))
+        signals.append(
+            RepoSignal(_repo("off"), SignalType.CODEQL, RepoState.NAG, detail="x")
+        )
+        org = report.build_org_report(
+            "o", signals, repo_count=len(signals), generated_at=WHEN
+        )
+        return _sections(org)[SignalType.CODEQL]
+
+    def test_mixed_reasons_ordered_by_count_then_reason(self) -> None:
+        section = self._section(
+            [
+                "indeterminate",
+                "insufficient permission",
+                "alert data incomplete",
+                "insufficient permission",
+            ]
+        )
+        assert list(section.unknown_reasons.items()) == [
+            ("insufficient permission", 2),
+            ("alert data incomplete", 1),
+            ("indeterminate", 1),
+        ]
+        assert sum(section.unknown_reasons.values()) == section.unknown_count
+
+    def test_single_reason(self) -> None:
+        section = self._section(["insufficient permission"])
+        assert section.unknown_reasons == {"insufficient permission": 1}
+
+    def test_empty_detail_counts_as_no_reason_recorded(self) -> None:
+        section = self._section(["", "indeterminate", ""])
+        assert list(section.unknown_reasons.items()) == [
+            ("no reason recorded", 2),
+            ("indeterminate", 1),
+        ]
+        assert sum(section.unknown_reasons.values()) == section.unknown_count
+
+    def test_no_unknowns_no_reasons(self) -> None:
+        section = self._section([])
+        assert section.unknown_reasons == {}
+
+    def test_footer_names_one_reason(self) -> None:
+        lines = report.build_summary(
+            self._section(["insufficient permission"]).summary_counts()
+        )
+        assert "1 Unknown (insufficient permission)" in [line.text for line in lines]
+
+    def test_footer_names_several_reasons(self) -> None:
+        section = self._section(
+            [
+                "alert data incomplete",
+                "insufficient permission",
+                "insufficient permission",
+            ]
+        )
+        lines = report.build_summary(section.summary_counts())
+        assert "3 Unknown (2 insufficient permission, 1 alert data incomplete)" in [
+            line.text for line in lines
+        ]
+
+
+def _unknown_reason_org() -> report.OrgReport:
+    """One secret-scanning unknown for a 403; three CodeQL unknowns, mixed."""
+    signals = [
+        RepoSignal(
+            _repo("s"),
+            SignalType.SECRET_SCANNING,
+            RepoState.UNKNOWN,
+            detail="insufficient permission",
+        ),
+        *(
+            RepoSignal(_repo(name), SignalType.CODEQL, RepoState.UNKNOWN, detail=detail)
+            for name, detail in (
+                ("a", "insufficient permission"),
+                ("b", "alert data incomplete"),
+                ("c", "insufficient permission"),
+            )
+        ),
+    ]
+    return report.build_org_report("o", signals, repo_count=4, generated_at=WHEN)
+
+
+class TestUnknownReasonsOnEachSurface:
+    """The Unknown footer line names its reasons everywhere but Slack."""
+
+    ONE = "1 Unknown (insufficient permission)"
+    SEVERAL = "3 Unknown (2 insufficient permission, 1 alert data incomplete)"
+
+    def test_terminal(self) -> None:
+        console = Console(record=True, width=200, no_color=True)
+        terminal.render_org(_unknown_reason_org(), console)
+        out = console.export_text()
+        assert self.ONE in out
+        assert self.SEVERAL in out
+
+    def test_markdown(self) -> None:
+        out = markdown.render_org(_unknown_reason_org())
+        assert f"❓ {self.ONE}" in out
+        assert f"❓ {self.SEVERAL}" in out
+
+    def test_html(self) -> None:
+        out = html.render_org_html(_unknown_reason_org())
+        assert self.ONE in out
+        assert self.SEVERAL in out
+
+    def test_slack_digest_is_unchanged(self) -> None:
+        # The digest is sized against Slack's limits, so its unknown lines keep
+        # their bare count: the payload matches one built with no reasons.
+        org = _unknown_reason_org()
+        bare = report.build_org_report(
+            "o",
+            [
+                RepoSignal(_repo(name), signal, RepoState.UNKNOWN)
+                for name, signal in (
+                    ("s", SignalType.SECRET_SCANNING),
+                    ("a", SignalType.CODEQL),
+                    ("b", SignalType.CODEQL),
+                    ("c", SignalType.CODEQL),
+                )
+            ],
+            repo_count=4,
+            generated_at=WHEN,
+        )
+        assert slack.render_payload([org], channel="C") == slack.render_payload(
+            [bare], channel="C"
+        )
+        lines = [
+            line
+            for block in slack.render_org_blocks(org, top_n=10, pages_url=None)
+            if isinstance(block.get("text"), dict)
+            for line in block["text"]["text"].splitlines()
+        ]
+        assert "❓ 1 Unknown" in lines
+        assert "❓ 3 Unknown" in lines
+        assert not any("insufficient permission" in line for line in lines)
 
 
 class TestOffenderColumnTotals:
