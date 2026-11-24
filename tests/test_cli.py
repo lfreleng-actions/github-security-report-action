@@ -2168,3 +2168,35 @@ def test_hide_suppresses_assigned_issues_everywhere(tmp_path: Path) -> None:
         "GitHub Issues: Assigned to Me"
         not in (tmp_path / "o" / "report.html").read_text()
     )
+
+
+@pytest.mark.xfail(strict=True, reason="unknown reasons not yet serialised")
+def test_org_to_dict_lists_unknown_reasons() -> None:
+    from github_security_report.cli import _org_to_dict
+    from github_security_report.models import RepoSignal, RepoState, SignalType
+
+    def repo(name: str) -> Repo:
+        return Repo(name, f"o/{name}", f"https://github.com/o/{name}")
+
+    signals = [
+        RepoSignal(
+            repo("a"),
+            SignalType.SECRET_SCANNING,
+            RepoState.UNKNOWN,
+            detail="insufficient permission",
+        ),
+        RepoSignal(repo("b"), SignalType.SECRET_SCANNING, RepoState.CLEAN),
+    ]
+    sections = {
+        s["signal"]: s
+        for s in _org_to_dict(build_org_report("o", signals, repo_count=2))["sections"]
+    }
+    secret = sections[SignalType.SECRET_SCANNING.value]
+    assert secret["unknown_reasons"] == {"insufficient permission": 1}
+    assert secret["unknown_count"] == 1
+    assert secret["clean_count"] == 1
+    assert secret["nag"] == []
+    assert secret["offenders"] == []
+    assert secret["not_applicable_count"] == 0
+    assert secret["skipped"] is False
+    assert sections[SignalType.CODEQL.value]["unknown_reasons"] == {}
