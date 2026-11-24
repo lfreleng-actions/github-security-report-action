@@ -10,8 +10,9 @@ from types import MappingProxyType
 
 import pytest
 
-from github_security_report import remediate
+from github_security_report import classify, remediate
 from github_security_report.categories import CategoryKey, category_meta
+from github_security_report.classify import RepoFacts
 from github_security_report.codeql import (
     CodeQLConfiguration,
     CodeQLFacts,
@@ -24,6 +25,7 @@ from github_security_report.report import (
     SignalSection,
     TableRow,
     TableSection,
+    build_org_report,
 )
 
 WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.UTC)
@@ -218,6 +220,25 @@ async def test_category_selection_limits_the_work() -> None:
     )
     assert [r.category.key for r in results] == [CategoryKey.CODEQL]
     assert {c[0] for c in client.calls} == {"codeql"}
+
+
+async def test_failed_codeql_probe_is_not_a_codeql_target() -> None:
+    # A repository whose CodeQL probe failed may have older CodeQL analyses,
+    # so default setup must not be switched on there.
+    signals = [
+        classify.classify_codeql(
+            RepoFacts(
+                repo=_repo("probe-failed"), code_scanning_unread=frozenset({"CodeQL"})
+            )
+        ),
+        classify.classify_codeql(RepoFacts(repo=_repo("no-codeql"))),
+    ]
+    org = build_org_report("o", signals, repo_count=2, generated_at=WHEN)
+    client = FakeClient()
+    await remediate.remediate_org(
+        client, org, categories=[CategoryKey.CODEQL], apply=True
+    )
+    assert client.calls == [("codeql", "o", "no-codeql")]
 
 
 async def test_duplicate_categories_are_collapsed() -> None:
