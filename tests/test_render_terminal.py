@@ -20,7 +20,7 @@ from github_security_report.models import (
     SeverityCounts,
     SignalType,
 )
-from github_security_report.render import terminal
+from github_security_report.render import terminal, terminal_remediation
 
 WHEN = dt.datetime(2026, 6, 16, 9, 0, tzinfo=dt.UTC)
 
@@ -407,7 +407,9 @@ def test_render_remediation_dry_run_previews_without_apply_banner() -> None:
         _remediation(CategoryKey.SECRET_SCANNING, []),
     ]
     console = Console(record=True, width=120, no_color=True)
-    terminal.render_remediation("lfreleng-actions", results, console, apply=False)
+    terminal_remediation.render_remediation(
+        "lfreleng-actions", results, console, apply=False
+    )
     out = console.export_text()
     assert "Remediation: lfreleng-actions" in out
     assert "DRY RUN" in out
@@ -429,7 +431,7 @@ def test_render_remediation_apply_reports_enabled_and_failures() -> None:
         ),
     ]
     console = Console(record=True, width=120, no_color=True)
-    terminal.render_remediation("o", results, console, apply=True)
+    terminal_remediation.render_remediation("o", results, console, apply=True)
     out = console.export_text()
     # Apply mode prints no pre-amble banner (the writes are already done).
     assert "APPLYING CHANGES" not in out
@@ -447,7 +449,7 @@ def test_render_remediation_honours_top_n() -> None:
         ),
     ]
     console = Console(record=True, width=200, no_color=True)
-    terminal.render_remediation("o", results, console, apply=False, top_n=2)
+    terminal_remediation.render_remediation("o", results, console, apply=False, top_n=2)
     out = console.export_text()
     assert "5 would enable" in out  # the count is the true total
     assert "(+3 more)" in out  # the inline name list is truncated to 2
@@ -463,7 +465,7 @@ def test_render_remediation_escapes_bracketed_failure_notes() -> None:
         ),
     ]
     console = Console(record=True, width=200, no_color=True)
-    terminal.render_remediation("o", results, console, apply=True)
+    terminal_remediation.render_remediation("o", results, console, apply=True)
     out = console.export_text()
     assert "[Errno 8]" in out
     assert "bad failed: 422 [Errno 8] nodename nor servname" in out
@@ -651,7 +653,7 @@ def test_render_remediation_groups_verbs_and_lists_refusals() -> None:
         )
     ]
     console = Console(record=True, width=120, no_color=True)
-    terminal.render_remediation("o", results, console, apply=True)
+    terminal_remediation.render_remediation("o", results, console, apply=True)
     out = console.export_text()
     assert "1 deleted: a (Default, python)" in out
     assert "1 re-enabled: b (Advanced, python)" in out
@@ -669,7 +671,7 @@ def test_render_remediation_dry_run_names_each_verb() -> None:
         )
     ]
     console = Console(record=True, width=120, no_color=True)
-    terminal.render_remediation("o", results, console, apply=False)
+    terminal_remediation.render_remediation("o", results, console, apply=False)
     out = console.export_text()
     assert "1 would delete: a (Default, python)" in out
     assert "1 would re-enable: b (Advanced, python)" in out
@@ -739,7 +741,7 @@ def test_render_remediation_lists_skipped_targets_with_their_cause() -> None:
         )
     ]
     console = Console(record=True, width=200, no_color=True)
-    terminal.render_remediation("o", results, console, apply=False)
+    terminal_remediation.render_remediation("o", results, console, apply=False)
     out = console.export_text()
     assert "1 would delete: r: /language:go" in out
     assert "r: /language:c-cpp skipped: Workflow active, not uploading" in out

@@ -27,7 +27,7 @@ from github_security_report.collect.context import CollectExtras
 from github_security_report.collect.protocols import ClientProtocol
 from github_security_report.config import Config
 from github_security_report.models import Repo
-from github_security_report.render import terminal as term_render
+from github_security_report.render import terminal_remediation as term_remediation
 
 log = logging.getLogger(__name__)
 
@@ -102,7 +102,7 @@ async def _run_remediate(
                 tracker.stop()
             # Honour the org's configured terminal offender limit, the same
             # cap the report's CLI output uses, so large orgs stay readable.
-            term_render.render_remediation(
+            term_remediation.render_remediation(
                 report.org,
                 results,
                 console,
