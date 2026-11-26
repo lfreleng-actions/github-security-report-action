@@ -163,7 +163,7 @@ def _table_context(
     A boolean feature table contributes no rows: its repositories are named in
     the footer instead, as on every other surface.
     """
-    rows, hidden = truncate(section.rows, top_n)
+    rows, hidden = truncate(section.listed_rows, top_n)
     if section.lists_repos:
         rows, hidden = [], 0
     name_to_repo = {**section.repos_by_name(), **{r.name: r for r in exclusions.repos}}

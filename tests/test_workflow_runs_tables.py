@@ -432,3 +432,75 @@ def test_truncated_job_lists_are_marked() -> None:
     )
     _, (detail, _) = _build(records=[cut])
     assert detail.rows[0].cells[2] == "First (1), more in 1 run(s)"
+
+
+def _display_records() -> list[WorkflowRunRecord]:
+    """``a`` fails 2.4%, ``b`` 1.6% and ``c`` exactly 2% of their runs."""
+    return [
+        *_rate_records(3, 122),
+        *(_run("b", Outcome.FAIL, Trigger.MERGE, days_ago=1) for _ in range(2)),
+        *(_run("b", Outcome.PASS, Trigger.MERGE, days_ago=1) for _ in range(123)),
+        _run("c", Outcome.FAIL, Trigger.MERGE, days_ago=1),
+        *(_run("c", Outcome.PASS, Trigger.MERGE, days_ago=1) for _ in range(49)),
+    ]
+
+
+def test_display_threshold_compares_the_unrounded_rate() -> None:
+    # 2.4% and 1.6% both read 2%; only the rate strictly above 0.02 is
+    # listed, and exactly 2% is not. Every row stays in the section and in
+    # the footer counts.
+    (repo_table, _), _ = build_workflow_failure_tables(
+        _display_records(),
+        IN_SCOPE,
+        generated_at=NOW,
+        windows=WINDOWS,
+        options=WindowOptions(days=7),
+        fail_rate_display_threshold=0.02,
+    )
+    cells = {row.repo.name: row.cells[2] for row in repo_table.rows}
+    assert cells == {"a": "2%", "b": "2%", "c": "2%"}
+    assert [row.repo.name for row in repo_table.listed_rows] == ["a"]
+    assert repo_table.fail_count == 3
+    assert repo_table.pass_count == 0
+    assert repo_table.unlisted_note == "2 failing at or below 2% not listed"
+
+
+def test_display_threshold_defaults_to_listing_every_row() -> None:
+    (repo_table, _), (detail, _) = _build(records=_display_records())
+    assert repo_table.listed_rows == repo_table.rows
+    assert detail.listed_rows == detail.rows
+    assert repo_table.unlisted_note == ""
+    assert detail.unlisted_note == ""
+
+
+def test_detail_display_threshold_uses_the_workflow_rate() -> None:
+    # Repo ``a`` fails 1% of its runs, but its one failing workflow fails
+    # half of its own: the repository is hidden, the workflow listed.
+    records = [
+        _run("a", Outcome.FAIL, Trigger.MERGE, days_ago=1),
+        _run("a", Outcome.PASS, Trigger.MERGE, days_ago=1),
+        *(
+            _run(
+                "a",
+                Outcome.PASS,
+                Trigger.MERGE,
+                days_ago=1,
+                workflow_id=2,
+                workflow_name="Lint",
+                workflow_path=".github/workflows/lint.yaml",
+            )
+            for _ in range(98)
+        ),
+    ]
+    (repo_table, _), (detail, _) = build_workflow_failure_tables(
+        records,
+        IN_SCOPE,
+        generated_at=NOW,
+        windows=WINDOWS,
+        options=WindowOptions(days=7),
+        fail_rate_display_threshold=0.02,
+    )
+    assert repo_table.listed_rows == []
+    assert repo_table.unlisted_note == "1 failing at or below 2% not listed"
+    assert [row.cells[0] for row in detail.listed_rows] == ["Testing"]
+    assert detail.unlisted_note == ""

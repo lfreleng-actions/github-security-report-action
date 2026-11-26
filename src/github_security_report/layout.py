@@ -125,8 +125,8 @@ class LayoutItem:
                 self.section.offenders or self.section.nag_repos
             )
         else:
-            own = bool(self.section.rows)
-        return own or any(child.rows for child in self.children)
+            own = bool(self.section.listed_rows)
+        return own or any(child.listed_rows for child in self.children)
 
 
 def default_items(org: OrgReport) -> list[LayoutItem]:

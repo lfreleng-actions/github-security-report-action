@@ -317,5 +317,6 @@ async def attach_workflow_failures(
             unknown=result.unknown,
             oldest=result.oldest,
             fail_rate_error_threshold=cfg.fail_rate_error_threshold,
+            fail_rate_display_threshold=cfg.fail_rate_display_threshold,
         )
     )

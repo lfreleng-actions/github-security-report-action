@@ -67,6 +67,10 @@ class TableRow:
     # the column totals, so a truncated table's footer describes what is on
     # screen rather than a total the reader cannot reconcile.
     footer_values: tuple[int, ...] = ()
+    # Whether the render surfaces draw this row. A row its builder filters
+    # out (a failure rate at or below a display threshold) stays in ``rows``
+    # so ``report.json`` keeps it, and still counts in the footer.
+    listed: bool = True
 
     def level(self, index: int) -> str | None:
         """The emphasis for cell ``index``, or ``None`` when it has none."""
@@ -152,6 +156,15 @@ class TableSection:
     # column. A table too wide for a chat message names its headline columns
     # here; the other surfaces and ``report.json`` always carry all of them.
     slack_columns: tuple[int, ...] = ()
+    # The footer line saying why some rows are not drawn, shown only while
+    # any row has ``listed`` off. Every render surface shows it; ``report.json``
+    # carries every row instead.
+    unlisted_note: str = ""
+
+    @property
+    def listed_rows(self) -> list[TableRow]:
+        """The rows the render surfaces draw, in ``rows`` order."""
+        return [row for row in self.rows if row.listed]
 
     @property
     def title(self) -> str:
@@ -232,6 +245,11 @@ class TableSection:
                 all_label=self.category.pass_all_label,
             ),
             *(SummaryCount("note", 1, note) for note in self.notes),
+            *(
+                [SummaryCount("note", 1, self.unlisted_note)]
+                if self.unlisted_note and len(self.listed_rows) < len(self.rows)
+                else []
+            ),
             SummaryCount("na", self.not_applicable_count, "Not applicable"),
             *exclusions.counts(),
         ]

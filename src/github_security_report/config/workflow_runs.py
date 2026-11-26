@@ -54,6 +54,9 @@ class WorkflowRunsConfig:
     # A repository failing more than this share of its runs has its Fail %
     # shown as an error; any lower non-zero rate is a warning.
     fail_rate_error_threshold: float = 0.05
+    # A Workflow Failures row is listed only when its own failure rate is
+    # above this; the rest are counted but not drawn. Zero lists every row.
+    fail_rate_display_threshold: float = 0.0
     cache: bool = True
     cache_dir: str | None = None
 
