@@ -300,3 +300,79 @@ def test_output_windows_follow_the_default_config() -> None:
     assert outputs.windows(cfg, "cli")(FAILURES) == {7}
     assert outputs.windows(cfg, "report")(FAILURES) == {7, 30, 90}
     assert outputs.windows(cfg, "slack")(FAILURES) == {7}
+
+
+_UNLISTED = "2 failing at or below 2% not listed"
+
+
+def _thresholded(listed: tuple[bool, ...], *, note: str = _UNLISTED) -> TableSection:
+    """A ranking with one row per flag, ``r0`` first, hidden where False."""
+    table = _ranking(_repo("x"), ("1", "10", "10%", "0", "0", "1", "Testing"))
+    table.rows = [
+        TableRow(
+            repo=_repo(f"r{i}"),
+            cells=("1", "10", "10%", "0", "0", "1", "Testing"),
+            listed=shown,
+        )
+        for i, shown in enumerate(listed)
+    ]
+    table.fail_count = len(listed)
+    table.unlisted_note = note
+    return table
+
+
+def _surfaces(table: TableSection, *, top_n: int = 10) -> dict[str, str]:
+    """The table as each of the four surfaces draws it."""
+    org = report.build_org_report("o", [], repo_count=3, generated_at=WHEN)
+    org.workflow_failures = (table,)
+    org.section_order = layout.resolve(org)
+    blocks = slack.render_org_blocks(org, top_n=top_n, pages_url=None, windows=_week)
+    return {
+        "terminal": _terminal(org, top_n=top_n, windows=_week),
+        "markdown": markdown.render_org(org, top_n=top_n, windows=_week),
+        "html": html.render_org_html(org, top_n=top_n, windows=_week),
+        "slack": _block_text(blocks, "Workflow Failures (7 days)") or "",
+    }
+
+
+def test_every_surface_hides_unlisted_rows_and_says_so() -> None:
+    surfaces = _surfaces(_thresholded((True, False, True, False)))
+    for name, text in surfaces.items():
+        assert re.search(r"\br0\b", text), name
+        assert re.search(r"\br2\b", text), name
+        assert not re.search(r"\br[13]\b", text), name
+        assert _UNLISTED in text, name
+        assert "4 With failures" in text, name
+
+
+def test_no_surface_changes_when_nothing_is_hidden() -> None:
+    # A note with every row listed renders exactly as a table without one.
+    plain = _surfaces(_thresholded((True, True), note=""))
+    noted = _surfaces(_thresholded((True, True)))
+    assert noted == plain
+    assert all(_UNLISTED not in text for text in noted.values())
+
+
+def test_row_limit_counts_only_the_listed_rows() -> None:
+    # Five rows, two hidden, a limit of two: two drawn and one more.
+    table = _thresholded((False, True, True, False, True))
+    for name, text in _surfaces(table, top_n=2).items():
+        assert re.search(r"\br1\b", text), name
+        assert re.search(r"\br2\b", text), name
+        assert not re.search(r"\br[034]\b", text), name
+        assert "and 1 more" in text, name
+
+
+def test_everything_hidden_draws_no_table_but_keeps_the_footer() -> None:
+    for name, text in _surfaces(_thresholded((False, False))).items():
+        assert not re.search(r"\br[01]\b", text), name
+        assert "10%" not in text, name
+        assert _UNLISTED in text, name
+        assert "2 With failures" in text, name
+
+
+def test_serialise_keeps_the_unlisted_rows() -> None:
+    org = report.build_org_report("o", [], repo_count=3, generated_at=WHEN)
+    org.workflow_failures = (_thresholded((True, False, False)),)
+    rows = _org_to_dict(org)["workflow_failures"][0]["rows"]
+    assert [row["repo"] for row in rows] == ["o/r0", "o/r1", "o/r2"]

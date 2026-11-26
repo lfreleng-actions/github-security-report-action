@@ -265,11 +265,11 @@ def render_table_section(
     meta = section.category
     lines = [f"{heading} {section.title}", ""]
     summary = build_summary(section.summary_counts(exclusions, repo_list=repo_list))
-    if not (section.rows or summary):
+    if not (section.listed_rows or summary):
         lines.append("_No data available._")
         lines.append("")
         return "\n".join(lines).rstrip() + "\n"
-    rows, hidden = truncate(section.rows, top_n)
+    rows, hidden = truncate(section.listed_rows, top_n)
     if rows and not section.lists_repos:
         aligns = ["---"] * len(section.columns)
         lines.append("| " + " | ".join(section.columns) + " |")

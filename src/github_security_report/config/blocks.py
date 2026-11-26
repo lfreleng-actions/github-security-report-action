@@ -277,6 +277,7 @@ def _workflow_runs_from(
             "persistent_threshold",
             "min_runs",
             "fail_rate_error_threshold",
+            "fail_rate_display_threshold",
             "cache",
             "cache_dir",
         }

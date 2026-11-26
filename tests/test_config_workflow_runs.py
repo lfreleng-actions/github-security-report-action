@@ -124,6 +124,29 @@ class TestBuildConfig:
         assert runs.fail_rate_error_threshold == 0.1
         assert runs.persistent_threshold == 0.9
 
+    def test_fail_rate_display_threshold_is_global_or_per_org(self) -> None:
+        cfg = _cfg(
+            {"fail_rate_display_threshold": 0.02},
+            org_block={"fail_rate_display_threshold": 0.1},
+        )
+        own, other = (org.report.workflow_runs for org in cfg.organizations)
+        assert own.fail_rate_display_threshold == 0.1
+        assert other.fail_rate_display_threshold == 0.02
+        assert WorkflowRunsConfig().fail_rate_display_threshold == 0
+
+    @pytest.mark.parametrize("value", [-0.1, 1.5, "0.02"])
+    def test_fail_rate_display_threshold_rejects_a_bad_value(
+        self, value: object
+    ) -> None:
+        with pytest.raises(ConfigError, match="fail_rate_display_threshold"):
+            _cfg({"fail_rate_display_threshold": value})
+
+    def test_config_keys_lists_fail_rate_display_threshold(self) -> None:
+        key = "report.workflow_runs.fail_rate_display_threshold"
+        result = cli.invoke(app, ["config", "keys", key], env={"COLUMNS": "400"})
+        assert result.exit_code == 0, result.output
+        assert key in result.output
+
     def test_schema_accepts_every_tuning_key(self) -> None:
         runs = _cfg(
             {

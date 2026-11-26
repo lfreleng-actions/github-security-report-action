@@ -236,7 +236,7 @@ def render_table_section(
     the Markdown and HTML (GitHub Pages) outputs.
     """
     inline = section.lists_repos
-    rows, hidden = truncate(section.rows, top_n)
+    rows, hidden = truncate(section.listed_rows, top_n)
     console.print(f"[bold]{section.title}[/bold]")
     if not inline and rows:
         table = Table(title_justify="left", title_style="bold")

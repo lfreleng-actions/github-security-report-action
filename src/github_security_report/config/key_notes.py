@@ -137,6 +137,9 @@ _NOTES: dict[str, KeyNote] = {
     "report.workflow_runs.fail_rate_error_threshold": KeyNote(
         "Repository failure rate above which Fail % shows an error."
     ),
+    "report.workflow_runs.fail_rate_display_threshold": KeyNote(
+        "Failure rate a Workflow Failures row must exceed to be listed."
+    ),
     "report.workflow_runs.cache": KeyNote("Keep the run store in the per-user cache."),
     "report.workflow_runs.cache_dir": KeyNote(
         "Directory for the run store.", "$XDG_CACHE_HOME/github-security-report"

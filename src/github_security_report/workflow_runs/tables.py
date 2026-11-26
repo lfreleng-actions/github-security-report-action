@@ -15,6 +15,7 @@ from __future__ import annotations
 import datetime as dt
 import posixpath
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import replace
 from urllib.parse import quote
 
 from github_security_report.categories import CategoryKey, category_meta
@@ -89,6 +90,22 @@ def _percent(rate: float) -> str:
 
 # The repository failure rate above which Fail % reads as an error.
 DEFAULT_FAIL_RATE_ERROR_THRESHOLD = 0.05
+
+
+def _listed(row: TableRow, rate: float, threshold: float) -> TableRow:
+    """``row``, drawn only when ``rate`` is strictly above ``threshold``.
+
+    The unrounded rate is compared, not the percentage in the Fail % cell.
+    """
+    return row if rate > threshold else replace(row, listed=False)
+
+
+def _unlisted_note(rows: Sequence[TableRow], threshold: float) -> str:
+    """The footer line counting the rows the display threshold hides."""
+    hidden = sum(1 for row in rows if not row.listed)
+    if not hidden:
+        return ""
+    return f"{hidden} failing at or below {threshold * 100:g}% not listed"
 
 
 def _rate_level(rate: float, threshold: float) -> str | None:
@@ -251,6 +268,7 @@ def build_workflow_failure_tables(
     unknown: frozenset[str] = frozenset(),
     oldest: Mapping[str, dt.datetime | None] | None = None,
     fail_rate_error_threshold: float = DEFAULT_FAIL_RATE_ERROR_THRESHOLD,
+    fail_rate_display_threshold: float = 0.0,
 ) -> tuple[tuple[TableSection, ...], tuple[TableSection, ...]]:
     """Both tables for every window, shortest window first.
 
@@ -262,6 +280,10 @@ def build_workflow_failure_tables(
     ``fail_rate_error_threshold`` is the repository failure rate above which
     the Fail % cell reads as an error rather than a warning; the persistent
     threshold in ``options`` judges only the detail table's Pattern.
+    ``fail_rate_display_threshold`` is the failure rate a row must exceed to
+    be drawn, judged per table on the rate in its own Fail % column; the rows
+    at or below it stay in the section, so ``report.json`` and the footer
+    counts keep them.
     """
     by_name = {repo.name: repo for repo in in_scope}
     held = list(records)
@@ -298,14 +320,27 @@ def build_workflow_failure_tables(
         notes = _notes(days, len(readable), sum(s.runs for s in per_repo), truncated)
         unknown_count = sum(1 for repo in in_scope if repo.name in unknown)
         pass_count = len(readable) - len(failing)
+        repo_rows = [
+            _listed(
+                _repo_row(by_name[s.repo], s, fail_rate_error_threshold),
+                s.fail_rate,
+                fail_rate_display_threshold,
+            )
+            for s in failing
+        ]
+        detail_rows = [
+            _listed(
+                _detail_row(by_name[s.repo], s),
+                s.fail_rate,
+                fail_rate_display_threshold,
+            )
+            for s in per_workflow
+        ]
         repo_tables.append(
             TableSection(
                 category=category_meta(CategoryKey.WORKFLOW_FAILURES),
                 columns=REPO_COLUMNS,
-                rows=[
-                    _repo_row(by_name[s.repo], s, fail_rate_error_threshold)
-                    for s in failing
-                ],
+                rows=repo_rows,
                 sum_columns=frozenset({1, 2, 4, 5, 6}),
                 numeric_columns=frozenset({1, 2, 3, 4, 5, 6}),
                 pass_count=pass_count,
@@ -314,13 +349,14 @@ def build_workflow_failure_tables(
                 notes=notes,
                 window_days=days,
                 slack_columns=REPO_SLACK_COLUMNS,
+                unlisted_note=_unlisted_note(repo_rows, fail_rate_display_threshold),
             )
         )
         detail_tables.append(
             TableSection(
                 category=category_meta(CategoryKey.WORKFLOW_FAILURES_DETAIL),
                 columns=DETAIL_COLUMNS,
-                rows=[_detail_row(by_name[s.repo], s) for s in per_workflow],
+                rows=detail_rows,
                 sum_columns=frozenset({4, 5}),
                 numeric_columns=frozenset({4, 5, 6}),
                 pass_count=pass_count,
@@ -328,6 +364,7 @@ def build_workflow_failure_tables(
                 unknown_count=unknown_count,
                 notes=notes,
                 window_days=days,
+                unlisted_note=_unlisted_note(detail_rows, fail_rate_display_threshold),
             )
         )
     return tuple(repo_tables), tuple(detail_tables)

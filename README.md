@@ -187,6 +187,9 @@ tables (org mode):
   ones), **Retried** (runs that passed on a later attempt, a direct sign of
   flakiness), **Workflows** (how many distinct workflows failed) and **Worst
   workflow** (the one with the most failures, linked to its run history).
+  A display threshold, `workflow_runs.fail_rate_display_threshold`, can
+  hide the rows failing at or below a given rate; they still count in the
+  footer.
   Slack draws the same fixed-width table narrowed to **Repository**,
   **Failed**, **Runs** and **Fail %**, with its totals row and footer; the
   other columns stay on the terminal, GitHub Pages and `report.json`.
@@ -907,7 +910,9 @@ rest stay short — set it to `0` for no limit at all:
 Here Releases / Tagging lists every repository, CodeQL shows its worst three, and
 every other category keeps the shared limit of 10. A category's `top_n` applies
 to all four surfaces at once; combine it with `top_n_report` / `top_n_cli` /
-`top_n_slack` to vary the fallback per surface.
+`top_n_slack` to vary the fallback per surface. On the Workflow Failures
+tables, `workflow_runs.fail_rate_display_threshold` applies first: the limit,
+and its `… and N more` tally, count only the rows the threshold leaves.
 
 The resolution order for one category on one surface, most specific first:
 
@@ -1994,6 +1999,7 @@ like every other `report` key. Every key with its default:
       "persistent_threshold": 0.9,
       "min_runs": 3,
       "fail_rate_error_threshold": 0.05,
+      "fail_rate_display_threshold": 0,
       "cache": true
     }
   },
@@ -2041,6 +2047,23 @@ pass-or-fail runs shows red, and any lower non-zero rate shows yellow.
 Markdown, HTML and Slack carry no cell colour, so the setting leaves them
 unchanged. It is independent of `persistent_threshold`, which judges
 single workflows.
+
+`fail_rate_display_threshold`, a number from `0` to `1`, hides the rows
+failing at or below that fraction of their pass-or-fail runs, so a busy
+organisation's handful of high failure rates is not lost among repositories
+failing one run in a hundred. A row is listed only when its rate is strictly
+above the threshold, the comparison `fail_rate_error_threshold` makes. Each
+table judges the rate in its own **Fail %** column: the per-repository table
+the repository's rate, the detail table the workflow's, so a workflow
+failing often stays listed when its repository as a whole falls below the
+threshold. The comparison uses the unrounded rate, not the percentage the
+cell shows: with `0.02`, a repository failing 2.4% of its runs reads `2%`
+and is listed, and one failing 1.6% also reads `2%` and is not. Every
+surface applies it, for every window. The footer's counts do not change,
+since a hidden repository still has failures, and a footer line says how
+many rows the threshold hides (`22 failing at or below 2% not listed`);
+when it hides every row, the table is not drawn and the footer still is.
+`report.json` keeps every row. The default `0` lists every failing row.
 
 `cache` and `cache_dir` govern the **run store**, a SQLite file per
 organisation at

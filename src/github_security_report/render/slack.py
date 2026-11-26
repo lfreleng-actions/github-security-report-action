@@ -79,7 +79,7 @@ def _table_block(
     computed at full width first and then projected with the header and rows.
     """
     lines = build_summary(section.summary_counts(exclusions, repo_list=repo_list))
-    row_cap = 0 if section.lists_repos else len(truncate(section.rows, top_n)[0])
+    row_cap = 0 if section.lists_repos else len(truncate(section.listed_rows, top_n)[0])
     name_cap = _name_cap(lines, top_n)
     if not row_cap and not _summary_text(lines, names=name_cap):
         return None
@@ -91,7 +91,7 @@ def _table_block(
     def build(rows: int, names: int) -> str:
         text = f"*{section.title}*"
         if rows:
-            shown = section.rows[:rows]
+            shown = section.listed_rows[:rows]
             cells = [project([row.repo.name, *row.cells]) for row in shown]
             totals = table_column_totals(section, shown)
             if totals is not None:
@@ -110,7 +110,7 @@ def _table_block(
                 else:
                     cells.append([footer_row[0]])
             table = _fixed_table_generic(tuple(project(section.columns)), cells)
-            hidden = len(section.rows) - len(shown)
+            hidden = len(section.listed_rows) - len(shown)
             if hidden:
                 table += f"\n… and {hidden} more"
             text += f"\n```\n{table}\n```"
