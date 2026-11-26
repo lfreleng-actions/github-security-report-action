@@ -10,6 +10,8 @@ a truthful report stops before it spends a request on collection:
 * each distinct token is probed once through ``GET /rate_limit``, which does
   not count against the rate limit: a spent core or GraphQL budget aborts, and
   a classic PAT's granted scopes and expiry date are read for warnings;
+* for ``remediate``, a classic PAT's scopes are checked against what its
+  writes need: a dry run warns, and an apply that could write nothing aborts;
 * each organisation's repository listing is readable, one ``per_page=1``
   page, so a mistyped name or a token that cannot see the organisation aborts
   instead of rendering an empty, confidently clean report.
@@ -30,6 +32,7 @@ from dataclasses import dataclass
 from rich.console import Console
 
 from github_security_report import config
+from github_security_report.categories import CategoryKey
 from github_security_report.cli.preflight_messages import (
     error_message,
     listing_message,
@@ -38,6 +41,16 @@ from github_security_report.cli.preflight_messages import (
     rate_limit_message,
     reset_text,
     spent_budget_headers,
+)
+from github_security_report.cli.token_scopes import (
+    SCOPE_REQUIREMENTS as SCOPE_REQUIREMENTS,
+)
+from github_security_report.cli.token_scopes import (
+    expiry_warning,
+    unmet_write_scope,
+)
+from github_security_report.cli.token_scopes import (
+    scope_warnings as scope_warnings,
 )
 from github_security_report.client import (
     AuthError,
@@ -56,9 +69,9 @@ log = logging.getLogger(__name__)
 # their meanings (usage, unusable API, rejected credentials).
 EXIT_LISTING_UNREADABLE = 5
 EXIT_RATE_LIMITED = 6
-
-# A token expiring sooner than this is worth a warning on every run.
-EXPIRY_WARNING = dt.timedelta(days=7)
+# An apply whose classic token holds no scope to write with is a usage error:
+# the run was asked for work this token can never do.
+EXIT_CANNOT_WRITE = 2
 
 # The probe is best-effort, so it gets one short attempt: a slow or failing
 # /rate_limit must not hold the run up on the retry schedule meant for reads
@@ -66,30 +79,6 @@ EXPIRY_WARNING = dt.timedelta(days=7)
 PROBE_TIMEOUT_SECONDS = 10.0
 
 _REPO_IDENTITY = ("name", "full_name", "html_url")
-
-
-@dataclass(frozen=True)
-class ScopeRequirement:
-    """A classic PAT scope requirement: any one of ``any_of`` satisfies it."""
-
-    any_of: tuple[str, ...]
-    without: str
-
-
-# What a classic PAT needs, and what a run without it loses. Warnings only:
-# the reads themselves degrade to unknown. ``admin:org`` is deliberately
-# absent, since organisation rulesets are optional and reported at INFO.
-SCOPE_REQUIREMENTS: tuple[ScopeRequirement, ...] = (
-    ScopeRequirement(("repo",), "only public repositories are read"),
-    ScopeRequirement(
-        ("repo", "public_repo", "security_events"),
-        "code scanning, secret scanning and Dependabot alerts are reported as unknown",
-    ),
-    ScopeRequirement(
-        ("read:org", "write:org", "admin:org"),
-        "organisation membership is unreadable, so the Ext columns are a lower bound",
-    ),
-)
 
 
 class PreflightAbort(Exception):
@@ -169,28 +158,47 @@ async def check_remediate_run(
     console: Console,
     *,
     token_envs: Sequence[str],
+    apply: bool,
+    categories: Sequence[CategoryKey],
 ) -> int:
     """Run the pre-flight for ``remediate``'s one token; 0 to proceed, else the code.
 
     ``token_envs`` names the variables holding the token, so a rejection or a
-    warning says which token to rotate, as an org-mode report does.
+    warning says which token to rotate, as an org-mode report does. ``apply``
+    says whether the run writes, which decides whether a classic token that
+    cannot write aborts or only warns, and ``categories`` are the ones the run
+    selected, whose writes that check weighs (:func:`check_write_scopes`).
     """
     label = f"the token in {', '.join(f'${env}' for env in token_envs)}"
     try:
-        await _check_token(client, label, dict.fromkeys(orgs))
+        await _check_token(
+            client, label, dict.fromkeys(orgs), writes=(apply, categories)
+        )
     except PreflightAbort as exc:
         return _abort(console, exc)
     return 0
 
 
-async def _check_token(client: Transport, label: str, orgs: Iterable[str]) -> None:
+async def _check_token(
+    client: Transport,
+    label: str,
+    orgs: Iterable[str],
+    *,
+    writes: tuple[bool, Sequence[CategoryKey]] | None = None,
+) -> None:
     """Probe one token and read each of its organisations' listings.
 
     A 401 still raises :class:`AuthError` (exit 4), now naming the token, so a
-    run with several tokens says which one to rotate.
+    run with several tokens says which one to rotate. ``writes`` is ``None``
+    for a report, which writes nothing; for ``remediate`` it is whether the
+    run writes and the categories it selected, and a classic token's write
+    scopes are checked before any listing is read.
     """
     try:
-        await probe_token(client, label)
+        granted = await probe_token(client, label)
+        if writes is not None and granted is not None:
+            apply, categories = writes
+            check_write_scopes(granted, label, categories, apply=apply)
         for org in orgs:
             await check_listing(client, org)
     except AuthError as exc:
@@ -208,8 +216,12 @@ def _abort(console: Console, exc: PreflightAbort) -> int:
 # --------------------------------------------------------------------------- #
 async def probe_token(
     client: Transport, label: str, *, now: dt.datetime | None = None
-) -> None:
+) -> str | None:
     """Read what ``GET /rate_limit`` says about a token, warning or aborting.
+
+    Returns the token's ``X-OAuth-Scopes`` value, or ``None`` when it sent
+    none (not a classic PAT) or the probe was skipped: either way its scopes
+    cannot be told.
 
     A ``401`` raises :class:`AuthError` from the transport, as for any read,
     and a spent budget :class:`RateLimitError` (exit ``6``).
@@ -228,19 +240,19 @@ async def probe_token(
         raise
     except (NetworkError, TimeoutError) as exc:
         log.debug("token probe skipped: %s", str(exc) or "no answer in time")
-        return
+        return None
     if resp.status_code != 200:
         await resp.aclose()
         log.debug("token probe skipped: GET %s answered %d", url, resp.status_code)
-        return
+        return None
     headers = resp.headers
     body = await _read_body(resp, dict, quiet=True)
     if body is None:
         log.debug("token probe skipped: GET %s answered an unusable body", url)
-        return
+        return None
     moment = now if now is not None else dt.datetime.now(dt.UTC)
     _check_rate_limit(body, label, moment)
-    granted = headers.get("x-oauth-scopes")
+    granted: str | None = headers.get("x-oauth-scopes")
     if granted is not None:
         for warning in scope_warnings(granted):
             log.warning("%s %s", _capitalise(label), warning)
@@ -249,6 +261,7 @@ async def probe_token(
     )
     if expiry is not None:
         log.warning("%s %s", _capitalise(label), expiry)
+    return granted
 
 
 def _capitalise(text: str) -> str:
@@ -281,54 +294,22 @@ def _check_rate_limit(body: dict, label: str, now: dt.datetime) -> None:
         )
 
 
-def scope_warnings(granted: str) -> list[str]:
-    """One warning per unmet row of :data:`SCOPE_REQUIREMENTS`.
+def check_write_scopes(
+    granted: str, label: str, categories: Sequence[CategoryKey], *, apply: bool
+) -> None:
+    """Warn, or abort an apply, when a classic PAT cannot make remediate's writes.
 
-    ``granted`` is the ``X-OAuth-Scopes`` value; an empty one is a classic
-    PAT with no scopes at all. A token that sends no such header is not
-    checked: its absence means "cannot tell", never "no scopes".
+    See :func:`~github_security_report.cli.token_scopes.unmet_write_scope`;
+    only a shortfall that blocks every selected category aborts an apply.
     """
-    scopes = {part.strip() for part in granted.split(",") if part.strip()}
-    warnings: list[str] = []
-    for requirement in SCOPE_REQUIREMENTS:
-        if scopes.isdisjoint(requirement.any_of):
-            names = " or ".join(f"'{scope}'" for scope in requirement.any_of)
-            warnings.append(f"lacks the {names} scope: {requirement.without}")
-    return warnings
-
-
-def expiry_warning(value: str | None, now: dt.datetime) -> str | None:
-    """A warning when the token expires within :data:`EXPIRY_WARNING`.
-
-    ``value`` is the ``github-authentication-token-expiration`` header, as
-    ``2026-01-01 12:00:00 UTC``. An unparsable or out-of-range one is ignored.
-    """
-    if not value:
-        return None
-    expires = _parse_expiry(value.strip())
-    if expires is None:
-        log.debug("token expiry %r not understood; ignored", value)
-        return None
-    left = expires - now
-    if left > EXPIRY_WARNING:
-        return None
-    days = max(0, left.days)
-    return (
-        f"expires at {expires:%Y-%m-%d %H:%M:%S} UTC, in {days} day(s); "
-        "renew it before scheduled runs start failing"
-    )
-
-
-def _parse_expiry(value: str) -> dt.datetime | None:
-    for fmt in ("%Y-%m-%d %H:%M:%S %Z", "%Y-%m-%d %H:%M:%S %z"):
-        try:
-            parsed = dt.datetime.strptime(value, fmt)
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=dt.UTC)
-            return parsed.astimezone(dt.UTC)
-        except (ValueError, OverflowError):
-            continue
-    return None
+    shortfall = unmet_write_scope(granted, categories)
+    if shortfall is None:
+        return
+    if apply and shortfall.blocks_apply:
+        raise PreflightAbort(
+            f"{_capitalise(label)} {shortfall.abort_message}", EXIT_CANNOT_WRITE
+        )
+    log.warning("%s %s", _capitalise(label), shortfall.warning)
 
 
 # --------------------------------------------------------------------------- #

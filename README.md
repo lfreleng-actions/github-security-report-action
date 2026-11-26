@@ -584,6 +584,17 @@ every write, provided the token's account holds the access described above.
 `admin:org` stays optional, exactly as for the report, except as
 the `codeql` caveat below describes.
 
+The pre-flight checks a classic PAT's scopes against these writes: an
+`--apply` whose token holds neither `repo` nor `public_repo` stops with exit
+code `2` before anything is collected, naming the token and the missing scope,
+and one holding `public_repo` alone warns that private repositories cannot be
+changed. `codeql_stale_configurations` deletes code scanning analyses, which
+`security_events` also permits, but its workflow re-enables need `repo` or
+`public_repo`, so with that scope alone the category can still write and the
+warning names its re-enables. An apply stops only when no selected category
+can write, and otherwise warns naming the categories that cannot. A
+fine-grained PAT or App token reports no scopes, so this check skips it.
+
 **Fine-grained PAT, reads:** the repository permissions Metadata, Contents,
 Dependabot alerts, Code scanning alerts, Secret scanning alerts, Issues,
 Administration and Actions from the report's table. Keep Issues: a failed issue
@@ -2482,6 +2493,20 @@ writes across every configured organisation, so it bypasses the per-org
 read-only `token_env` in the config.
 [The `remediate` subcommand](#the-remediate-subcommand) under Token permissions
 lists the scopes and permissions it needs, by category.
+
+Before it collects anything, a dry run warns when a classic PAT could not make
+the changes it previews: one without `repo` or `public_repo` could make none of
+them (bar the CodeQL cleanup's deletions, which `security_events` also
+permits), and one with `public_repo` alone cannot change private repositories.
+Beneath each category's preview, it also names the targets whose repository
+the token's account does not administer, since GitHub may refuse those writes;
+they stay in the preview and its counts, and `--apply` still attempts them.
+During `--apply`, once three writes in a row in one category are refused with
+the same `403` or `404` answer, that category writes nothing more in that
+organisation: its remaining targets are reported as skipped, naming the
+refusal, and count as neither changed nor failed. A write that succeeds in
+between, even one step of a target's several, ends the run. The next category,
+and the next organisation, start afresh.
 
 ```bash
 # Token scopes and permissions: see "The remediate subcommand" under

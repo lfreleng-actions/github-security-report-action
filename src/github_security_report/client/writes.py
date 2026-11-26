@@ -20,12 +20,37 @@ from urllib.parse import quote
 import httpx
 
 from github_security_report.client.workflow_runs import WorkflowRunReads
+from github_security_report.models import WriteNote
 
 # Minimum spacing between cleanup mutations. GitHub asks integrations to leave
 # at least a second between mutating requests to avoid its secondary rate
 # limits, and a cleanup can issue hundreds across many configurations. A class
 # attribute so tests can set it to zero.
 _MUTATION_INTERVAL_SECONDS = 1.0
+
+
+def _prefixed(
+    step: str,
+    note: str,
+    *,
+    sep: str = " -> ",
+    progress: bool = False,
+    after_write: bool = False,
+) -> WriteNote:
+    """``note`` behind the step that failed, keeping the status it carries.
+
+    A ``progress`` prefix, such as how far a walk got, varies between targets
+    refused alike, so it stays out of the note's ``key``. ``after_write``
+    records that an earlier write for the same target succeeded first.
+    """
+    status = note.status if isinstance(note, WriteNote) else None
+    key = note.key if isinstance(note, WriteNote) else str(note)
+    return WriteNote(
+        f"{step}{sep}{note}",
+        status,
+        key=key if progress else f"{step}{sep}{key}",
+        after_write=after_write,
+    )
 
 
 class GitHubClient(WorkflowRunReads):
@@ -61,8 +86,11 @@ class GitHubClient(WorkflowRunReads):
     # Remediation writes (enable a feature on one repository)
     # ------------------------------------------------------------------ #
     @staticmethod
-    def _write_note(resp: httpx.Response) -> str:
+    def _write_note(resp: httpx.Response) -> WriteNote:
         """A short ``"<status> <body>"`` note for a failed write (truncated).
+
+        The note carries the status as data too, so a caller can act on it
+        without parsing the text.
 
         Only the first slice of the body is processed: the body is capped at 80
         characters (after a short numeric status prefix), so normalising the
@@ -70,7 +98,7 @@ class GitHubClient(WorkflowRunReads):
         allocate for output that is discarded anyway.
         """
         body = " ".join(resp.text[:200].split())
-        return f"{resp.status_code} {body[:80]}".strip()
+        return WriteNote(f"{resp.status_code} {body[:80]}".strip(), resp.status_code)
 
     async def enable_dependabot_alerts(self, org: str, repo: str) -> tuple[bool, str]:
         """Enable Dependabot vulnerability alerts. Returns ``(ok, note)``.
@@ -97,12 +125,18 @@ class GitHubClient(WorkflowRunReads):
         """
         ok, note = await self.enable_dependabot_alerts(org, repo)
         if not ok:
-            return False, f"vulnerability-alerts -> {note}"
+            return False, _prefixed("vulnerability-alerts", note)
         resp = await self._request(
             "PUT", f"{self._api_url}/repos/{org}/{repo}/automated-security-fixes"
         )
         fixed = resp.status_code == 204
-        fnote = "" if fixed else f"automated-security-fixes -> {self._write_note(resp)}"
+        fnote = (
+            ""
+            if fixed
+            else _prefixed(
+                "automated-security-fixes", self._write_note(resp), after_write=True
+            )
+        )
         await resp.aclose()
         return fixed, fnote
 
@@ -142,6 +176,7 @@ class GitHubClient(WorkflowRunReads):
             json={"state": "configured"},
         )
         ok = resp.status_code in (200, 202)
+        note: str
         if not ok:
             note = self._write_note(resp)
         elif resp.status_code == 202:
@@ -217,7 +252,10 @@ class GitHubClient(WorkflowRunReads):
         elif status == 200:
             ok, note = True, ""
         elif status == 409:
-            ok, note = False, "409 a Code Quality update is already in progress"
+            ok, note = (
+                False,
+                WriteNote("409 a Code Quality update is already in progress", 409),
+            )
         else:
             ok, note = False, self._write_note(resp)
         await resp.aclose()
@@ -261,7 +299,9 @@ class GitHubClient(WorkflowRunReads):
             if status not in (200, 404):
                 note = self._write_note(resp)
                 await resp.aclose()
-                return False, f"{stopped}: {note}"
+                return False, _prefixed(
+                    stopped, note, sep=": ", progress=True, after_write=deleted > 0
+                )
             await resp.aclose()
             if status == 404:
                 gone = await self._analysis_gone(org, repo, analysis_id)
@@ -272,7 +312,13 @@ class GitHubClient(WorkflowRunReads):
                         if gone is False
                         else "could not confirm the analysis was already gone"
                     )
-                    return False, f"{stopped}: {reason}"
+                    return False, _prefixed(
+                        stopped,
+                        WriteNote(reason, 404 if gone is False else None),
+                        sep=": ",
+                        progress=True,
+                        after_write=deleted > 0,
+                    )
             deleted += status == 200
         noun = "analysis" if deleted == 1 else "analyses"
         return True, f"{deleted} {noun} deleted"

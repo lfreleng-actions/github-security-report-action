@@ -4,15 +4,19 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from types import MappingProxyType
 
+import httpx
 import pytest
+import respx
 
-from github_security_report import classify, remediate
+from github_security_report import classify, models, remediate
 from github_security_report.categories import CategoryKey, category_meta
 from github_security_report.classify import RepoFacts
+from github_security_report.client import GitHubClient
 from github_security_report.codeql import (
     CodeQLConfiguration,
     CodeQLFacts,
@@ -619,3 +623,295 @@ async def test_cleanup_lists_the_configurations_it_leaves_with_their_cause() -> 
     ]
     assert result.failures == 0
     assert not any(detail.startswith("idle") for _, _, detail in client.calls)
+
+
+# --------------------------------------------------------------------------- #
+# Stopping a category after repeated identical refusals
+# --------------------------------------------------------------------------- #
+_NAMES = [f"r{i:02d}" for i in range(12)]
+_FORBIDDEN = '403 {"message":"Resource not accessible by personal access token"}'
+
+
+def _everywhere(names: list[str]) -> OrgReport:
+    """Every default category targets every one of ``names``."""
+    repos = [_repo(n) for n in names]
+    return OrgReport(
+        org="o",
+        sections=[
+            SignalSection(signal=SignalType.CODEQL, nag_repos=repos),
+            SignalSection(signal=SignalType.SECRET_SCANNING, nag_repos=repos),
+        ],
+        repo_count=len(names),
+        generated_at=WHEN,
+        dependabot_tables=[
+            _table(CategoryKey.DEPENDABOT_ALERTS_ENABLED, names),
+            _table(CategoryKey.DEPENDABOT_UPDATES_ENABLED, names),
+        ],
+        private_vulnerability_reporting=_table(
+            CategoryKey.PRIVATE_VULNERABILITY_REPORTING, names
+        ),
+        auto_merge=_table(CategoryKey.AUTO_MERGE, names),
+    )
+
+
+class ScriptedClient(FakeClient):
+    """Answers each write from ``answer(repo)``: ``None`` succeeds."""
+
+    def __init__(self, answer: Callable[[str], tuple[int, str] | None]) -> None:
+        super().__init__()
+        self.answer = answer
+
+    async def _do(self, kind: str, org: str, repo: str) -> tuple[bool, str]:
+        self.calls.append((kind, org, repo))
+        refusal = self.answer(repo.split(":")[0])
+        if refusal is None:
+            return True, ""
+        status, text = refusal
+        return False, models.WriteNote(text, status)
+
+
+def _refused(status: int = 403, text: str = _FORBIDDEN) -> tuple[int, str]:
+    return status, text
+
+
+async def _codeql(client: FakeClient) -> remediate.CategoryRemediation:
+    (result,) = await remediate.remediate_org(
+        client, _everywhere(_NAMES), categories=[CategoryKey.CODEQL], apply=True
+    )
+    return result
+
+
+@pytest.mark.parametrize("status", [403, 404])
+async def test_three_identical_refusals_stop_the_category(status: int) -> None:
+    client = ScriptedClient(lambda _repo: _refused(status, f"{status} nope"))
+    result = await _codeql(client)
+    assert [repo for _, _, repo in client.calls] == _NAMES[:3]
+    assert remediate.STOP_AFTER_REFUSALS == 3
+    assert [o.failed for o in result.outcomes] == [True] * 3 + [False] * 9
+    skipped = result.outcomes[3:]
+    assert all(o.skipped for o in skipped)
+    assert all(f"{status} nope" in o.note for o in skipped)
+    # Skipped targets are neither changed nor failed; the run still fails.
+    assert result.failures == 3
+
+
+async def test_a_success_between_refusals_resets_the_count() -> None:
+    succeeds = {"r02"}
+    client = ScriptedClient(lambda repo: None if repo in succeeds else _refused())
+    result = await _codeql(client)
+    # r00, r01 refused; r02 succeeds; r03-r05 refused, which stops the rest.
+    assert [repo for _, _, repo in client.calls] == _NAMES[:6]
+    assert sum(o.skipped for o in result.outcomes) == 6
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        # 422 and 409 describe one repository, never the token.
+        lambda _repo: _refused(422, "422 no CodeQL language"),
+        lambda _repo: _refused(409, "409 an update is already in progress"),
+        # Refusals that differ are not a pattern.
+        lambda repo: _refused(403, f"403 {repo}"),
+        # A failure of another kind between refusals resets the count.
+        # Every third write here is a 422, so no three refusals run together.
+        lambda repo: _refused(422, "422 x") if int(repo[1:]) % 3 == 2 else _refused(),
+    ],
+    ids=["422", "409", "different-notes", "other-failure-resets"],
+)
+async def test_other_failures_never_stop_the_category(
+    answer: Callable[[str], tuple[int, str] | None],
+) -> None:
+    client = ScriptedClient(answer)
+    result = await _codeql(client)
+    assert len(client.calls) == len(_NAMES)
+    assert not any(o.skipped for o in result.outcomes)
+
+
+async def test_a_plain_note_carries_no_status_and_never_stops() -> None:
+    client = FakeClient(fail=set(_NAMES))  # "boom", with no status
+    result = await _codeql(client)
+    assert len(client.calls) == len(_NAMES)
+    assert result.failures == len(_NAMES)
+
+
+async def test_each_category_starts_afresh() -> None:
+    client = ScriptedClient(lambda _repo: _refused())
+    results = await remediate.remediate_org(client, _everywhere(_NAMES), apply=True)
+    assert len(results) == len(remediate.DEFAULT_REMEDIABLE)
+    for result in results:
+        assert [o.failed for o in result.outcomes[:3]] == [True] * 3
+        assert all(o.skipped for o in result.outcomes[3:])
+    assert len(client.calls) == 3 * len(results)
+
+
+async def test_a_guard_refusal_neither_counts_nor_resets() -> None:
+    report = _report()
+    names = ["a", "b", "lost", "c", "d"]
+    report.code_quality = _table(CategoryKey.CODE_QUALITY, names)
+    report.code_quality_writes = {n: ("python",) for n in names if n != "lost"}
+    client = ScriptedClient(lambda _repo: _refused())
+    (result,) = await remediate.remediate_org(
+        client, report, categories=[CategoryKey.CODE_QUALITY], apply=True
+    )
+    actions = [o.action for o in result.outcomes]
+    assert actions == ["FAILED", "FAILED", "refused", "FAILED", "skipped"]
+
+
+async def test_a_dry_run_never_stops() -> None:
+    client = ScriptedClient(lambda _repo: _refused())
+    (result,) = await remediate.remediate_org(
+        client, _everywhere(_NAMES), categories=[CategoryKey.CODEQL], apply=False
+    )
+    assert client.calls == []
+    assert all(o.action == "would enable" for o in result.outcomes)
+
+
+@respx.mock
+async def test_a_token_refused_everywhere_makes_three_writes_per_category() -> None:
+    # The scenario of issue #328: twelve repositories in every default
+    # category and a token GitHub refuses every write from.
+    refused = httpx.Response(
+        403, json={"message": "Resource not accessible by personal access token"}
+    )
+    writes = respx.route(method__in=["PATCH", "PUT"]).mock(return_value=refused)
+    async with GitHubClient("t") as client:
+        results = await remediate.remediate_org(client, _everywhere(_NAMES), apply=True)
+    assert writes.call_count == 18
+    assert sum(r.failures for r in results) == 18
+    assert sum(o.skipped for r in results for o in r.outcomes) == 54
+
+
+def _stale_python(name: str, *ids: int) -> CodeQLFacts:
+    """A repository whose default-setup Python configuration is stale."""
+    return CodeQLFacts(
+        repo=_repo(name),
+        configurations=(
+            _cq("python", _WORKFLOW_KEY, 0, 1000),
+            _cq("python", _DEFAULT_KEY, 91, *ids),
+        ),
+        head_committed_at=_HEAD,
+        default_setup=DefaultSetup(configured=False, languages=frozenset({"python"})),
+    )
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("status", "readback"),
+    [(403, None), (404, httpx.Response(200, json={}))],
+    ids=["403", "404-still-there"],
+)
+async def test_cleanup_refusals_stop_whatever_each_configuration_holds(
+    status: int, readback: httpx.Response | None
+) -> None:
+    # Each configuration holds a different number of analyses, so each
+    # refused walk reports a different "stopped after 0 of N"; the refusal
+    # is the same all the same, and three of them stop the category.
+    report = _report()
+    report.codeql_health = CodeQLHealth(
+        facts=tuple(
+            _stale_python(f"r{size}", *range(size * 10 + size, size * 10, -1))
+            for size in range(1, 6)
+        ),
+        stale_days=30,
+    )
+    respx.get(url__regex=r"/code-scanning/alerts").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    if readback is not None:
+        respx.get(url__regex=r"/code-scanning/analyses/\d+$").mock(
+            return_value=readback
+        )
+    deletes = respx.delete(url__regex=r"/code-scanning/analyses/").mock(
+        return_value=httpx.Response(status, json={"message": "Must have admin rights"})
+    )
+    async with GitHubClient("t") as client:
+        client.mutation_interval_seconds = 0
+        (result,) = await remediate.remediate_org(
+            client,
+            report,
+            categories=[CategoryKey.CODEQL_STALE_CONFIGURATIONS],
+            apply=True,
+        )
+    assert deletes.call_count == 3
+    assert [o.action for o in result.outcomes] == ["FAILED"] * 3 + ["skipped"] * 2
+    assert all("stopped after" not in o.note for o in result.outcomes[3:])
+    assert result.failures == 3
+
+
+@respx.mock
+async def test_a_success_inside_a_two_step_write_resets_the_count() -> None:
+    # Each target enables alerts, then is refused security updates: the
+    # alerts write succeeded in between, so no three refusals run together.
+    respx.put(url__regex=r"/vulnerability-alerts$").mock(
+        return_value=httpx.Response(204)
+    )
+    fixes = respx.put(url__regex=r"/automated-security-fixes$").mock(
+        return_value=httpx.Response(403, json={"message": "Must have admin rights"})
+    )
+    async with GitHubClient("t") as client:
+        (result,) = await remediate.remediate_org(
+            client,
+            _everywhere(_NAMES),
+            categories=[CategoryKey.DEPENDABOT_UPDATES_ENABLED],
+            apply=True,
+        )
+    assert fixes.call_count == len(_NAMES)
+    assert not any(o.skipped for o in result.outcomes)
+
+
+@respx.mock
+async def test_a_deletion_before_a_cleanup_refusal_resets_the_count() -> None:
+    # Each configuration's newest analysis deletes, the next is refused.
+    report = _report()
+    report.codeql_health = CodeQLHealth(
+        facts=tuple(_stale_python(f"r{i}", 2 * i + 2, 2 * i + 1) for i in range(5)),
+        stale_days=30,
+    )
+    respx.get(url__regex=r"/code-scanning/alerts").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+
+    def delete(request: httpx.Request) -> httpx.Response:
+        analysis_id = int(request.url.path.rsplit("/", 1)[1])
+        if analysis_id % 2 == 0:
+            return httpx.Response(200, json={})
+        return httpx.Response(403, json={"message": "Must have admin rights"})
+
+    deletes = respx.delete(url__regex=r"/code-scanning/analyses/").mock(
+        side_effect=delete
+    )
+    async with GitHubClient("t") as client:
+        client.mutation_interval_seconds = 0
+        (result,) = await remediate.remediate_org(
+            client,
+            report,
+            categories=[CategoryKey.CODEQL_STALE_CONFIGURATIONS],
+            apply=True,
+        )
+    assert deletes.call_count == 10
+    assert [o.action for o in result.outcomes] == ["FAILED"] * 5
+
+
+# --------------------------------------------------------------------------- #
+# The account's admin right, carried to the preview
+# --------------------------------------------------------------------------- #
+async def test_each_outcome_carries_its_repositorys_admin_right() -> None:
+    rights = {"own": True, "member": False, "unknown": None}
+    report = OrgReport(
+        org="o",
+        sections=[
+            SignalSection(
+                signal=SignalType.CODEQL,
+                nag_repos=[
+                    dataclasses.replace(_repo(name), admin=admin)
+                    for name, admin in rights.items()
+                ],
+            )
+        ],
+        repo_count=3,
+        generated_at=WHEN,
+    )
+    (result,) = await remediate.remediate_org(
+        FakeClient(), report, categories=[CategoryKey.CODEQL], apply=False
+    )
+    assert {o.name: o.admin for o in result.outcomes} == rights
