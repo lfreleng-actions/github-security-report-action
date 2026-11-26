@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+
+from github_security_report.categories import CategoryKey
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +46,95 @@ SCOPE_REQUIREMENTS: tuple[ScopeRequirement, ...] = (
 )
 
 
+@dataclass(frozen=True)
+class WriteScopeRequirement(ScopeRequirement):
+    """A classic PAT scope ``remediate`` writes with; ``fatal`` aborts an apply."""
+
+    fatal: bool = False
+
+
+# What ``remediate``'s writes need of a classic PAT, broadest loss first; only
+# the first unmet row is reported. Meeting them proves nothing: the account
+# also needs access to each repository, which only the write itself reveals.
+WRITE_SCOPE_REQUIREMENTS: tuple[WriteScopeRequirement, ...] = (
+    WriteScopeRequirement(
+        ("repo", "public_repo"), "could not apply the changes previewed", fatal=True
+    ),
+    WriteScopeRequirement(("repo",), "private repositories cannot be changed"),
+)
+
+
+@dataclass(frozen=True)
+class PartialWriteScope:
+    """Scopes that let a classic PAT make some of a category's writes.
+
+    ``leaves`` names the writes those scopes do not cover, which still need the
+    requirement's own scopes.
+    """
+
+    scopes: tuple[str, ...]
+    leaves: str
+
+
+# Categories a classic PAT may partly write with another scope. The CodeQL
+# cleanup deletes code scanning analyses, which 'security_events' permits on
+# public and private repositories alike, or re-enables a workflow, which it
+# does not: so that scope keeps the category writable without meeting it.
+PARTIAL_WRITE_SCOPES: Mapping[CategoryKey, PartialWriteScope] = {
+    CategoryKey.CODEQL_STALE_CONFIGURATIONS: PartialWriteScope(
+        ("security_events",), "workflow re-enables"
+    ),
+}
+
+
+@dataclass(frozen=True)
+class WriteScopeShortfall:
+    """The first unmet write requirement, and the selected categories it hits.
+
+    ``categories`` are the categories hit, in selection order; ``partly`` maps
+    those that can still make some of their writes to the writes they cannot.
+    ``partial`` is whether some selected category can still write, so that a
+    run can still write those.
+    """
+
+    requirement: WriteScopeRequirement
+    categories: tuple[CategoryKey, ...]
+    partial: bool
+    partly: Mapping[CategoryKey, str] = field(default_factory=dict)
+
+    @property
+    def blocks_apply(self) -> bool:
+        """Whether an apply could change nothing, so must stop before it starts."""
+        return self.requirement.fatal and not self.partial
+
+    @property
+    def abort_message(self) -> str:
+        """Why an apply stops, after the token's name."""
+        return (
+            f"lacks the {scope_names(self.requirement)} scope, so --apply could "
+            "change no repository; aborting before anything is collected. "
+            "Run with a token that holds the 'repo' scope."
+        )
+
+    @property
+    def warning(self) -> str:
+        """The warning, after the token's name.
+
+        It names the categories hit when some selected category can still
+        write, and the writes a partly-hit category loses.
+        """
+        where = ""
+        if self.partial:
+            where = " in " + ", ".join(
+                f"{key.value} ({self.partly[key]})" if key in self.partly else key.value
+                for key in self.categories
+            )
+        return (
+            f"lacks the {scope_names(self.requirement)} scope: "
+            f"{self.requirement.without}{where}"
+        )
+
+
 def scope_warnings(granted: str) -> list[str]:
     """One warning per unmet row of :data:`SCOPE_REQUIREMENTS`.
 
@@ -50,13 +142,51 @@ def scope_warnings(granted: str) -> list[str]:
     PAT with no scopes at all. A token that sends no such header is not
     checked: its absence means "cannot tell", never "no scopes".
     """
-    scopes = {part.strip() for part in granted.split(",") if part.strip()}
-    warnings: list[str] = []
-    for requirement in SCOPE_REQUIREMENTS:
-        if scopes.isdisjoint(requirement.any_of):
-            names = " or ".join(f"'{scope}'" for scope in requirement.any_of)
-            warnings.append(f"lacks the {names} scope: {requirement.without}")
-    return warnings
+    scopes = _granted_scopes(granted)
+    return [
+        f"lacks the {scope_names(requirement)} scope: {requirement.without}"
+        for requirement in SCOPE_REQUIREMENTS
+        if scopes.isdisjoint(requirement.any_of)
+    ]
+
+
+def unmet_write_scope(
+    granted: str, categories: Sequence[CategoryKey]
+) -> WriteScopeShortfall | None:
+    """The first row of :data:`WRITE_SCOPE_REQUIREMENTS` some category misses.
+
+    ``granted`` is the ``X-OAuth-Scopes`` value, as for :func:`scope_warnings`;
+    ``categories`` are the categories the run selected. A category holding its
+    :data:`PARTIAL_WRITE_SCOPES` misses the row all the same, but can still
+    write, so it alone never blocks an apply.
+    """
+    scopes = _granted_scopes(granted)
+    for requirement in WRITE_SCOPE_REQUIREMENTS:
+        unmet = tuple(
+            key for key in categories if scopes.isdisjoint(requirement.any_of)
+        )
+        if not unmet:
+            continue
+        partly = {
+            key: extra.leaves
+            for key in unmet
+            if (extra := PARTIAL_WRITE_SCOPES.get(key))
+            and not scopes.isdisjoint(extra.scopes)
+        }
+        writable = len(categories) - len(unmet) + len(partly)
+        return WriteScopeShortfall(
+            requirement, unmet, partial=writable > 0, partly=partly
+        )
+    return None
+
+
+def scope_names(requirement: ScopeRequirement) -> str:
+    """The requirement's scopes, quoted and joined with "or"."""
+    return " or ".join(f"'{scope}'" for scope in requirement.any_of)
+
+
+def _granted_scopes(granted: str) -> set[str]:
+    return {part.strip() for part in granted.split(",") if part.strip()}
 
 
 def expiry_warning(value: str | None, now: dt.datetime) -> str | None:

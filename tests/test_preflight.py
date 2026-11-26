@@ -8,6 +8,7 @@ import asyncio
 import datetime as dt
 import json
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 
 import httpx
@@ -16,7 +17,10 @@ import respx
 from rich.console import Console
 from typer.testing import CliRunner
 
+from github_security_report import remediate
+from github_security_report.categories import CategoryKey
 from github_security_report.cli import app, preflight
+from github_security_report.client import GitHubClient
 from github_security_report.config import Config, OrgConfig
 
 API = "https://api.github.com"
@@ -619,3 +623,168 @@ def test_remediate_apply_writes_nothing_when_a_later_org_fails_the_preflight() -
     assert all(call.request.method == "GET" for call in respx.calls)
     paths = [call.request.url.path for call in respx.calls]
     assert paths == ["/rate_limit", "/orgs/o/repos", "/orgs/p/repos"], paths
+
+
+# --------------------------------------------------------------------------- #
+# Remediate: can the token write?
+# --------------------------------------------------------------------------- #
+_NO_WRITE = "could not apply the changes previewed"
+_PUBLIC_ONLY = "private repositories cannot be changed"
+
+
+async def _check_remediate(
+    *,
+    apply: bool,
+    categories: Sequence[CategoryKey] = remediate.DEFAULT_REMEDIABLE,
+) -> tuple[int, str]:
+    console = Console(record=True, no_color=True, width=200)
+    async with GitHubClient("t") as client:
+        code = await preflight.check_remediate_run(
+            client,
+            ["o"],
+            console,
+            token_envs=["GITHUB_TOKEN"],
+            apply=apply,
+            categories=categories,
+        )
+    return code, console.export_text()
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("granted", "apply", "code", "warning"),
+    [
+        ("read:org", False, 0, _NO_WRITE),
+        ("public_repo, read:org", False, 0, _PUBLIC_ONLY),
+        ("public_repo, read:org", True, 0, _PUBLIC_ONLY),
+        ("repo", False, 0, None),
+        ("repo", True, 0, None),
+    ],
+)
+async def test_remediate_checks_the_classic_token_can_write(
+    granted: str,
+    apply: bool,
+    code: int,
+    warning: str | None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _mock_probe(headers={"X-OAuth-Scopes": granted})
+    _mock_listing()
+    with caplog.at_level(logging.WARNING):
+        result, _text = await _check_remediate(apply=apply)
+    assert result == code
+    messages = [r.getMessage() for r in caplog.records]
+    written = [m for m in messages if _NO_WRITE in m or _PUBLIC_ONLY in m]
+    if warning is None:
+        assert written == [], messages
+    else:
+        assert written == [f"The token in $GITHUB_TOKEN lacks {_lacks(warning)}"]
+    # A run whose token can write warns about nothing and asks nothing more.
+    assert [c.request.url.path for c in respx.calls] == ["/rate_limit", "/orgs/o/repos"]
+
+
+def _lacks(warning: str) -> str:
+    scopes = "'repo' or 'public_repo'" if warning == _NO_WRITE else "'repo'"
+    return f"the {scopes} scope: {warning}"
+
+
+@respx.mock
+async def test_remediate_apply_aborts_when_the_classic_token_cannot_write() -> None:
+    _mock_probe(headers={"X-OAuth-Scopes": "read:org"})
+    listing = _mock_listing()
+    code, text = await _check_remediate(apply=True)
+    assert code == 2
+    text = " ".join(text.split())
+    assert "The token in $GITHUB_TOKEN lacks the 'repo' or 'public_repo' scope" in text
+    assert listing.call_count == 0
+
+
+_CLEANUP = CategoryKey.CODEQL_STALE_CONFIGURATIONS
+
+
+_REENABLES = f"{_CLEANUP.value} (workflow re-enables)"
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("granted", "categories", "warning"),
+    [
+        # 'security_events' deletes code scanning analyses, so the cleanup can
+        # still write, but not re-enable a workflow, which the warning names.
+        (
+            "security_events, read:org",
+            [_CLEANUP],
+            f"lacks the 'repo' or 'public_repo' scope: {_NO_WRITE} in {_REENABLES}",
+        ),
+        (
+            "security_events, read:org",
+            [CategoryKey.CODEQL, _CLEANUP],
+            "lacks the 'repo' or 'public_repo' scope: "
+            f"{_NO_WRITE} in codeql, {_REENABLES}",
+        ),
+        (
+            "public_repo, security_events, read:org",
+            [CategoryKey.CODEQL, _CLEANUP],
+            f"lacks the 'repo' scope: {_PUBLIC_ONLY} in codeql, {_REENABLES}",
+        ),
+        (
+            "public_repo, read:org",
+            [CategoryKey.CODEQL, _CLEANUP],
+            f"lacks the 'repo' scope: {_PUBLIC_ONLY}",
+        ),
+        ("repo", [CategoryKey.CODEQL, _CLEANUP], None),
+    ],
+)
+async def test_remediate_apply_weighs_security_events_for_the_codeql_cleanup(
+    granted: str,
+    categories: list[CategoryKey],
+    warning: str | None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _mock_probe(headers={"X-OAuth-Scopes": granted})
+    _mock_listing()
+    with caplog.at_level(logging.WARNING):
+        code, _text = await _check_remediate(apply=True, categories=categories)
+    assert code == 0
+    messages = [r.getMessage() for r in caplog.records]
+    written = [m for m in messages if _NO_WRITE in m or _PUBLIC_ONLY in m]
+    expected = [] if warning is None else [f"The token in $GITHUB_TOKEN {warning}"]
+    assert written == expected
+
+
+@respx.mock
+async def test_remediate_apply_cleanup_aborts_without_security_events() -> None:
+    _mock_probe(headers={"X-OAuth-Scopes": "read:org"})
+    listing = _mock_listing()
+    code, _text = await _check_remediate(apply=True, categories=[_CLEANUP])
+    assert code == 2
+    assert listing.call_count == 0
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "probe",
+    [
+        httpx.Response(200, json=_limits()),  # no X-OAuth-Scopes: not classic
+        httpx.Response(404),  # the probe is skipped
+    ],
+)
+async def test_remediate_apply_without_scopes_to_read_is_not_checked(
+    probe: httpx.Response, caplog: pytest.LogCaptureFixture
+) -> None:
+    respx.get(RATE_LIMIT).mock(return_value=probe)
+    _mock_listing()
+    with caplog.at_level(logging.WARNING):
+        code, _text = await _check_remediate(apply=True)
+    assert code == 0
+    assert not caplog.records
+
+
+@respx.mock
+def test_remediate_apply_with_a_token_that_cannot_write_collects_nothing() -> None:
+    _mock_probe(headers={"X-OAuth-Scopes": ""})
+    respx.route().mock(return_value=httpx.Response(200, json=[]))
+    result = cli.invoke(app, ["remediate", "--org", "o", "--apply", "--no-color"])
+    assert result.exit_code == 2, result.stdout
+    assert "'repo' or 'public_repo' scope" in " ".join(result.stdout.split())
+    assert [c.request.url.path for c in respx.calls] == ["/rate_limit"]

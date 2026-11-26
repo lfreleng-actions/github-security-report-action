@@ -151,6 +151,31 @@ async def test_list_org_repos_keeps_each_default_branch(client: GitHubClient) ->
 
 
 @respx.mock
+async def test_list_org_repos_carries_the_accounts_admin_right(
+    client: GitHubClient,
+) -> None:
+    def entry(name: str) -> dict:
+        return {"name": name, "full_name": f"o/{name}", "html_url": "u", "size": 1}
+
+    respx.get(f"{API}/orgs/o/repos").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {**entry("own"), "permissions": {"admin": True, "push": True}},
+                {**entry("member"), "permissions": {"admin": False, "push": True}},
+                entry("bare"),
+            ],
+        )
+    )
+    _status, repos = await client.list_org_repos("o")
+    assert {r.name: r.admin for r in repos} == {
+        "own": True,
+        "member": False,
+        "bare": None,
+    }
+
+
+@respx.mock
 async def test_list_org_repos_reports_incomplete_status(client: GitHubClient) -> None:
     # A first page that succeeds followed by a failing page must surface the
     # failing status so the caller can flag the report as partial.

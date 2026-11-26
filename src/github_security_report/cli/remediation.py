@@ -71,6 +71,8 @@ async def _run_remediate(
             (org_cfg.name for org_cfg in cfg.organizations),
             console,
             token_envs=_token_envs(cfg, token),
+            apply=apply,
+            categories=categories,
         )
         if code:
             return code

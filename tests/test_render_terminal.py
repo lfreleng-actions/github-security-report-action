@@ -747,3 +747,46 @@ def test_render_remediation_lists_skipped_targets_with_their_cause() -> None:
     assert "r: /language:c-cpp skipped: Workflow active, not uploading" in out
     assert "would skip" not in out
     assert "1 to delete (dry run), 1 skipped." in out
+
+
+def _rights(apply: bool, **admin: bool | None) -> list[remediate.CategoryRemediation]:
+    action = "enabled" if apply else "would enable"
+    return [
+        remediate.CategoryRemediation(
+            category=category_meta(CategoryKey.CODEQL),
+            outcomes=tuple(
+                remediate.RepoOutcome(name, action, admin=right)
+                for name, right in admin.items()
+            ),
+        )
+    ]
+
+
+_NOT_ADMIN = "not administered by this account; GitHub may refuse those writes"
+
+
+def test_render_remediation_dry_run_notes_repositories_not_administered() -> None:
+    console = Console(record=True, width=200, no_color=True)
+    results = _rights(False, a=True, b=False, c=False, d=None)
+    terminal_remediation.render_remediation("o", results, console, apply=False, top_n=1)
+    out = console.export_text()
+    lines = out.splitlines()
+    preview = next(i for i, line in enumerate(lines) if "4 would enable" in line)
+    assert f"2 {_NOT_ADMIN}: b … (+1 more)" in lines[preview + 1]
+    # The targets stay in the preview and in its counts.
+    assert "4 to enable (dry run)" in out
+
+
+@pytest.mark.parametrize(
+    ("apply", "admin"),
+    [(False, {"a": True, "b": None}), (True, {"a": False, "b": False})],
+    ids=["all-administered", "apply"],
+)
+def test_render_remediation_adds_no_admin_note_otherwise(
+    apply: bool, admin: dict[str, bool | None]
+) -> None:
+    console = Console(record=True, width=200, no_color=True)
+    terminal_remediation.render_remediation(
+        "o", _rights(apply, **admin), console, apply=apply
+    )
+    assert "not administered" not in console.export_text()

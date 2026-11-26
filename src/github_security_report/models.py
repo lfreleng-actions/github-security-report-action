@@ -136,6 +136,44 @@ class Repo:
     # Whether Dependabot malware alerts are on. GitHub's schema has no key for
     # it yet, so this is always ``None`` today; nothing reads it (ADR-0008).
     malware_alerts: bool | None = None
+    # Whether the reading account administers the repository, from the
+    # listing's ``permissions.admin``; ``None`` when the object has no such
+    # field. It describes the account, not what a fine-grained token was
+    # granted, so ``False`` can only warn that a write may be refused.
+    admin: bool | None = None
+
+
+class WriteNote(str):
+    """A remediation write's diagnostic note, carrying the HTTP status behind it.
+
+    Compares and prints as the note itself, so a caller that only shows it
+    needs nothing new, while one that must tell a refusal of the token apart
+    from a failure of one repository reads ``status`` rather than the text,
+    which a write may prefix with the step that failed. ``key`` is the note
+    without what varies between targets refused alike, such as how far a
+    walk got before it stopped; it defaults to the note itself.
+    ``after_write`` is whether an earlier write for the same target succeeded
+    before this one failed, such as alerts enabled before security updates
+    were refused, so a caller counting refusals in a row sees that success.
+    """
+
+    status: int | None
+    key: str
+    after_write: bool
+
+    def __new__(
+        cls,
+        text: str,
+        status: int | None = None,
+        *,
+        key: str | None = None,
+        after_write: bool = False,
+    ) -> WriteNote:
+        note = super().__new__(cls, text)
+        note.status = status
+        note.key = text if key is None else key
+        note.after_write = after_write
+        return note
 
 
 @dataclass(frozen=True)

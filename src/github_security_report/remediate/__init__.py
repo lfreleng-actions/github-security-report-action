@@ -34,7 +34,7 @@ from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 
 from github_security_report.categories import CategoryKey, category_meta
-from github_security_report.models import Repo, SignalType
+from github_security_report.models import Repo, SignalType, WriteNote
 from github_security_report.remediate.codeql import (
     _cleanup_precheck,
     _cleanup_targets,
@@ -57,6 +57,7 @@ __all__ = [
     "DEFAULT_REMEDIABLE",
     "EXPLICIT_ONLY",
     "REMEDIABLE",
+    "STOP_AFTER_REFUSALS",
     "CategoryRemediation",
     "RemediationClient",
     "RepoOutcome",
@@ -208,6 +209,51 @@ EXPLICIT_ONLY: tuple[CategoryKey, ...] = tuple(
 )
 
 
+# Identical refusals in a row after which an apply stops writing one category
+# for one organisation. GitHub answers a write it will not authorise with 403
+# or 404; the same answer three times running says the token cannot write
+# here, and every further request would only hear it again.
+STOP_AFTER_REFUSALS = 3
+_REFUSAL_STATUSES = frozenset({403, 404})
+
+
+@dataclass
+class _Refusals:
+    """The run of identical refusals one category has met, and why it stopped."""
+
+    last: tuple[int | None, str] | None = None
+    count: int = 0
+    stopped: str | None = None
+
+    def record(self, ok: bool, note: str) -> None:
+        """Count a write: a refusal like the last extends the run, else resets it.
+
+        Decided from the status the write carried, never from the note's text,
+        which a write may prefix with the step that failed, and compared by
+        the note's ``key``, which leaves out what varies between targets
+        refused alike, such as how many analyses a cleanup deleted first.
+        A write that succeeded earlier in the same target ends the run before
+        its refusal is counted.
+        """
+        if (
+            ok
+            or not isinstance(note, WriteNote)
+            or note.status not in _REFUSAL_STATUSES
+        ):
+            self.last, self.count = None, 0
+            return
+        if note.after_write:
+            self.last, self.count = None, 0
+        key = (note.status, note.key)
+        self.count = self.count + 1 if key == self.last else 1
+        self.last = key
+        if self.count >= STOP_AFTER_REFUSALS:
+            self.stopped = (
+                f"not attempted: {self.count} writes in a row were refused "
+                f"with {note.key}"
+            )
+
+
 def parse_categories(values: Iterable[str]) -> tuple[list[CategoryKey], list[str]]:
     """Map user-supplied category strings to keys.
 
@@ -246,7 +292,10 @@ async def remediate_org(
     ``"refused"`` with the reason, in either mode, and is never written; the
     precheck is a read, so a dry run reports refusals exactly as an apply would.
     A target the plan only reports yields ``"skipped"`` with its reason, and
-    is neither checked nor written.
+    is neither checked nor written. Once :data:`STOP_AFTER_REFUSALS` writes in
+    a row in one category are refused with the same 403 or 404 status and
+    note, every later target in that category yields ``"skipped"`` too,
+    naming the refusal, and is not written; the next category starts afresh.
     Categories are always represented (with an empty outcome list when they
     have no targets) so the renderer can show a selected category had nothing
     to do.
@@ -270,8 +319,11 @@ async def remediate_org(
     results: list[CategoryRemediation] = []
     for key in sorted(selected, key=lambda k: order[k]):
         rem = _BY_KEY[key]
+        refusals = _Refusals()
         outcomes = [
-            await _remediate_target(client, report.org, rem, target, apply=apply)
+            await _remediate_target(
+                client, report.org, rem, target, apply=apply, refusals=refusals
+            )
             for target in rem.targets(report)
         ]
         results.append(
@@ -287,17 +339,29 @@ async def _remediate_target(
     target: _Target,
     *,
     apply: bool,
+    refusals: _Refusals,
 ) -> RepoOutcome:
-    """Skip, refuse, preview or write one target, and say which."""
+    """Skip, refuse, preview or write one target, and say which.
+
+    Only a write is counted in ``refusals``: a target skipped or refused
+    before it is written neither extends nor resets the run.
+    """
+
+    def outcome(action: str, note: str = "") -> RepoOutcome:
+        return RepoOutcome(target.name, action, note, target.verb, target.repo.admin)
+
     if target.skipped is not None:
-        return RepoOutcome(target.name, _SKIPPED, target.skipped, target.verb)
-    refusal = target.refusal
-    if refusal is None and rem.precheck is not None:
+        return outcome(_SKIPPED, target.skipped)
+    if target.refusal is not None:
+        return outcome(_REFUSED, target.refusal)
+    if apply and refusals.stopped is not None:
+        return outcome(_SKIPPED, refusals.stopped)
+    if rem.precheck is not None:
         refusal = await rem.precheck(client, org, target)
-    if refusal is not None:
-        return RepoOutcome(target.name, _REFUSED, refusal, target.verb)
+        if refusal is not None:
+            return outcome(_REFUSED, refusal)
     if not apply:
-        return RepoOutcome(target.name, f"would {target.verb}", verb=target.verb)
+        return outcome(f"would {target.verb}")
     ok, note = await rem.write(client, org, target)
-    action = _DONE[target.verb] if ok else _FAILED
-    return RepoOutcome(target.name, action, note, target.verb)
+    refusals.record(ok, note)
+    return outcome(_DONE[target.verb] if ok else _FAILED, note)

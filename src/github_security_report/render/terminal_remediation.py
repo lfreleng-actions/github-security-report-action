@@ -14,10 +14,27 @@ from pathlib import Path
 from rich.console import Console
 from rich.markup import escape
 
-from github_security_report.remediate import CategoryRemediation
+from github_security_report.remediate import CategoryRemediation, RepoOutcome
 from github_security_report.render.terminal import _truncated_names
 from github_security_report.render.terminal_notices import render_config_path
 from github_security_report.report import SUMMARY_EMOJI
+
+
+def _render_not_administered(
+    console: Console, group: Sequence[RepoOutcome], top_n: int | None
+) -> None:
+    """Note, beneath a preview, the targets the account does not administer.
+
+    They stay in the preview and its counts: admin access is sufficient for
+    every write but not always required, so an apply still attempts them.
+    """
+    names = [o.name for o in group if o.admin is False]
+    if names:
+        console.print(
+            f"    [yellow]{SUMMARY_EMOJI['unknown']}[/yellow] {len(names)} not "
+            "administered by this account; GitHub may refuse those writes: "
+            f"{escape(_truncated_names(names, top_n))}"
+        )
 
 
 def render_remediation(
@@ -85,6 +102,7 @@ def render_remediation(
                     f"  [yellow]→[/yellow] {len(group)} would {escape(verb)}: "
                     f"{escape(names)}"
                 )
+                _render_not_administered(console, group, top_n)
         for outcome in held:
             console.print(
                 f"  [yellow]{SUMMARY_EMOJI['unknown']}[/yellow] "

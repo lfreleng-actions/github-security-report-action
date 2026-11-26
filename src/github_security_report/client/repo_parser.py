@@ -29,6 +29,13 @@ def _feature_status(raw: dict, feature: str) -> bool | None:
     return bool(status == "enabled")
 
 
+def _admin_right(raw: dict) -> bool | None:
+    """The account's ``permissions.admin`` on the repository, or ``None``."""
+    permissions = raw.get("permissions")
+    admin = permissions.get("admin") if isinstance(permissions, dict) else None
+    return admin if isinstance(admin, bool) else None
+
+
 def _parse_repo_or_none(raw: object) -> Repo | None:
     """A :class:`Repo` from ``raw``, or ``None`` when it is not a repository.
 
@@ -65,4 +72,5 @@ def _parse_repo(raw: dict) -> Repo:
         # The expected key, absent from GitHub's schema today (ADR-0008); when
         # it appears under another name, only this string changes.
         malware_alerts=_feature_status(raw, "dependabot_malware_alerts"),
+        admin=_admin_right(raw),
     )

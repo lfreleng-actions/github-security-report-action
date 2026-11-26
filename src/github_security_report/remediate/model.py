@@ -27,7 +27,9 @@ class RemediationClient(Protocol):
       ``enable_workflow``) change one repository and return ``(ok, note)``:
       ``ok`` is whether the write succeeded, and ``note`` carries a short
       diagnostic (an error status/body on failure, or a hint such as
-      ``"accepted (async)"`` or a deletion count on success).
+      ``"accepted (async)"`` or a deletion count on success). A failed
+      write's note may be a :class:`~github_security_report.models.WriteNote`
+      carrying the HTTP status that refused it; a plain string carries none.
     - **Safety reads** (``codeql_alert_holders``) gather what a pre-write
       check needs and write nothing. They return ``None`` when the answer
       cannot be read in full, which a caller must treat as a reason to refuse
@@ -91,13 +93,15 @@ class RepoOutcome:
 
     ``name`` is the target as the output names it: a repository, or for the
     CodeQL cleanup a repository and configuration. ``verb`` is what was, or
-    would be, done to it.
+    would be, done to it. ``admin`` is whether the account administers the
+    repository, ``None`` when the listing did not say.
     """
 
     name: str
     action: str  # "would <verb>" | past participle | "FAILED" | "refused" | "skipped"
     note: str = ""
     verb: str = "enable"
+    admin: bool | None = None
 
     @property
     def failed(self) -> bool:
