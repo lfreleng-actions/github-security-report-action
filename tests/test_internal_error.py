@@ -22,8 +22,6 @@ from github_security_report.client import AuthError
 app_mod = importlib.import_module("github_security_report.cli.app")
 cli = CliRunner()
 
-PENDING = pytest.mark.xfail(strict=True, reason="unexpected errors not yet handled")
-
 # Built at run time so the source line a traceback quotes cannot carry it.
 SENTINEL = "-".join(("token", "sentinel", "4f2a"))
 
@@ -72,7 +70,6 @@ SCENARIOS = [
 ]
 
 
-@PENDING
 @pytest.mark.parametrize(("flag", "leaf"), SCENARIOS)
 def test_uncreatable_path_exits_7_without_traceback(
     github: None, tmp_path: Path, flag: str, leaf: str
@@ -86,7 +83,6 @@ def test_uncreatable_path_exits_7_without_traceback(
     assert "Traceback" not in result.output
 
 
-@PENDING
 @pytest.mark.parametrize(("flag", "leaf"), SCENARIOS)
 def test_uncreatable_path_with_verbose_prints_traceback(
     github: None, tmp_path: Path, flag: str, leaf: str
@@ -100,7 +96,6 @@ def test_uncreatable_path_with_verbose_prints_traceback(
     assert "Re-run with --verbose" not in out
 
 
-@PENDING
 def test_error_in_mode_coroutine_is_handled(monkeypatch: pytest.MonkeyPatch) -> None:
     async def run_org(*_args: object, **_kwargs: object) -> int:
         _raise_with_secret(RuntimeError("mode broke"))
@@ -113,7 +108,6 @@ def test_error_in_mode_coroutine_is_handled(monkeypatch: pytest.MonkeyPatch) -> 
     assert "Traceback" not in result.output
 
 
-@PENDING
 def test_verbose_traceback_shows_no_locals(monkeypatch: pytest.MonkeyPatch) -> None:
     async def run_org(*_args: object, **_kwargs: object) -> int:
         _raise_with_secret(RuntimeError("mode broke"))
@@ -126,7 +120,6 @@ def test_verbose_traceback_shows_no_locals(monkeypatch: pytest.MonkeyPatch) -> N
     assert SENTINEL not in result.output
 
 
-@PENDING
 def test_error_in_command_body_is_handled(monkeypatch: pytest.MonkeyPatch) -> None:
     def detect_target(*_args: object) -> None:
         raise ValueError("body broke")
@@ -138,7 +131,6 @@ def test_error_in_command_body_is_handled(monkeypatch: pytest.MonkeyPatch) -> No
     assert "Traceback" not in result.output
 
 
-@PENDING
 def test_remediate_error_says_earlier_changes_stand(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -171,7 +163,6 @@ def test_errors_with_a_meaning_keep_their_code(
     assert "Internal error" not in result.output
 
 
-@PENDING
 def test_config_command_error_exits_7(monkeypatch: pytest.MonkeyPatch) -> None:
     def keys_under(_prefix: str) -> None:
         raise KeyError("dictionary broke")

@@ -2326,6 +2326,7 @@ API in the same way.
 | `4` | GitHub rejected the credentials (HTTP 401). |
 | `5` | A repository listing answered `403` or `404`, with no rate limit. |
 | `6` | A rate limit with nothing left stopped the run (causes below). |
+| `7` | Internal error: an unexpected failure, not a finding (see below). |
 
 Code `6` has five causes, and a rate-limited `403` is one of them, not `5`:
 
@@ -2368,6 +2369,14 @@ writes one organisation at a time, so a `3`, `4` or `6` from a later
 organisation comes after the earlier ones' writes have been applied. Check
 what the run printed before re-running; a re-run enables only what it finds
 still off.
+
+Code `7` is not an abort. It reports an error the tool did not expect: a
+defect, or a failure no specific check covers, such as an `--output-dir` that
+cannot be created. Unlike `3` to `6`, it can come after output was written,
+so files under `--output-dir` may be partial; do not publish them, and treat
+the run as failed. For `remediate`, changes made before the error stand, as
+above. The message names the error in one line; re-run with `--verbose` to
+print the traceback, which never includes local variables.
 
 Org-mode `report` and `remediate` check for these before they collect
 anything, for every configured organisation before the first. `report` reads
