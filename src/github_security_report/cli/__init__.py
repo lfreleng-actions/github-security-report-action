@@ -13,6 +13,7 @@ The command surface is split across:
 - :mod:`cli.modes` -- the org, repo and remediate run modes
 - :mod:`cli.config_cmd` -- the ``config check`` and ``config keys`` commands
 - :mod:`cli.config_source` -- reading a configuration, reporting its errors
+- :mod:`cli.guard` -- the exit-7 handler every command runs inside
 - :mod:`cli.options` -- what a run takes from the command line
 - :mod:`cli.publish` -- the Pages files, Slack digest and job summary
 - :mod:`cli.outputs` -- offender limits, category visibility, file writing
@@ -21,6 +22,7 @@ The command surface is split across:
 
 from __future__ import annotations
 
+from github_security_report.cli import guard
 from github_security_report.cli.app import (
     _version_callback,
     app,
@@ -49,6 +51,10 @@ from github_security_report.cli.serialise import _org_to_dict, _table_to_dict
 # Registered here rather than in cli.app, which holds the run commands; the
 # entry point is this package's ``app``, so the group is always present.
 app.add_typer(config_app, name="config")
+# Every command, these and any added later, reports an unexpected error as
+# exit 7 rather than a traceback and exit 1. Importing cli.app, as the module
+# form of the entry point does, runs this package first.
+guard.install(app)
 
 # The package façade: every name the module split moved is still importable
 # from ``github_security_report.cli``, including the private helpers the tests
