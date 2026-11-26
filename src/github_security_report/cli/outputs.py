@@ -17,7 +17,7 @@ from github_security_report.models import RepoSignal
 from github_security_report.render import html as html_render
 from github_security_report.render import markdown as md_render
 from github_security_report.report import FooterOptions, LimitFor, OrgReport, WindowsFor
-from github_security_report.runner import should_fail
+from github_security_report.runner import GateDecision
 
 # Keep filenames within output_dir: a channel value containing "/" or ".."
 # (misconfiguration or hostile input) must not escape the directory.
@@ -312,8 +312,11 @@ def write_org_files(
     )
 
 
-def repo_outputs(signals: list[RepoSignal], fail_threshold: str) -> dict[str, str]:
-    """The GitHub Actions outputs a repo-mode run publishes."""
+def repo_outputs(signals: list[RepoSignal], decision: GateDecision) -> dict[str, str]:
+    """The GitHub Actions outputs a repo-mode run publishes.
+
+    ``failed`` comes from the same gate decision as the exit code.
+    """
     outputs = {s.signal.value + "_open": str(s.counts.total) for s in signals}
-    outputs["failed"] = "true" if should_fail(signals, fail_threshold) else "false"
+    outputs["failed"] = "true" if decision.failed else "false"
     return outputs

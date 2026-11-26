@@ -694,6 +694,94 @@ def test_repo_mode_fail_threshold(tmp_path: Path) -> None:
     assert "Secret Scanning" in configured.stdout
 
 
+def _mock_repo_gate(*, dependabot: list[dict], secret_status: int = 200) -> None:
+    """Repo ``o/r`` with no code scanning, Dependabot on, and the given reads."""
+    respx.get(f"{API}/repos/o/r").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "name": "r",
+                "full_name": "o/r",
+                "html_url": "https://github.com/o/r",
+            },
+        )
+    )
+    respx.get(url__startswith=f"{API}/repos/o/r/code-scanning/analyses").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    respx.get(url__startswith=f"{API}/repos/o/r/code-scanning/alerts").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    respx.get(url__startswith=f"{API}/repos/o/r/secret-scanning/alerts").mock(
+        return_value=httpx.Response(secret_status, json=[])
+    )
+    _mock_pattern_inventory()
+    respx.post(f"{API}/graphql").mock(
+        return_value=httpx.Response(
+            200, json={"data": {"repository": {"hasVulnerabilityAlertsEnabled": True}}}
+        )
+    )
+    _mock_workflow_runs()
+    respx.get(url__startswith=f"{API}/repos/o/r/dependabot/alerts").mock(
+        return_value=httpx.Response(200, json=dependabot)
+    )
+    respx.get(url__startswith=f"{API}/repos/o/r/rules/branches").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    respx.get(url__startswith=f"{SCORECARD}/projects/github.com/o/r").mock(
+        return_value=httpx.Response(404)
+    )
+
+
+def _repo_gate_run(*extra: str) -> tuple[int, str]:
+    result = cli.invoke(
+        app, ["report", "--repo", "o/r", "--scope", "repo", "--no-color", *extra]
+    )
+    return result.exit_code, " ".join(result.stdout.split())
+
+
+@pytest.mark.parametrize("threshold", ["low", "any"])
+@respx.mock
+def test_repo_gate_fails_on_a_finding_below_the_cutoff(
+    threshold: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # One low Dependabot alert on a complete read: the signal reads clean under
+    # its medium cutoff, but the threshold judges the finding itself.
+    output = tmp_path / "out.txt"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    _mock_repo_gate(dependabot=[{"security_advisory": {"severity": "low"}}])
+    code, stdout = _repo_gate_run("--fail-threshold", threshold)
+    assert code == 1, stdout
+    assert "failed=true" in output.read_text()
+    assert f"'{threshold}' in Dependabot: Security Alerts" in stdout
+
+
+@respx.mock
+def test_fail_on_unknown_names_the_unreadable_signal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "out.txt"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    _mock_repo_gate(dependabot=[], secret_status=403)
+
+    code, stdout = _repo_gate_run()
+    assert code == 0, stdout
+    assert "failed=false" in output.read_text()
+
+    output.write_text("")
+    code, stdout = _repo_gate_run("--fail-on-unknown")
+    assert code == 1, stdout
+    assert "failed=true" in output.read_text()
+    assert "Secret Scanning could not be read: insufficient permission" in stdout
+
+
+def test_fail_on_unknown_refused_in_org_mode() -> None:
+    result = cli.invoke(app, ["report", "--org", "o", "--fail-on-unknown"])
+    assert result.exit_code == 2, result.stdout
+    assert "--fail-on-unknown" in result.stdout
+    assert "repo mode only" in result.stdout
+
+
 def test_unresolvable_scope_errors() -> None:
     # No config and an explicit org scope -> mode error, exit 2.
     result = cli.invoke(app, ["report", "--scope", "org", "--no-color"])
@@ -2105,6 +2193,20 @@ def test_action_passes_the_no_progress_input_to_the_flag() -> None:
     )
     assert step["env"]["INPUT_NO_PROGRESS"] == "${{ inputs.no_progress }}"
     assert '[ "$INPUT_NO_PROGRESS" = "true" ] && args+=(--no-progress)' in step["run"]
+
+
+def test_action_passes_the_fail_on_unknown_input_only_when_true() -> None:
+    root = Path(__file__).resolve().parents[1]
+    action = yaml.safe_load((root / "action.yaml").read_text())
+    assert action["inputs"]["fail_on_unknown"]["default"] == "false"
+    step = next(
+        s for s in action["runs"]["steps"] if "INPUT_GRAPH_BATCH" in s.get("env", {})
+    )
+    assert step["env"]["INPUT_FAIL_ON_UNKNOWN"] == "${{ inputs.fail_on_unknown }}"
+    assert (
+        '[ "$INPUT_FAIL_ON_UNKNOWN" = "true" ] && args+=(--fail-on-unknown)'
+        in step["run"]
+    )
 
 
 def _issues_queue_run(tmp_path: Path, categories: dict, *extra: str) -> tuple:

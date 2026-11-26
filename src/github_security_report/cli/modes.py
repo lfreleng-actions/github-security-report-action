@@ -314,6 +314,7 @@ async def _run_repo(
     token_env: str,
     console: Console,
     fail_threshold: str,
+    fail_on_unknown: bool = False,
     report_cfg: ReportConfig | None = None,
     limits: TopNLimits | None = None,
     hidden: frozenset[CategoryKey] = frozenset(),
@@ -401,16 +402,17 @@ async def _run_repo(
             windows=windows(cfg, "report"),
         )
     )
-    outputs = repo_outputs(signals, fail_threshold)
+    decision = runner.gate(signals, fail_threshold, fail_on_unknown=fail_on_unknown)
+    outputs = repo_outputs(signals, decision)
     # Keep the action's declared outputs stable across modes.
     outputs["should_notify"] = "false"
     outputs["slack_payload"] = ""
     runner.write_github_output(outputs)
 
-    if runner.should_fail(signals, fail_threshold):
-        console.print(f"[red]Failing: findings at or above '{fail_threshold}'[/red]")
-        return 1
-    return 0
+    # markup=False: a signal's recorded reason is printed literally.
+    for reason in decision.reasons:
+        console.print(f"Failing: {reason}", style="red", markup=False)
+    return 1 if decision.failed else 0
 
 
 # The remediate mode lives in its own module; re-exported so the command and

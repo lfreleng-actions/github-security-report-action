@@ -68,6 +68,14 @@ inputs:
     description: "none | low | medium | high | critical | any (repo mode gate)"
     required: false
     default: "none"
+  fail_on_unknown:
+    # Passed to the CLI only when "true", so the default never hands the flag
+    # to a pinned release predating it. Setting it "true" does, and that
+    # release fails with "No such option": turn it on only once the runtime
+    # pin (or tool_version) names a release that supports it.
+    description: "Also fail the repo-mode gate when a signal could not be read (repo mode only)"
+    required: false
+    default: "false"
   force_notify:
     description: "Post to Slack regardless of report_day"
     required: false
@@ -253,6 +261,7 @@ runs:
         INPUT_TOP_N_CLI: ${{ inputs.top_n_cli }}
         INPUT_TOP_N_SLACK: ${{ inputs.top_n_slack }}
         INPUT_FAIL_THRESHOLD: ${{ inputs.fail_threshold }}
+        INPUT_FAIL_ON_UNKNOWN: ${{ inputs.fail_on_unknown }}
         INPUT_FORCE_NOTIFY: ${{ inputs.force_notify }}
         INPUT_HIDE: ${{ inputs.hide }}
         INPUT_GRAPH_BATCH: ${{ inputs.graph_batch }}
@@ -367,6 +376,7 @@ runs:
         [ -n "$INPUT_TOP_N_CLI" ] && args+=(--top-n-cli "$INPUT_TOP_N_CLI")
         [ -n "$INPUT_TOP_N_SLACK" ] && args+=(--top-n-slack "$INPUT_TOP_N_SLACK")
         [ -n "$INPUT_FAIL_THRESHOLD" ] && args+=(--fail-threshold "$INPUT_FAIL_THRESHOLD")
+        [ "$INPUT_FAIL_ON_UNKNOWN" = "true" ] && args+=(--fail-on-unknown)
         [ "$INPUT_FORCE_NOTIFY" = "true" ] && args+=(--force-notify)
         [ -n "$INPUT_GRAPH_BATCH" ] && args+=(--graph-batch "$INPUT_GRAPH_BATCH")
         [ -n "$INPUT_CONCURRENCY" ] && args+=(--concurrency "$INPUT_CONCURRENCY")

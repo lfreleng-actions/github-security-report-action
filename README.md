@@ -343,14 +343,17 @@ signal readable: repo mode reads the alerts only after a GraphQL read
 the job token can make that read has not been tested. Where it cannot, the
 Dependabot signal reads as unknown when the response carries no repository,
 but as **disabled** when it carries the repository without that field's value
-(see the Dependabot bullet below); neither fails the gate.
+(see the Dependabot bullet below). A disabled signal never fails the gate; an
+unknown one fails it only with `fail_on_unknown` on.
 
 No job permission covers secret-scanning alerts: GitHub serves them only to a
 GitHub App or a personal access token, and `security-events` covers code
 scanning. With the job token, secret scanning therefore never gates a pull
-request; it reads as unknown or disabled. To gate on leaked secrets, pass a
-token that can read them through the action's `token` input, and grant it
-the repository permissions for every signal repo mode reads (see the
+request on leaked secrets; it reads as unknown or disabled. An unknown reading
+fails the gate under `fail_on_unknown`, so leave that input off for a job that
+runs with the job token. To gate on leaked secrets, pass a token that can read
+them through the action's `token` input, and grant it the repository
+permissions for every signal repo mode reads (see the
 [fine-grained table](#single-organisation--fine-grained-pat)). GitHub also
 requires the account behind a personal access token to be an administrator
 of the repository or of its organisation; otherwise the read is refused
@@ -362,15 +365,16 @@ the default `none`.
 
 On a `pull_request` run from a fork, GitHub withholds repository secrets by
 default, so a token passed from `secrets` is empty and the action falls back
-to the job token: secret scanning then does not gate that run, and the job
-can pass. A workflow that must not pass without the token should fail in an
-earlier step when the secret is empty. Do not switch to `pull_request_target`
-to obtain the secret: a job that then checks out the pull request's code
-exposes the token to it. For the same reason, do not enable a private or
-internal repository's **Send secrets to workflows from pull requests**
-setting where untrusted contributors can open fork pull requests: with it on,
-the token is passed to workflow code the fork controls instead of falling
-back to the job token.
+to the job token: secret scanning then does not gate that run on leaked
+secrets, and the job can pass unless `fail_on_unknown` is on and the read
+comes back unknown. A workflow that must not pass without the token should
+fail in an earlier step when the secret is empty. Do not switch to
+`pull_request_target` to obtain the secret: a job that then checks out the
+pull request's code exposes the token to it. For the same reason, do not
+enable a private or internal repository's **Send secrets to workflows from
+pull requests** setting where untrusted contributors can open fork pull
+requests: with it on, the token is passed to workflow code the fork controls
+instead of falling back to the job token.
 
 Repo mode reads the repository's code-scanning, secret-scanning and Dependabot
 alerts. A read the token cannot make does not always surface as unknown. A
@@ -422,15 +426,34 @@ Repo mode classifies every category against its default cutoff (see
 [Pass/fail severity cutoff](#passfail-severity-cutoff)) and ignores
 `report.categories.<key>.fail_severity`. CodeQL, Scorecard findings and
 Dependabot use `medium`, aislop `low` and zizmor `informational`, so a
-repository whose only CodeQL alerts are `low` reads clean and passes even at
-`fail_threshold` `any` or `low`.
+repository whose only CodeQL alerts are `low` reads clean. The gate still
+weighs those alerts: they fail it at `fail_threshold` `any` or `low`.
 
-Classification and the gate are separate, and the gate acts only on offenders.
-`fail_threshold: any` fails the job on every offender, a sub-10 Scorecard
-score with no findings included. A severity threshold fails it only on an
-offender with a finding at or above that severity. An unknown or disabled
-signal never fails the gate, so a token missing a permission can pass it:
-check each category's footer for its `❓` unknown count.
+Classification and the gate are separate, and the gate judges findings rather
+than offenders. A severity threshold fails the job when any signal holds an
+open finding at or above it, whatever the signal's state: a clean signal with
+findings under its category's cutoff, or an unknown one with the alerts it
+read before the read failed. `fail_threshold: any` fails the job on every
+offender, a sub-10 Scorecard score with no findings included, and on any open
+finding of any severity; `none` never fails on findings. With the default
+cutoffs only `low` and `any` reach findings that are not already offenders.
+
+A signal that could not be read fails the gate only with `fail_on_unknown`
+(`--fail-on-unknown`) on; it does so at any `fail_threshold`, `none`
+included. The flag covers the signals the gate reads (CodeQL, Scorecard,
+zizmor, aislop, fuzz, Dependabot alerts and secret scanning): a disabled or
+not-applicable signal never fails it, nor does the unknown count of a table
+such as Workflow Failures. Without the flag a token missing a permission can
+pass the gate: check each category's footer for its `❓` unknown count. A
+failed gate prints one line per cause: the signals holding findings at or
+above the threshold, and each unreadable signal with the reason it could not
+be read.
+
+> The flag and input are recent additions. The action passes the flag only
+> when the input is `"true"`, so leaving it off cannot break a run; but outside
+> pull requests the action runs the pinned release, and a release predating the
+> flag rejects it with `No such option`. Turn the input on only once the pinned
+> release supports it, or set `tool_version` to one that does.
 
 Repo mode reads no issues, pull requests or organisation membership, so it
 needs no permission for them.
@@ -672,6 +695,8 @@ that only shape an organisation-wide run — `output_dir`, `pages_url`,
 — are **rejected** with exit code 2 rather than accepted and discarded, so a
 misconfigured workflow says so instead of quietly producing a report that
 ignores them.
+`fail_on_unknown` is refused the same way in org mode, which has no gate for
+it to act on.
 
 ### Runtime isolation
 
@@ -2216,6 +2241,7 @@ github-security-report config keys report.categories.code_quality
 | `top_n_cli` | No | — | Offenders per signal in the terminal output (`0` = no limit; overrides `top_n`) |
 | `top_n_slack` | No | — | Offenders per signal in the Slack digest (`0` = no limit; overrides `top_n`) |
 | `fail_threshold` | No | `none` | `none`/`low`/`medium`/`high`/`critical`/`any` (repo mode) |
+| `fail_on_unknown` | No | `false` | Also fail the repo-mode gate when a signal could not be read (repo mode only; refused with exit code `2` in org mode). Passed to the CLI only when `"true"`; a pinned release predating the flag rejects it |
 | `force_notify` | No | `false` | Post to Slack regardless of `report_day` |
 | `hide` | No | `""` | Category keys to suppress on every output (space- or comma-separated). Overrides config, and is one-way: it cannot re-enable a disabled category |
 | `graph_batch` | No | `""` | Repositories per batched GraphQL prefetch query (minimum `1`; default: config, else `10`). Pass a repository or organisation variable such as `${{ vars.GSR_GRAPH_BATCH }}` to adjust it from settings. A batch that still fails is halved automatically, so this sets the starting size (see [GraphQL prefetch batch size](#graphql-prefetch-batch-size)) |
@@ -2236,7 +2262,7 @@ github-security-report config keys report.categories.code_quality
 | ---- | ----------- |
 | `should_notify` | Whether today is a Slack notification day |
 | `slack_payload` | Prebuilt Slack `chat.postMessage` payload (JSON) |
-| `failed` | Whether the repo-mode fail threshold was met |
+| `failed` | Whether the repo-mode gate failed (exit code `1`) |
 
 ## Running locally
 
@@ -2320,7 +2346,7 @@ API in the same way.
 | Code | Meaning |
 | ---- | ------- |
 | `0` | The report ran. |
-| `1` | Repo mode only: findings met or exceeded `--fail-threshold`. |
+| `1` | Repo mode: the gate failed on findings or `--fail-on-unknown`. |
 | `2` | Usage or configuration error (bad flag, bad config, unset token). |
 | `3` | The GitHub API was unusable after the retry budget (see below). |
 | `4` | GitHub rejected the credentials (HTTP 401). |

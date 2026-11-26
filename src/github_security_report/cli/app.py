@@ -67,11 +67,6 @@ def main(
     )
 
 
-def _supplied(flags: dict[str, bool]) -> list[str]:
-    """The names of the flags a caller supplied, for the repo-mode refusal."""
-    return [name for name, supplied in flags.items() if supplied]
-
-
 def _console(no_color: bool) -> Console:
     """A console that drops colour in CI, when piped, or on request.
 
@@ -137,6 +132,9 @@ def report(
         "none",
         "--fail-threshold",
         help="none|low|medium|high|critical|any (repo mode).",
+    ),
+    fail_on_unknown: bool = typer.Option(
+        False, "--fail-on-unknown", help="Also fail on unreadable signals (repo mode)."
     ),
     force_notify: bool = typer.Option(
         False, "--force-notify", help="Post to Slack regardless of report_day."
@@ -250,6 +248,7 @@ def report(
 
     if mode is runner.Mode.ORG:
         assert cfg is not None
+        boundary.reject_repo_only(console, {"--fail-on-unknown": fail_on_unknown})
         boundary.check_releases_exclude(console, cfg, releases_exclude)
         options = OrgRunOptions(
             output_dir=Path(output_dir) if output_dir else None,
@@ -272,29 +271,25 @@ def report(
         # into the run, so what repo mode accepts is what repo mode applies.
         # The run-store flags are among the refused: one repository's week is
         # read afresh each time, so they would be accepted and do nothing.
-        boundary.reject_org_only(
-            console,
-            _supplied(
-                {
-                    "--output-dir": output_dir is not None,
-                    "--pages-url": pages_url is not None,
-                    "--slack-channel": slack_channel is not None,
-                    "--force-notify": force_notify,
-                    "--top-n-slack": top_n_slack is not None,
-                    "--repo-min-age-days": repo_min_age_days is not None,
-                    "--release-max-age-days": release_max_age_days is not None,
-                    "--releases-exclude": bool(releases_exclude),
-                    "--no-gating": no_gating,
-                    "--include-archived": include_archived,
-                    "--include-test": include_test,
-                    "--graph-batch": graph_batch is not None,
-                    "--concurrency": concurrency is not None,
-                    "--no-run-cache": no_run_cache,
-                    "--run-cache-dir": run_cache_dir is not None,
-                    "--refresh-runs": refresh_runs,
-                }
-            ),
-        )
+        org_only = {
+            "--output-dir": output_dir is not None,
+            "--pages-url": pages_url is not None,
+            "--slack-channel": slack_channel is not None,
+            "--force-notify": force_notify,
+            "--top-n-slack": top_n_slack is not None,
+            "--repo-min-age-days": repo_min_age_days is not None,
+            "--release-max-age-days": release_max_age_days is not None,
+            "--releases-exclude": bool(releases_exclude),
+            "--no-gating": no_gating,
+            "--include-archived": include_archived,
+            "--include-test": include_test,
+            "--graph-batch": graph_batch is not None,
+            "--concurrency": concurrency is not None,
+            "--no-run-cache": no_run_cache,
+            "--run-cache-dir": run_cache_dir is not None,
+            "--refresh-runs": refresh_runs,
+        }
+        boundary.reject_org_only(console, org_only)
         code = boundary.run_guarded(
             console,
             _run_repo(
@@ -303,6 +298,7 @@ def report(
                 token_env=token_env or "GITHUB_TOKEN",
                 console=console,
                 fail_threshold=fail_threshold,
+                fail_on_unknown=fail_on_unknown,
                 report_cfg=cfg.report if cfg is not None else None,
                 limits=limits,
                 hidden=hidden,
