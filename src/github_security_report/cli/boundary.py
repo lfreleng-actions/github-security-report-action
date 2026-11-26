@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Coroutine, Sequence
+from collections.abc import Coroutine, Mapping, Sequence
 from typing import Any
 
 import typer
@@ -125,7 +125,7 @@ def resolve_hidden(console: Console, hide: list[str] | None) -> frozenset[Catego
     return frozenset(valid[name] for name in hide)
 
 
-def reject_org_only(console: Console, supplied: Sequence[str]) -> None:
+def reject_org_only(console: Console, flags: Mapping[str, bool]) -> None:
     """Refuse organisation-only flags once the run has resolved to repo mode.
 
     Repo mode renders a single repository to the terminal and the job summary:
@@ -133,14 +133,37 @@ def reject_org_only(console: Console, supplied: Sequence[str]) -> None:
     Releases/Tagging table, so none of these flags has anything to act on.
     Accepting them silently is the one failure mode worth ruling out -- the
     caller would have no signal that the run ignored what they asked for -- so
-    they are rejected with the flags named rather than dropped.
+    they are rejected with the flags named rather than dropped. ``flags``
+    maps each flag to whether the caller supplied it.
     """
+    supplied = [name for name, given in flags.items() if given]
     if not supplied:
         return
     console.print(
         f"{', '.join(supplied)} apply to organisation mode only, but this run "
         "resolved to repo mode. Drop the flag, or pass --scope org with a "
         "configuration that names an organisation.",
+        style="red",
+        markup=False,
+    )
+    raise typer.Exit(2)
+
+
+def reject_repo_only(console: Console, flags: Mapping[str, bool]) -> None:
+    """Refuse repo-mode-only flags once the run has resolved to organisation mode.
+
+    The counterpart of :func:`reject_org_only`: organisation mode has no
+    repo-mode gate for these flags to act on, so they are rejected with the
+    flags named rather than accepted and ignored. ``flags`` maps each flag to
+    whether the caller supplied it.
+    """
+    supplied = [name for name, given in flags.items() if given]
+    if not supplied:
+        return
+    console.print(
+        f"{', '.join(supplied)} apply to repo mode only, but this run resolved "
+        "to organisation mode. Drop the flag, or pass --scope repo with the "
+        "repository to gate.",
         style="red",
         markup=False,
     )

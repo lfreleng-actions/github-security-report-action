@@ -12,9 +12,10 @@ import logging
 import os
 import re
 import secrets
+from dataclasses import dataclass
 from enum import Enum
 
-from github_security_report.models import RepoSignal
+from github_security_report.models import RepoSignal, RepoState
 from github_security_report.severity import Severity
 
 log = logging.getLogger(__name__)
@@ -79,38 +80,74 @@ _THRESHOLDS = {
 }
 
 
-def _max_severity(sig: RepoSignal) -> Severity | None:
-    c = sig.counts
-    if c.critical:
-        return Severity.CRITICAL
-    if c.high:
-        return Severity.HIGH
-    if c.medium:
-        return Severity.MEDIUM
-    if c.low:
-        return Severity.LOW
-    return None
+@dataclass(frozen=True)
+class GateDecision:
+    """The repo-mode gate's verdict, with one line per cause when it fails.
 
-
-def should_fail(signals: list[RepoSignal], threshold: str) -> bool:
-    """Whether the run should fail given a severity threshold (repo-mode gate).
-
-    ``none`` never fails; ``any`` fails on any offender; a severity name fails
-    when any offending signal has a finding at or above that severity.
+    The exit code and the ``failed`` output both read this one value, so the
+    two cannot disagree.
     """
-    threshold = threshold.lower()
+
+    reasons: tuple[str, ...] = ()
+
+    @property
+    def failed(self) -> bool:
+        return bool(self.reasons)
+
+
+def _breaches(sig: RepoSignal, threshold: str) -> bool:
+    """Whether one signal fails ``threshold``, whatever its state.
+
+    The threshold judges findings rather than offenders: a signal classified
+    clean under its category's cutoff, or unknown with alerts in hand, still
+    holds findings the gate can weigh.
+    """
     if threshold == "none":
         return False
     if threshold == "any":
-        return any(s.is_offender for s in signals)
-    if threshold not in _THRESHOLDS:
-        raise ModeError(f"unknown fail threshold: {threshold!r}")
+        return sig.is_offender or sig.counts.total > 0
     floor = _THRESHOLDS[threshold]
     assert floor is not None
-    return any(
-        s.is_offender and (sev := _max_severity(s)) is not None and sev >= floor
-        for s in signals
-    )
+    return sig.counts.at_or_above(floor) > 0
+
+
+def gate(
+    signals: list[RepoSignal], threshold: str, *, fail_on_unknown: bool = False
+) -> GateDecision:
+    """Decide the repo-mode gate, naming each cause of a failure.
+
+    ``none`` never fails on findings; ``any`` fails on every offender and on
+    any open finding; a severity name fails when any signal holds an open
+    finding at or above it. With ``fail_on_unknown``, every signal in the
+    unknown state also fails the gate, at any threshold.
+    """
+    threshold = threshold.lower()
+    if threshold != "any" and threshold not in _THRESHOLDS:
+        raise ModeError(f"unknown fail threshold: {threshold!r}")
+    reasons: list[str] = []
+    hits = [s.signal.meta.title for s in signals if _breaches(s, threshold)]
+    if hits:
+        scope = (
+            "offenders or open findings under"
+            if threshold == "any"
+            else "open findings at or above"
+        )
+        reasons.append(f"{scope} '{threshold}' in {', '.join(hits)}")
+    if fail_on_unknown:
+        reasons.extend(
+            f"{s.signal.meta.title} could not be read: "
+            f"{s.detail or 'no reason recorded'}"
+            for s in signals
+            if s.state is RepoState.UNKNOWN
+        )
+    return GateDecision(tuple(reasons))
+
+
+def should_fail(
+    signals: list[RepoSignal], threshold: str, *, fail_on_unknown: bool = False
+) -> bool:
+    """Whether the repo-mode gate fails; see :func:`gate`."""
+    return gate(signals, threshold, fail_on_unknown=fail_on_unknown).failed
 
 
 def write_github_output(values: dict[str, str], path: str | None = None) -> None:

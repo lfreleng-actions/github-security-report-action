@@ -81,6 +81,62 @@ class TestShouldFail:
             [_sig(RepoState.CLEAN), _sig(RepoState.NAG)], "low"
         )
 
+    def test_clean_signal_with_a_sub_cutoff_finding(self) -> None:
+        # A low finding under a medium cutoff leaves the signal clean, but the
+        # threshold judges the finding, not the classification.
+        signals = [_sig(RepoState.CLEAN, low=1)]
+        assert runner.should_fail(signals, "low")
+        assert runner.should_fail(signals, "any")
+        assert not runner.should_fail(signals, "medium")
+        assert not runner.should_fail(signals, "none")
+
+    def test_unknown_signal_with_findings_in_hand(self) -> None:
+        signals = [_sig(RepoState.UNKNOWN, low=1)]
+        assert runner.should_fail(signals, "low")
+        assert not runner.should_fail(signals, "medium")
+
+    def test_informational_offender_fails_at_any_alone(self) -> None:
+        signals = [_sig(RepoState.OFFENDER, informational=2)]
+        assert runner.should_fail(signals, "any")
+        for threshold in ("low", "medium", "high", "critical", "none"):
+            assert not runner.should_fail(signals, threshold)
+
+
+class TestFailOnUnknown:
+    def test_unknown_signal_fails_only_with_the_flag(self) -> None:
+        signals = [_sig(RepoState.UNKNOWN)]
+        assert not runner.should_fail(signals, "low")
+        assert runner.should_fail(signals, "low", fail_on_unknown=True)
+
+    def test_disabled_and_not_applicable_pass_with_the_flag(self) -> None:
+        signals = [_sig(RepoState.NAG), _sig(RepoState.NOT_APPLICABLE)]
+        assert not runner.should_fail(signals, "any", fail_on_unknown=True)
+
+    def test_flag_fails_the_gate_at_threshold_none(self) -> None:
+        signals = [_sig(RepoState.UNKNOWN)]
+        assert runner.should_fail(signals, "none", fail_on_unknown=True)
+
+    def test_each_cause_is_named(self) -> None:
+        repo = Repo("r", "o/r", "https://github.com/o/r")
+        signals = [
+            RepoSignal(
+                repo,
+                SignalType.SECRET_SCANNING,
+                RepoState.UNKNOWN,
+                detail="insufficient permission",
+            ),
+            RepoSignal(
+                repo, SignalType.DEPENDABOT, RepoState.CLEAN, SeverityCounts(low=1)
+            ),
+        ]
+        decision = runner.gate(signals, "low", fail_on_unknown=True)
+        assert decision.failed
+        assert len(decision.reasons) == 2
+        assert "Dependabot" in decision.reasons[0]
+        assert "'low'" in decision.reasons[0]
+        assert "Secret Scanning" in decision.reasons[1]
+        assert "insufficient permission" in decision.reasons[1]
+
 
 class TestActionsIO:
     def test_write_github_output(self, tmp_path: Path) -> None:
